@@ -115,29 +115,15 @@ func runResumeLeg(ctx context.Context, t *testing.T, senderStore *SenderStore, o
 	case s := <-sendDone:
 		send = s
 		if s.err != nil {
-			select {
-			case r := <-recvDone:
-				recv = r
-			case <-time.After(5 * time.Second):
-				legCancel()
-				recv = <-recvDone
-			}
-		} else {
-			recv = <-recvDone
+			legCancel()
 		}
+		recv = <-recvDone
 	case r := <-recvDone:
 		recv = r
 		if r.err != nil {
-			select {
-			case s := <-sendDone:
-				send = s
-			case <-time.After(5 * time.Second):
-				legCancel()
-				send = <-sendDone
-			}
-		} else {
-			send = <-sendDone
+			legCancel()
 		}
+		send = <-sendDone
 	}
 	return send, recv, id, reused
 }

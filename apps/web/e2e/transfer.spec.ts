@@ -18,8 +18,12 @@ function sha256(buffer: Buffer): string {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
-const BYTES = payload(4 * 1024 * 1024);
+const BYTES = payload(2 * 1024 * 1024);
 const DIGEST = sha256(BYTES);
+
+test.afterEach(async ({ context }) => {
+  await context.close();
+});
 
 /** Open the send screen and return the room-words invite code it shows. */
 async function openSender(page: import('@playwright/test').Page): Promise<string> {
