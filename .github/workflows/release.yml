@@ -558,6 +558,16 @@ jobs:
           bash ./scripts/generate-sbom.sh --target cli --output sboms/sendbeam-cli.spdx.json --version "${{ steps.meta.outputs.version }}" --commit "${{ steps.meta.outputs.commit }}"
           bash ./scripts/generate-sbom.sh --target desktop --output sboms/sendbeam-desktop.spdx.json --version "${{ steps.meta.outputs.version }}" --commit "${{ steps.meta.outputs.commit }}"
 
+      - name: Check Minisign Secret Key availability
+        run: |
+          if [ -z "${{ secrets.MINISIGN_SECRET_KEY }}" ]; then
+            echo "[-] ERROR: MINISIGN_SECRET_KEY secret is required for signing releases!" >&2
+            exit 1
+          fi
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.8.1
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -572,6 +582,25 @@ jobs:
           cd release-bundle
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+      - name: Sign release manifest (Minisign + Sigstore Cosign)
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        working-directory: release-bundle
+        run: |
+          echo "Signing SHA256SUMS.txt with Minisign Ed25519..."
+          go run ../scripts/minisign.go sign \
+            -m SHA256SUMS.txt \
+            -p ../minisign.pub \
+            -x SHA256SUMS.txt.minisig \
+            -t "timestamp:$(date +%s) file:SHA256SUMS.txt version:${{ steps.meta.outputs.version }}"
+          test -f SHA256SUMS.txt.minisig
+
+          echo "Signing SHA256SUMS.txt with Sigstore Cosign keyless OIDC..."
+          cosign sign-blob --yes \
+            --bundle SHA256SUMS.txt.sigstore.json \
+            SHA256SUMS.txt
+          test -f SHA256SUMS.txt.sigstore.json
 
       - name: Validate checksums against bundle
         working-directory: release-bundle
@@ -601,12 +630,29 @@ jobs:
           cat <<EOF > release-notes.md
           ## SendBeam ${TAG_VAL}
 
-          ### Release Assets & Checksums
+          ### Cryptographic Verification
 
-          All binaries and installer packages are cryptographically checksummed in \`SHA256SUMS.txt\` and accompanied by in-toto build provenance attestations and SPDX 2.3 Software Bill of Materials (SBOMs).
+          All release binaries and installer packages are cryptographically signed and verifiable end-to-end:
 
+          1. **Minisign (Ed25519):**
           \`\`\`bash
-          # Verify downloaded asset against SHA256SUMS.txt
+          # Verify SHA256SUMS.txt using the official SendBeam public key:
+          minisign -Vm SHA256SUMS.txt -P RWTcyDWHWbxnuo3LVM5mWoZrx0HDwSQzAZvXK1lPRcdtJxshUDxJh+rE
+          \`\`\`
+
+          2. **Sigstore Cosign (Keyless OIDC):**
+          \`\`\`bash
+          # Verify the GitHub Actions OIDC identity attestation:
+          cosign verify-blob \
+            --bundle SHA256SUMS.txt.sigstore.json \
+            --certificate-identity-regexp 'github.com/Akshay7273/sendbeam' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            SHA256SUMS.txt
+          \`\`\`
+
+          3. **SHA-256 Checksums:**
+          \`\`\`bash
+          # Verify downloaded asset checksum against the signed manifest:
           sha256sum -c SHA256SUMS.txt --ignore-missing
           \`\`\`
 
@@ -670,16 +716,18 @@ jobs:
             bash ./scripts/version-metadata.sh --github-output
           fi
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.8.1
+
       - name: Download release bundle
         uses: actions/download-artifact@v4
         with:
           name: sendbeam-release-bundle-${{ steps.meta.outputs.version }}
           path: bundle
 
-      - name: Verify checksums in bundle
-        working-directory: bundle
+      - name: Run Release Verification Gate (Minisign + Cosign + Checksums)
         run: |
-          sha256sum -c SHA256SUMS.txt
+          bash ./scripts/verify-release.sh --dir bundle --pubkey minisign.pub --strict
 
       - name: Unpack and smoke test Linux CLI binary
         working-directory: bundle

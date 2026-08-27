@@ -60,7 +60,23 @@ SendBeam is distributed as a Universal Mach-O binary bundle (`arm64` Apple Silic
 1. Download `SendBeam-macos-universal.dmg`.
 2. Double-click to mount the disk image.
 3. Drag **SendBeam.app** into your **Applications** folder.
-4. Launch SendBeam from Applications or Spotlight.
+4. Launch SendBeam from Applications.
+
+> [!NOTE]
+> **macOS Gatekeeper First Launch ($0 Budget / Unsigned Notice):**
+> SendBeam is free open-source software built on a $0 budget without paid Apple Developer ID certificates ($99/yr). On first launch, macOS Gatekeeper may display a prompt stating the developer cannot be verified.
+>
+> To launch safely after verifying checksums:
+>
+> 1. Right-click (or Control-click) **SendBeam.app** in Applications.
+> 2. Select **Open** from the context menu.
+> 3. Click **Open** in the confirmation dialog.
+>
+> Alternatively, remove the quarantine attribute via terminal:
+>
+> ```bash
+> xattr -d com.apple.quarantine /Applications/SendBeam.app
+> ```
 
 ---
 
@@ -95,6 +111,15 @@ SendBeam provides an NSIS executable installer, a standalone portable ZIP, and a
 1. Download and extract `SendBeam-windows-amd64-portable.zip`.
 2. Run `sendbeam-desktop.exe` directly from the extracted folder.
 
+> [!NOTE]
+> **Windows SmartScreen Prompt ($0 Budget / Unsigned Notice):**
+> SendBeam does not use commercial Microsoft Authenticode certificates ($300+/yr). Windows Defender SmartScreen may display an unknown publisher dialog ("Windows protected your PC").
+>
+> To proceed after verifying checksums:
+>
+> 1. Click **More info**.
+> 2. Click **Run anyway**.
+
 ---
 
 ### B. CLI Terminal Client
@@ -109,16 +134,36 @@ sendbeam version
 
 ---
 
-## 4. Checksum & Provenance Verification
+## 4. Cryptographic Checksum & Signature Verification
 
-All release packages and archives are hashed with SHA-256 and collected in the canonical manifest:
+All release packages and archives are cryptographically signed and hashed in `SHA256SUMS.txt`:
+
+### Option 1: Minisign (Ed25519) Verification
 
 ```bash
-# Download SHA256SUMS.txt along with your release package, then verify:
-sha256sum -c SHA256SUMS.txt
+# Verify SHA256SUMS.txt against the official SendBeam public key:
+minisign -Vm SHA256SUMS.txt -P RWTcyDWHWbxnuo3LVM5mWoZrx0HDwSQzAZvXK1lPRcdtJxshUDxJh+rE
 ```
 
-For cryptographic in-toto build provenance and SBOM verification, refer to [docs/supply-chain.md](supply-chain.md).
+### Option 2: Sigstore Cosign (Keyless OIDC) Verification
+
+```bash
+# Verify the GitHub Actions OIDC build identity attestation:
+cosign verify-blob \
+  --bundle SHA256SUMS.txt.sigstore.json \
+  --certificate-identity-regexp 'github.com/Akshay7273/sendbeam' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS.txt
+```
+
+### Option 3: SHA-256 Checksum Validation
+
+```bash
+# Verify your downloaded release file matches the signed manifest:
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+For full supply chain details and SBOM verification, refer to [docs/supply-chain.md](supply-chain.md).
 
 ---
 
