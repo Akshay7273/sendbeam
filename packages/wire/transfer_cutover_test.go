@@ -358,7 +358,9 @@ func TestSenderReceiverMidTransferCutoverDeterministic(t *testing.T) {
 		receiver.Handle(frame)
 		select {
 		case e := <-recvErrCh:
-			t.Fatalf("receiver aborted: %v", e)
+			if e != nil {
+				t.Fatalf("receiver aborted: %v", e)
+			}
 		default:
 		}
 	}
@@ -424,7 +426,9 @@ func TestSenderReceiverMidTransferCutoverDeterministic(t *testing.T) {
 				receiver.Handle(stale.frame)
 				select {
 				case e := <-recvErrCh:
-					t.Fatalf("stale old-path frame corrupted the receiver: %v", e)
+					if e != nil {
+						t.Fatalf("stale old-path frame corrupted the receiver: %v", e)
+					}
 				default:
 				}
 				continue
