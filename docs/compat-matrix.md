@@ -184,6 +184,33 @@ SendBeam v1.5 adds mutual cryptographic pairing, persistent trust management, re
 
 All 9 cross-client pairs (Browser ↔ CLI ↔ Desktop) interoperate seamlessly across both ephemeral one-time (`sendbeam/1`) and persistent trusted (`sendbeam/2`) sessions.
 
+## Distribution, Packaging & Self-Update Matrix (v1.6)
+
+SendBeam publishes cryptographically signed binaries, installers, and update channel manifests for all major desktop and server operating systems:
+
+| Platform / Target          | Packaging Format        | Signing & Integrity           | Update Mechanism                 | Package Manager Safe                 |
+| :------------------------- | :---------------------- | :---------------------------- | :------------------------------- | :----------------------------------- |
+| **Linux (amd64, arm64)**   | Static CLI tarball      | Minisign + Sigstore + SHA-256 | `sendbeam update` (in-place)     | N/A                                  |
+| **Linux (amd64)**          | Debian Package (`.deb`) | Minisign + Sigstore + SHA-256 | System `apt-get`                 | Detects `apt` (disables self-update) |
+| **Linux (amd64)**          | AppImage                | Minisign + Sigstore + SHA-256 | Desktop in-place swap + rollback | Yes                                  |
+| **macOS (amd64, arm64)**   | Universal CLI tarball   | Minisign + Sigstore + SHA-256 | `sendbeam update` (in-place)     | Detects Homebrew prefix              |
+| **macOS (Universal)**      | DMG Disk Image / `.app` | Minisign + Sigstore + SHA-256 | Desktop staged swap + rollback   | Yes                                  |
+| **Windows (amd64, arm64)** | CLI Zip Archive         | Minisign + Sigstore + SHA-256 | `sendbeam update` (in-place)     | Detects WinGet prefix                |
+| **Windows (amd64)**        | NSIS Installer (`.exe`) | Minisign + Sigstore + SHA-256 | NSIS silent relaunch installer   | Yes                                  |
+| **Windows (amd64)**        | Portable Zip Archive    | Minisign + Sigstore + SHA-256 | Manual update                    | Yes                                  |
+
+## Server Hardening & Reverse-Proxy Compatibility (v1.6)
+
+The hardened signaling and relay server (`sendbeamd`) runs standalone or behind modern reverse proxies with strict client IP extraction and zero-PII metrics:
+
+| Reverse Proxy / Gateway | Header Protocol                        | Client IP Resolution (`SENDBEAM_TRUSTED_PROXIES`)  |  WebSocket Streaming (`/ws`)   |      Health & Metrics Probes      |
+| :---------------------- | :------------------------------------- | :------------------------------------------------- | :----------------------------: | :-------------------------------: |
+| **Direct Standalone**   | Direct TCP / TLS                       | Direct `RemoteAddr` IP (ignores forwarded headers) |               ✓                | `/healthz`, `/readyz`, `/metrics` |
+| **Cloudflare Proxy**    | `CF-Connecting-IP` / `X-Forwarded-For` | Configured Cloudflare IP CIDR blocks               |     ✓ (WebSocket enabled)      | `/healthz`, `/readyz`, `/metrics` |
+| **Nginx**               | `X-Forwarded-For` / `X-Real-IP`        | Configured upstream proxy CIDR / VPC subnet        | ✓ (`proxy_set_header Upgrade`) | `/healthz`, `/readyz`, `/metrics` |
+| **Caddy**               | `X-Forwarded-For`                      | Configured proxy CIDR / Docker subnet              |      ✓ (`reverse_proxy`)       | `/healthz`, `/readyz`, `/metrics` |
+| **Traefik**             | `X-Forwarded-For`                      | Configured forwardedHeaders trustedIPs             |               ✓                | `/healthz`, `/readyz`, `/metrics` |
+
 ## Interpretation
 
 - **Restrictive networks engage the relay without a blind fixed wait**: there is no fixed

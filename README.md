@@ -107,17 +107,56 @@ on Wails v3, running the shared Go engine.
 - **Native system UX.** OS drag-and-drop file transfers, system native file pickers, and system tray integration.
 - **Unified protocol.** Interoperates seamlessly with browser and CLI peers.
 - **Cross-platform packaging.** Windows portable ZIP & NSIS installer, macOS Universal application (.app & .dmg), and Linux AppImage & Debian package (.deb).
+- **Built-in self-updater.** Automatic update notifications, release notes inspector, and atomic in-place replacement with automatic rollback on failure.
 
-> [!NOTE]
-> Public signed installers and automated update channels will be published in a future release. Current packages can be built from source or downloaded from CI artifacts.
+Download the latest release for your platform from [GitHub Releases](https://github.com/Akshay7273/sendbeam/releases).
 
 ```bash
-# Build desktop native binary (requires platform WebView dependencies)
+# Build desktop native binary locally (requires platform WebView dependencies)
 cd apps/desktop
 go build -o sendbeam-desktop .
 ```
 
 See [apps/desktop/README.md](apps/desktop/README.md) and [docs/distribution.md](docs/distribution.md) for platform-specific packaging instructions.
+
+## Verify Your Download
+
+SendBeam release packages are hashed with SHA-256 and signed cryptographically with both **Minisign (Ed25519)** and **Sigstore Cosign (Keyless OIDC)**:
+
+### 1. Automated Verification Script
+
+```bash
+# Clone the repository and run the verification script against your downloaded artifacts:
+./scripts/verify-release.sh ./dist
+```
+
+### 2. Manual Verification
+
+```bash
+# Verify the SHA256SUMS.txt signature with Minisign:
+minisign -Vm SHA256SUMS.txt -P RWTcyDWHWbxnuo3LVM5mWoZrx0HDwSQzAZvXK1lPRcdtJxshUDxJh+rE
+
+# Verify SHA-256 checksums of the downloaded files:
+sha256sum -c SHA256SUMS.txt --ignore-missing
+
+# Verify with Sigstore Cosign (keyless):
+cosign verify-blob \
+  --bundle SHA256SUMS.txt.sigstore.json \
+  --certificate-identity-regexp 'https://github.com/Akshay7273/sendbeam/\.github/workflows/release\.yml@.*' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  SHA256SUMS.txt
+```
+
+See [docs/supply-chain.md](docs/supply-chain.md) and [docs/install.md](docs/install.md) for full supply-chain security documentation.
+
+## Mobile Web & Progressive Web App (PWA)
+
+SendBeam is fully optimized for mobile devices and installable as a PWA on Android and iOS:
+
+- **1-Tap Sharing:** Integrate directly with Android and iOS system share sheets via the native Web Share API (`navigator.share`).
+- **Screen Wake Lock:** Keeps your screen active during large file transfers without unnatural battery drain.
+- **Strict Online-Only Transfers:** The Service Worker precaches the app shell for instant startup while **strictly never caching WebSockets, WebRTC signaling, or transfer payloads**.
+- **Responsive Touch UX:** Min 44px tap targets, QR code scanning, and notch safe-area handling.
 
 ## Trusted Device Mesh & Automation
 
@@ -142,9 +181,14 @@ docker pull ghcr.io/akshay7273/sendbeam
 docker run -d --name sendbeam -p 8443:8443 ghcr.io/akshay7273/sendbeam
 ```
 
-The image rebuilds on every push to `main` and on each `v*` tag. Configuration, TLS, STUN,
-relay limits, and a `/metrics` endpoint in Prometheus format are covered in
-[docs/HOSTING.md](docs/HOSTING.md).
+The production server includes enterprise-grade hardening:
+
+- **Per-IP Rate Limiting & Concurrency Quotas:** Token-bucket rate limiting and connection caps to mitigate abuse.
+- **Anti-Brute-Force Protection:** Online room-code guessing penalty bucket.
+- **Trusted Reverse-Proxy Support:** Safe multi-hop `X-Forwarded-For` and `CF-Connecting-IP` handling behind Cloudflare, Nginx, Caddy, or Traefik.
+- **Observability:** `/healthz` (liveness), `/readyz` (readiness + graceful drain), and zero-PII `/metrics` in Prometheus format.
+
+Configuration, TLS, STUN/TURN, and deployment examples are covered in [docs/HOSTING.md](docs/HOSTING.md).
 
 ## Security
 
@@ -175,6 +219,7 @@ Full analysis, accepted limitations, and the trust boundary are in the
 - [Supply Chain Integrity](docs/supply-chain.md) — build provenance attestations, SPDX 2.3 SBOMs, checksum manifests
 - [Updater Architecture](docs/updater.md) — self-update channels, cryptographic verification, and rollback safety
 - [Distribution](docs/distribution.md) — multi-platform packaging, artifacts, and build metadata
+- [Release Gate v1.6](docs/RELEASE-v1.6.md) — v1.6 milestone criteria, verification evidence, and release checklist
 - [Release Gate v1.5](docs/RELEASE-v1.5.md) — v1.5 milestone criteria, verification evidence, and release checklist
 - [Release Gate v1.4](docs/RELEASE-v1.4.md) — v1.4 milestone criteria, verification evidence, and release checklist
 - [Protocol specification](docs/protocol.md) — `sendbeam/1` & `sendbeam/2` wire protocols
