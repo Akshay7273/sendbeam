@@ -41,14 +41,16 @@ type CheckResult struct {
 
 // Updater coordinates checking, downloading, and applying updates.
 type Updater struct {
-	CurrentVersion Version
-	Channel        Channel
-	Repository     string
-	BaseURL        string // Default https://api.github.com
-	HTTPClient     *http.Client
-	TargetOS       string
-	TargetArch     string
-	ExecutablePath string
+	CurrentVersion    Version
+	Channel           Channel
+	Repository        string
+	BaseURL           string // Default DefaultUpdateBaseURL (https://akshay7273.github.io/sendbeam/updates)
+	MinisignPublicKey string // Pinned Ed25519 public key
+	UseGitHubAPI      bool   // Direct GitHub API releases fallback mode
+	HTTPClient        *http.Client
+	TargetOS          string
+	TargetArch        string
+	ExecutablePath    string
 
 	mu sync.Mutex
 }
@@ -67,6 +69,20 @@ func WithChannel(ch Channel) Option {
 func WithBaseURL(rawURL string) Option {
 	return func(u *Updater) {
 		u.BaseURL = rawURL
+	}
+}
+
+// WithGitHubAPI forces using the direct GitHub Releases API mode.
+func WithGitHubAPI(enabled bool) Option {
+	return func(u *Updater) {
+		u.UseGitHubAPI = enabled
+	}
+}
+
+// WithMinisignPublicKey overrides the public key for manifest signature verification.
+func WithMinisignPublicKey(pubKey string) Option {
+	return func(u *Updater) {
+		u.MinisignPublicKey = pubKey
 	}
 }
 
@@ -105,10 +121,12 @@ func New(currentVerStr string, repo string, opts ...Option) (*Updater, error) {
 	}
 
 	u := &Updater{
-		CurrentVersion: ver,
-		Channel:        ChannelStable,
-		Repository:     repo,
-		BaseURL:        "https://api.github.com",
+		CurrentVersion:    ver,
+		Channel:           ChannelStable,
+		Repository:        repo,
+		BaseURL:           DefaultUpdateBaseURL,
+		MinisignPublicKey: DefaultMinisignPublicKey,
+		UseGitHubAPI:      false,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -139,7 +157,53 @@ func (u *Updater) Check(ctx context.Context) (*CheckResult, error) {
 		return res, nil
 	}
 
-	// Fetch releases
+	// If BaseURL points to GitHub API releases endpoint or UseGitHubAPI is set, use GitHub API releases fetcher
+	if u.UseGitHubAPI || strings.Contains(u.BaseURL, "api.github.com") {
+		return u.checkGitHubReleases(ctx, res)
+	}
+
+	// Production channel manifest flow
+	manifest, err := u.fetchSignedManifest(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	targetVer, err := ParseVersion(manifest.Version)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid version %q in manifest: %v", ErrManifestMalformed, manifest.Version, err)
+	}
+
+	// Validate channel policy
+	if !targetVer.CompatibleWithChannel(u.Channel) {
+		return nil, fmt.Errorf("%w: version %s incompatible with channel %s", ErrChannelMismatch, targetVer, u.Channel)
+	}
+
+	res.LatestVersion = targetVer
+	res.PublishedAt = manifest.PublishedAt
+	res.ReleaseNotes = manifest.ReleaseNotes
+
+	// Downgrade protection: candidate version must be strictly greater than active version
+	if !targetVer.IsGreaterThan(u.CurrentVersion) {
+		res.UpdateAvailable = false
+		res.Message = fmt.Sprintf("SendBeam is up to date (version %s on channel %s).", u.CurrentVersion, u.Channel)
+		return res, nil
+	}
+
+	// Find matching target platform asset
+	asset, err := manifest.FindTargetAsset(u.TargetOS, u.TargetArch)
+	if err != nil {
+		return nil, fmt.Errorf("checking update asset: %w", err)
+	}
+
+	res.UpdateAvailable = true
+	res.TargetAsset = asset
+	res.Message = fmt.Sprintf("Update available: %s → %s (%s)", u.CurrentVersion, targetVer, u.Channel)
+
+	return res, nil
+}
+
+// checkGitHubReleases evaluates updates via legacy/direct GitHub Releases API.
+func (u *Updater) checkGitHubReleases(ctx context.Context, res *CheckResult) (*CheckResult, error) {
 	releases, err := u.fetchReleases(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetching release information: %w", err)
@@ -150,7 +214,6 @@ func (u *Updater) Check(ctx context.Context) (*CheckResult, error) {
 		return res, nil
 	}
 
-	// Select the highest eligible release matching channel policy
 	var candidate *ReleaseMetadata
 	for i := range releases {
 		rel := &releases[i]
@@ -177,7 +240,6 @@ func (u *Updater) Check(ctx context.Context) (*CheckResult, error) {
 		return res, nil
 	}
 
-	// Find matching target platform asset
 	asset, err := candidate.FindTargetAsset(u.TargetOS, u.TargetArch)
 	if err != nil {
 		return nil, fmt.Errorf("checking update asset: %w", err)
@@ -188,6 +250,77 @@ func (u *Updater) Check(ctx context.Context) (*CheckResult, error) {
 	res.Message = fmt.Sprintf("Update available: %s → %s (%s)", u.CurrentVersion, candidate.Version, u.Channel)
 
 	return res, nil
+}
+
+// fetchSignedManifest downloads <baseURL>/<channel>.json and <baseURL>/<channel>.json.minisig and verifies the signature.
+func (u *Updater) fetchSignedManifest(ctx context.Context) (*ChannelManifest, error) {
+	channelName := u.Channel.String()
+	manifestURL := fmt.Sprintf("%s/%s.json", strings.TrimSuffix(u.BaseURL, "/"), channelName)
+	sigURL := fmt.Sprintf("%s/%s.json.minisig", strings.TrimSuffix(u.BaseURL, "/"), channelName)
+
+	// Fetch manifest JSON
+	reqJSON, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating manifest request: %w", err)
+	}
+	reqJSON.Header.Set("User-Agent", "SendBeam-Updater/"+u.CurrentVersion.String())
+
+	respJSON, err := u.HTTPClient.Do(reqJSON)
+	if err != nil {
+		return nil, fmt.Errorf("fetching update manifest %s: %w", manifestURL, err)
+	}
+	defer func() {
+		_ = respJSON.Body.Close()
+	}()
+
+	if respJSON.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching update manifest failed with HTTP %d %s", respJSON.StatusCode, respJSON.Status)
+	}
+
+	manifestBytes, err := io.ReadAll(respJSON.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading manifest payload: %w", err)
+	}
+
+	// Fetch signature
+	reqSig, err := http.NewRequestWithContext(ctx, http.MethodGet, sigURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating signature request: %w", err)
+	}
+	reqSig.Header.Set("User-Agent", "SendBeam-Updater/"+u.CurrentVersion.String())
+
+	respSig, err := u.HTTPClient.Do(reqSig)
+	if err != nil {
+		return nil, fmt.Errorf("fetching update manifest signature %s: %w", sigURL, err)
+	}
+	defer func() {
+		_ = respSig.Body.Close()
+	}()
+
+	if respSig.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: missing signature file (HTTP %d %s)", ErrInvalidSignature, respSig.StatusCode, respSig.Status)
+	}
+
+	sigBytes, err := io.ReadAll(respSig.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading signature payload: %w", err)
+	}
+
+	// Cryptographic Minisign verification
+	if err := VerifyMinisignSignature(manifestBytes, string(sigBytes), u.MinisignPublicKey); err != nil {
+		return nil, err
+	}
+
+	var manifest ChannelManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return nil, fmt.Errorf("%w: JSON unmarshal error: %v", ErrManifestMalformed, err)
+	}
+
+	if manifest.Version == "" {
+		return nil, fmt.Errorf("%w: missing version in manifest", ErrManifestMalformed)
+	}
+
+	return &manifest, nil
 }
 
 // Apply downloads and atomically replaces the active executable with the new version.
