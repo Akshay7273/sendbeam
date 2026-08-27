@@ -106,13 +106,17 @@ human string, its security rests on the online, single-attempt nature of SPAKE2 
 cannot brute-force it offline) combined with 1:1 pairing and the short room lifetime, not
 on the code's length.
 
-### Denial of service
+### Denial of service & anti-abuse defenses
 
 Per-session relay queue, bandwidth, frame-size, and lifetime-bytes caps
 (`SENDBEAM_RELAY_*`, see `HOSTING.md`); message-size and per-connection message-rate caps;
-per-IP connection-rate limits; and a room reaper on the idle timeout. A WSS origin
-allowlist on the signaling upgrade (`SENDBEAM_ALLOWED_ORIGINS`) blocks cross-site socket
-abuse. All limits are operator-tunable and the defaults keep memory in the low tens of MiB.
+per-IP connection-rate limits and active connection quotas (`SENDBEAM_MAX_CONNS_PER_IP`);
+per-IP room creation rate limiting; failed-join penalty buckets to mitigate online room-code
+brute-force guessing; global room and connection capacity ceilings; and a periodic room reaper on
+the idle timeout. A WSS origin allowlist on the signaling upgrade (`SENDBEAM_ALLOWED_ORIGINS`)
+blocks cross-site socket abuse, and trusted reverse-proxy CIDR filtering (`SENDBEAM_TRUSTED_PROXIES`)
+prevents client IP spoofing via forged `X-Forwarded-For` headers. All limits are operator-tunable
+and defaults keep server memory strictly bounded under load.
 
 ### Malicious sender (receiver-side safety)
 
@@ -121,17 +125,21 @@ file-count cap, quota checks, and the in-flight block bound (`DEFAULT_INFLIGHT_B
 prevent resource exhaustion; the receiver confirms before writing outside OPFS; per-block
 and whole-file digests are verified before completion is reported.
 
-### Web-facing hardening
+### Web-facing hardening & zero-PII observability
 
 The HTTP surface sets a strict CSP (`default-src 'self'`, `connect-src 'self' wss: https:`,
 `script-src 'self' 'wasm-unsafe-eval'`, `object-src 'none'`, `base-uri 'none'`,
 `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and
-`Referrer-Policy: no-referrer`. The server logs room numbers and metadata only — never the
-invite words, filenames, plaintext, or keys.
+`Referrer-Policy: no-referrer`.
+
+The server enforces a strict **Zero-PII Observability Guarantee**:
+
+- Structured server logs (`SENDBEAM_LOG_FORMAT=text|json`) record only room numbers, error codes, and message counts — never client IP addresses, invite words, filenames, payload plaintext, or cryptographic keys.
+- Prometheus metrics (`GET /metrics`) expose only aggregate gauges and monotonic counters (e.g. `sendbeam_rooms`, `sendbeam_relay_bytes_total`, `sendbeam_errors_total{code=...}`) with low-cardinality label dimensions — zero client identifiers or user data.
 
 ## What the server can and cannot see
 
-- **Cannot see:** the invite words, file bytes, filenames, digests, session keys.
+- **Cannot see:** the invite words, file bytes, filenames, digests, session keys, client IPs in metrics/logs.
 - **Can see:** the room number, socket metadata, SDP/ICE needed to route, and — on the
   relay path only — ciphertext byte counts and timing.
 

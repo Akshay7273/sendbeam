@@ -1,5 +1,5 @@
-// Package httpserver wires the HTTP surface for sendbeamd: health, security headers,
-// and serving the web app — either from a built directory (prod) or by proxying the
+// Package httpserver wires the HTTP surface for sendbeamd: health, readiness, security headers,
+// metrics, and serving the web app — either from a built directory (prod) or by proxying the
 // Vite dev server (dev). The signaling handler mounts on the same router.
 package httpserver
 
@@ -26,12 +26,15 @@ import (
 
 // Config controls how sendbeamd serves the web app and terminates TLS.
 type Config struct {
-	Addr      string // listen address, e.g. ":8443"
-	TLSCert   string // path to TLS cert (PEM); empty => plain HTTP (dev/testing only)
-	TLSKey    string // path to TLS key (PEM)
-	WebDir    string // directory of the built web bundle to serve (prod)
-	DevProxy  string // URL of the Vite dev server to proxy to (dev); overrides WebDir
-	PublicURL string // public base URL for invite links (e.g. https://send.example.com/); empty = auto-detect from page
+	Addr            string        // listen address, e.g. ":8443"
+	TLSCert         string        // path to TLS cert (PEM); empty => plain HTTP (dev/testing only)
+	TLSKey          string        // path to TLS key (PEM)
+	WebDir          string        // directory of the built web bundle to serve (prod)
+	DevProxy        string        // URL of the Vite dev server to proxy to (dev); overrides WebDir
+	PublicURL       string        // public base URL for invite links (e.g. https://send.example.com/); empty = auto-detect from page
+	LogFormat       string        // "text" or "json"
+	LogLevel        string        // "debug", "info", "warn", "error"
+	ShutdownTimeout time.Duration // timeout for graceful shutdown draining
 
 	// ICEServerURLs are STUN (and future TURN) URLs published to clients via /config.json so
 	// the web app gathers direct-path candidates against the operator's chosen servers instead
@@ -43,16 +46,44 @@ type Config struct {
 
 // ConfigFromEnv reads configuration from SENDBEAM_* environment variables with defaults.
 func ConfigFromEnv() Config {
-	return Config{
-		Addr:          env("SENDBEAM_ADDR", ":8443"),
-		TLSCert:       os.Getenv("SENDBEAM_TLS_CERT"),
-		TLSKey:        os.Getenv("SENDBEAM_TLS_KEY"),
-		WebDir:        os.Getenv("SENDBEAM_WEB_DIR"),
-		DevProxy:      os.Getenv("SENDBEAM_WEB_DEV_PROXY"),
-		PublicURL:     os.Getenv("SENDBEAM_PUBLIC_URL"),
-		ICEServerURLs: splitList(os.Getenv("SENDBEAM_ICE_SERVERS")),
-		Signal:        signal.ConfigFromEnv(),
+	shutdownTimeout := 15 * time.Second
+	if d, ok := envDuration("SENDBEAM_SHUTDOWN_TIMEOUT"); ok {
+		shutdownTimeout = d
 	}
+
+	return Config{
+		Addr:            env("SENDBEAM_ADDR", ":8443"),
+		TLSCert:         os.Getenv("SENDBEAM_TLS_CERT"),
+		TLSKey:          os.Getenv("SENDBEAM_TLS_KEY"),
+		WebDir:          os.Getenv("SENDBEAM_WEB_DIR"),
+		DevProxy:        os.Getenv("SENDBEAM_WEB_DEV_PROXY"),
+		PublicURL:       os.Getenv("SENDBEAM_PUBLIC_URL"),
+		LogFormat:       env("SENDBEAM_LOG_FORMAT", "text"),
+		LogLevel:        env("SENDBEAM_LOG_LEVEL", "info"),
+		ShutdownTimeout: shutdownTimeout,
+		ICEServerURLs:   splitList(os.Getenv("SENDBEAM_ICE_SERVERS")),
+		Signal:          signal.ConfigFromEnv(),
+	}
+}
+
+// BuildLogger creates an *slog.Logger based on the configured log format and log level.
+func BuildLogger(format, level string) *slog.Logger {
+	var lvl slog.Level
+	switch strings.ToLower(level) {
+	case "debug":
+		lvl = slog.LevelDebug
+	case "warn":
+		lvl = slog.LevelWarn
+	case "error":
+		lvl = slog.LevelError
+	default:
+		lvl = slog.LevelInfo
+	}
+	opts := &slog.HandlerOptions{Level: lvl}
+	if strings.ToLower(format) == "json" {
+		return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+	}
+	return slog.New(slog.NewTextHandler(os.Stderr, opts))
 }
 
 // Mode reports how the web app is being served, for logging.
@@ -71,19 +102,22 @@ func (c Config) Mode() string {
 type Server struct {
 	http   *http.Server
 	cfg    Config
+	hub    *signal.Hub
 	cancel context.CancelFunc
 }
 
 // New builds a Server with the SendBeam router and sensible timeouts.
 func New(cfg Config, logger *slog.Logger) (*Server, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	handler, err := router(ctx, cfg, logger)
+	hub := signal.NewHub(ctx, cfg.Signal, logger)
+	handler, err := router(ctx, cfg, hub, logger)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
 	return &Server{
 		cfg:    cfg,
+		hub:    hub,
 		cancel: cancel,
 		http: &http.Server{
 			Addr:              cfg.Addr,
@@ -96,6 +130,11 @@ func New(cfg Config, logger *slog.Logger) (*Server, error) {
 	}, nil
 }
 
+// Hub returns the server's signaling hub.
+func (s *Server) Hub() *signal.Hub {
+	return s.hub
+}
+
 // ListenAndServe serves over TLS when a cert/key are configured, else plain HTTP.
 func (s *Server) ListenAndServe() error {
 	if s.cfg.TLSCert != "" && s.cfg.TLSKey != "" {
@@ -104,8 +143,11 @@ func (s *Server) ListenAndServe() error {
 	return s.http.ListenAndServe()
 }
 
-// Shutdown gracefully stops the server and its background workers.
+// Shutdown gracefully stops the server and drains active connections before exit.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.hub != nil {
+		_ = s.hub.Drain(ctx)
+	}
 	s.cancel()
 	return s.http.Shutdown(ctx)
 }
@@ -117,7 +159,14 @@ type configResponse struct {
 	ICEServers []wire.ICEEntry `json:"iceServers"`
 }
 
-func router(ctx context.Context, cfg Config, logger *slog.Logger) (http.Handler, error) {
+type readyResponse struct {
+	Status      string `json:"status"`
+	Rooms       int    `json:"rooms"`
+	Connections int    `json:"connections"`
+	Draining    bool   `json:"draining"`
+}
+
+func router(ctx context.Context, cfg Config, hub *signal.Hub, logger *slog.Logger) (http.Handler, error) {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -130,10 +179,31 @@ func router(ctx context.Context, cfg Config, logger *slog.Logger) (http.Handler,
 		return nil, fmt.Errorf("config: invalid SENDBEAM_ICE_SERVERS: %w", err)
 	}
 
+	// Liveness check: returns 200 OK as long as the process is alive.
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	// Readiness check: returns 200 OK during normal operation, and 503 Service Unavailable when draining.
+	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		m := hub.Metrics()
+		draining := hub.IsDraining()
+		status := "ready"
+		code := http.StatusOK
+		if draining {
+			status = "draining"
+			code = http.StatusServiceUnavailable
+		}
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(readyResponse{
+			Status:      status,
+			Rooms:       m.Rooms,
+			Connections: m.ActiveConnections,
+			Draining:    draining,
+		})
 	})
 
 	r.Get("/config.json", func(w http.ResponseWriter, _ *http.Request) {
@@ -148,8 +218,7 @@ func router(ctx context.Context, cfg Config, logger *slog.Logger) (http.Handler,
 		})
 	})
 
-	// Signaling endpoint: origin-checked WebSocket rendezvous.
-	hub := signal.NewHub(ctx, cfg.Signal, logger)
+	// Signaling endpoint: origin-checked, rate-limited WebSocket rendezvous.
 	r.Handle("/ws", hub.Handler(ctx))
 	r.Handle("/metrics", hub.MetricsHandler())
 
@@ -164,7 +233,7 @@ func router(ctx context.Context, cfg Config, logger *slog.Logger) (http.Handler,
 	case cfg.WebDir != "":
 		r.Handle("/*", spaFileServer(cfg.WebDir))
 	default:
-		logger.Warn("no web source configured; serving /healthz only")
+		logger.Warn("no web source configured; serving /healthz and /readyz only")
 	}
 
 	return r, nil
@@ -202,6 +271,18 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func envDuration(key string) (time.Duration, bool) {
+	v := os.Getenv(key)
+	if v == "" {
+		return 0, false
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0, false
+	}
+	return d, true
 }
 
 // splitList splits a comma-separated env list, trimming whitespace and dropping empty items.

@@ -11,16 +11,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sendbeam/server/internal/signal"
 	"github.com/sendbeam/wire"
 )
 
-func testRouter(t *testing.T, cfg Config) http.Handler {
+func testRouterWithHub(t *testing.T, cfg Config) (http.Handler, *signal.Hub) {
 	t.Helper()
-	h, err := router(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hub := signal.NewHub(ctx, cfg.Signal, logger)
+	h, err := router(ctx, cfg, hub, logger)
 	if err != nil {
 		t.Fatalf("router: %v", err)
 	}
+	return h, hub
+}
+
+func testRouter(t *testing.T, cfg Config) http.Handler {
+	t.Helper()
+	h, _ := testRouterWithHub(t, cfg)
 	return h
 }
 
@@ -39,6 +51,53 @@ func TestHealthz(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Fatalf("status field = %q, want ok", body["status"])
+	}
+}
+
+func TestReadyz(t *testing.T) {
+	h, hub := testRouterWithHub(t, Config{})
+
+	// Normal readiness
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var ready readyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &ready); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if ready.Status != "ready" || ready.Draining {
+		t.Fatalf("expected ready response: %+v", ready)
+	}
+
+	// Drain in background
+	go func() { _ = hub.Drain(context.Background()) }()
+	time.Sleep(10 * time.Millisecond)
+
+	// Draining readiness (503 Service Unavailable)
+	recDraining := httptest.NewRecorder()
+	h.ServeHTTP(recDraining, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if recDraining.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recDraining.Code)
+	}
+	var draining readyResponse
+	if err := json.Unmarshal(recDraining.Body.Bytes(), &draining); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if draining.Status != "draining" || !draining.Draining {
+		t.Fatalf("expected draining response: %+v", draining)
+	}
+}
+
+func TestBuildLogger(t *testing.T) {
+	l1 := BuildLogger("json", "debug")
+	if l1 == nil {
+		t.Fatal("expected json logger")
+	}
+	l2 := BuildLogger("text", "error")
+	if l2 == nil {
+		t.Fatal("expected text logger")
 	}
 }
 
@@ -163,9 +222,11 @@ func TestConfigEndpointNoICEServersOmitsEmpty(t *testing.T) {
 }
 
 func TestConfigEndpointInvalidICEServersFailsStartup(t *testing.T) {
-	if h, err := router(context.Background(), Config{
-		ICEServerURLs: []string{"://not-a-url"},
-	}, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := Config{ICEServerURLs: []string{"://not-a-url"}}
+	hub := signal.NewHub(ctx, cfg.Signal, logger)
+	if h, err := router(ctx, cfg, hub, logger); err == nil {
 		t.Errorf("expected router error for malformed ICE URL, got handler %v", h)
 	}
 }
