@@ -624,6 +624,21 @@ jobs:
           subject-path: release-bundle/SendBeam-*
           sbom-path: release-bundle/sendbeam-desktop.spdx.json
 
+      - name: Generate Signed Update Channel Manifests
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          mkdir -p updates
+          go run ./scripts/generate-update-manifest.go \
+            --version "${{ steps.meta.outputs.version }}" \
+            --tag "${{ inputs.tag || github.ref_name }}" \
+            --channel "auto" \
+            --sums release-bundle/SHA256SUMS.txt \
+            --dir release-bundle \
+            --pubkey minisign.pub \
+            --out updates
+          cp updates/* release-bundle/
+
       - name: Generate release notes
         run: |
           TAG_VAL="${{ inputs.tag || github.ref_name }}"
@@ -728,6 +743,17 @@ jobs:
       - name: Run Release Verification Gate (Minisign + Cosign + Checksums)
         run: |
           bash ./scripts/verify-release.sh --dir bundle --pubkey minisign.pub --strict
+
+      - name: Verify update channel manifests
+        run: |
+          test -f bundle/beta.json
+          test -f bundle/beta.json.minisig
+          go run ./scripts/minisign.go verify -m bundle/beta.json -p minisign.pub -x bundle/beta.json.minisig
+          if [ "${{ steps.meta.outputs.is_prerelease }}" != "true" ]; then
+            test -f bundle/stable.json
+            test -f bundle/stable.json.minisig
+            go run ./scripts/minisign.go verify -m bundle/stable.json -p minisign.pub -x bundle/stable.json.minisig
+          fi
 
       - name: Unpack and smoke test Linux CLI binary
         working-directory: bundle

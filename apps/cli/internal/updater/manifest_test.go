@@ -54,3 +54,82 @@ func TestTargetNames(t *testing.T) {
 		t.Errorf("unexpected windows binary name %q", got)
 	}
 }
+
+func TestChannelManifest_FindTargetAsset(t *testing.T) {
+	manifest := ChannelManifest{
+		SchemaVersion: 1,
+		Version:       "1.6.0",
+		Channel:       "stable",
+		Assets: map[string]ReleaseAsset{
+			"linux-amd64": {
+				Name:        "sendbeam-cli-linux-amd64.tar.gz",
+				DownloadURL: "https://example.com/sendbeam-cli-linux-amd64.tar.gz",
+				SHA256:      "4a7f123456789012345678901234567890123456789012345678901234567890",
+				Size:        1000,
+			},
+			"windows-amd64": {
+				Name:        "sendbeam-cli-windows-amd64.zip",
+				DownloadURL: "https://example.com/sendbeam-cli-windows-amd64.zip",
+				SHA256:      "5b8e123456789012345678901234567890123456789012345678901234567890",
+				Size:        2000,
+			},
+		},
+	}
+
+	asset, err := manifest.FindTargetAsset("linux", "amd64")
+	if err != nil {
+		t.Fatalf("FindTargetAsset(linux, amd64) failed: %v", err)
+	}
+	if asset.Name != "sendbeam-cli-linux-amd64.tar.gz" {
+		t.Errorf("unexpected asset name: %s", asset.Name)
+	}
+
+	assetWin, err := manifest.FindTargetAsset("windows", "amd64")
+	if err != nil {
+		t.Fatalf("FindTargetAsset(windows, amd64) failed: %v", err)
+	}
+	if assetWin.Name != "sendbeam-cli-windows-amd64.zip" {
+		t.Errorf("unexpected asset name: %s", assetWin.Name)
+	}
+
+	_, err = manifest.FindTargetAsset("freebsd", "arm")
+	if err == nil {
+		t.Error("expected error for unsupported platform, got nil")
+	}
+}
+
+func TestVerifyMinisignSignature(t *testing.T) {
+	// Generate mock keypair seed (32 bytes hex)
+	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
+	testPub := DefaultMinisignPublicKey
+
+	payload := []byte(`{"version":"1.6.0","channel":"stable"}`)
+
+	sig, err := SignMinisign(payload, testSeed, testPub, "stable.json")
+	if err != nil {
+		t.Fatalf("SignMinisign failed: %v", err)
+	}
+
+	// 1. Valid signature
+	if err := VerifyMinisignSignature(payload, sig, testPub); err != nil {
+		t.Fatalf("VerifyMinisignSignature failed on valid signature: %v", err)
+	}
+
+	// 2. Tampered payload
+	tamperedPayload := []byte(`{"version":"1.6.0","channel":"tampered"}`)
+	if err := VerifyMinisignSignature(tamperedPayload, sig, testPub); err == nil {
+		t.Error("expected signature error on tampered payload, got nil")
+	}
+
+	// 3. Tampered signature
+	tamperedSig := strings.Replace(sig, "RWT", "AAA", 1)
+	if err := VerifyMinisignSignature(payload, tamperedSig, testPub); err == nil {
+		t.Error("expected signature error on tampered signature, got nil")
+	}
+
+	// 4. Wrong public key
+	wrongPub := "RWSfFakePublicKeyForTestingOnly1234567890123456789012345678"
+	if err := VerifyMinisignSignature(payload, sig, wrongPub); err == nil {
+		t.Error("expected signature error on wrong public key, got nil")
+	}
+}

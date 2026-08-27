@@ -10,24 +10,63 @@ SendBeam provides a framework-independent Go updater engine (`apps/cli/internal/
 
 ---
 
-## 2. Distribution Channels
+## 2. Distribution Channels & Production Endpoints
 
-SendBeam defines three formal distribution channels:
+SendBeam defines three formal distribution channels hosted on GitHub Pages:
 
-| Channel                | Description                    | Allowed Release Types                                 | Downgrade / Prerelease Rule                                                        |
-| :--------------------- | :----------------------------- | :---------------------------------------------------- | :--------------------------------------------------------------------------------- |
-| **`stable`** (Default) | Official production releases.  | Stable releases only (`vX.Y.Z`).                      | **Never** checks or applies prereleases, beta builds, or RC tags.                  |
-| **`beta`**             | Early-access candidate builds. | Stable + Prerelease (`vX.Y.Z-beta.N`, `vX.Y.Z-rc.N`). | Tracks both stable and candidate builds.                                           |
-| **`dev`**              | Local / development builds.    | Untagged / `dev` versions.                            | Informs user they are on a dev build; automated updates are skipped unless forced. |
+| Channel                | Description                    | Production Endpoint Manifest                                | Allowed Release Types                                 | Downgrade / Prerelease Rule                                                        |
+| :--------------------- | :----------------------------- | :---------------------------------------------------------- | :---------------------------------------------------- | :--------------------------------------------------------------------------------- |
+| **`stable`** (Default) | Official production releases.  | `https://akshay7273.github.io/sendbeam/updates/stable.json` | Stable releases only (`vX.Y.Z`).                      | **Never** checks or applies prereleases, beta builds, or RC tags.                  |
+| **`beta`**             | Early-access candidate builds. | `https://akshay7273.github.io/sendbeam/updates/beta.json`   | Stable + Prerelease (`vX.Y.Z-beta.N`, `vX.Y.Z-rc.N`). | Tracks both stable and candidate builds.                                           |
+| **`dev`**              | Local / development builds.    | —                                                           | Untagged / `dev` versions.                            | Informs user they are on a dev build; automated updates are skipped unless forced. |
 
 ---
 
-## 3. Cryptographic Verification & Invariants
+## 3. Cryptographic Manifest Verification & Security Invariants
 
-1. **Transport Security:** Release metadata and checksum manifests are retrieved exclusively over HTTPS.
-2. **Authoritative Hash Verification:** Every downloaded artifact is streamed through a SHA-256 hasher and verified against the canonical checksum manifest (`SHA256SUMS.txt`) before touching the active binary.
-3. **Downgrade Rejection:** Candidate versions must be strictly greater than the currently running version according to SemVer 2.0.0 precedence rules. Equal or older versions are rejected.
-4. **Platform Matching:** Artifact names are matched strictly against target OS and architecture (`sendbeam-cli-<os>-<arch>.tar.gz` or `.zip`).
+Every update manifest is cryptographically authenticated prior to parsing or processing:
+
+```mermaid
+flowchart TD
+    A[Updater Client] -->|Fetch| B[stable.json & stable.json.minisig]
+    B --> C{Minisign Ed25519 Verification}
+    C -->|Invalid Signature| D[Fail Closed: ErrInvalidSignature]
+    C -->|Valid Signature| E[Parse ChannelManifest JSON]
+    E --> F{Downgrade Check: Candidate > Current?}
+    F -->|No| G[Up to Date / Reject Downgrade]
+    F -->|Yes| H[Download Target Asset & Verify SHA-256]
+```
+
+### Pinned Release Key
+
+- **Pinned Minisign Public Key:**
+  ```text
+  RWTcyDWHWbxnuo3LVM5mWoZrx0HDwSQzAZvXK1lPRcdtJxshUDxJh+rE
+  ```
+- **Manifest Pre-Verification Invariant:** The updater fetches `<channel>.json` and `<channel>.json.minisig` and verifies the cryptographic Ed25519 signature **before** trusting any URL, version string, or SHA-256 digest inside the payload. A compromised CDN, proxy, or hosting bucket cannot force clients to download tampered binaries.
+- **Authoritative SHA-256 Verification:** Downloaded binary archives are streamed through SHA-256 digest computation and validated against the verified manifest hash prior to extraction or staging.
+- **Strict Downgrade Rejection:** Candidate versions must strictly exceed the active version under SemVer 2.0.0 precedence rules. Equal or older versions are rejected.
+
+### Canonical Manifest Schema
+
+```json
+{
+  "schema_version": 1,
+  "version": "1.6.0",
+  "channel": "stable",
+  "min_supported_version": "1.0.0",
+  "published_at": "2026-08-27T12:00:00Z",
+  "release_notes": "SendBeam 1.6.0 release notes",
+  "assets": {
+    "linux-amd64": {
+      "name": "sendbeam-cli-linux-amd64.tar.gz",
+      "download_url": "https://github.com/Akshay7273/sendbeam/releases/download/v1.6.0/sendbeam-cli-linux-amd64.tar.gz",
+      "sha256": "4a7f123456789012345678901234567890123456789012345678901234567890",
+      "size": 12345678
+    }
+  }
+}
+```
 
 ---
 

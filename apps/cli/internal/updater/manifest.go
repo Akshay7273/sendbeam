@@ -95,6 +95,43 @@ func CurrentPlatformArchiveName() string {
 	return TargetCLIArchiveName(runtime.GOOS, runtime.GOARCH)
 }
 
+// ChannelManifest represents the canonical, signed JSON update manifest published per release channel.
+type ChannelManifest struct {
+	SchemaVersion       int                     `json:"schema_version"`
+	Version             string                  `json:"version"`
+	Channel             string                  `json:"channel"`
+	MinSupportedVersion string                  `json:"min_supported_version,omitempty"`
+	PublishedAt         time.Time               `json:"published_at"`
+	ReleaseNotes        string                  `json:"release_notes,omitempty"`
+	Assets              map[string]ReleaseAsset `json:"assets"`
+}
+
+// FindTargetAsset finds the asset matching the expected platform from the channel manifest.
+func (cm *ChannelManifest) FindTargetAsset(targetOS, targetArch string) (*ReleaseAsset, error) {
+	if cm.Assets == nil {
+		return nil, fmt.Errorf("no assets defined in channel manifest for %s/%s", targetOS, targetArch)
+	}
+
+	platformKey := fmt.Sprintf("%s-%s", targetOS, targetArch)
+	if asset, ok := cm.Assets[platformKey]; ok {
+		return &asset, nil
+	}
+
+	archiveName := TargetCLIArchiveName(targetOS, targetArch)
+	if asset, ok := cm.Assets[archiveName]; ok {
+		return &asset, nil
+	}
+
+	// Also search values by Name
+	for _, asset := range cm.Assets {
+		if asset.Name == archiveName {
+			return &asset, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no distribution artifact found in manifest for %s/%s (expected %q)", targetOS, targetArch, archiveName)
+}
+
 // FindTargetAsset finds the asset matching the expected platform archive or binary.
 func (rm *ReleaseMetadata) FindTargetAsset(targetOS, targetArch string) (*ReleaseAsset, error) {
 	archiveName := TargetCLIArchiveName(targetOS, targetArch)

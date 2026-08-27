@@ -83,6 +83,7 @@ func TestUpdater_CheckAndApply(t *testing.T) {
 		"1.3.0",
 		"Akshay7273/sendbeam",
 		WithBaseURL(srv.URL),
+		WithGitHubAPI(true),
 		WithChannel(ChannelStable),
 		WithTargetPlatform("linux", "amd64"),
 		WithExecutablePath(targetBinary),
@@ -126,6 +127,7 @@ func TestUpdater_CheckAndApply(t *testing.T) {
 		"1.4.0",
 		"Akshay7273/sendbeam",
 		WithBaseURL(srv.URL),
+		WithGitHubAPI(true),
 		WithChannel(ChannelStable),
 		WithTargetPlatform("linux", "amd64"),
 		WithExecutablePath(targetBinary),
@@ -144,6 +146,7 @@ func TestUpdater_CheckAndApply(t *testing.T) {
 		"1.4.0",
 		"Akshay7273/sendbeam",
 		WithBaseURL(srv.URL),
+		WithGitHubAPI(true),
 		WithChannel(ChannelBeta),
 		WithTargetPlatform("linux", "amd64"),
 		WithExecutablePath(targetBinary),
@@ -173,5 +176,189 @@ func TestUpdater_DevVersion(t *testing.T) {
 	}
 	if check.UpdateAvailable {
 		t.Fatal("dev version should not report automatic update available")
+	}
+}
+
+func TestUpdater_SignedChannelManifest_HappyPath(t *testing.T) {
+	tempDir := t.TempDir()
+	targetBinary := filepath.Join(tempDir, "sendbeam")
+
+	oldBinary := []byte("sendbeam-v1.5.0")
+	if err := os.WriteFile(targetBinary, oldBinary, 0755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	newBinary := []byte("sendbeam-v1.6.0-signed-update")
+	tarData := createTestTarGz(t, "sendbeam", newBinary)
+	tarHash := sha256Hex(tarData)
+
+	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
+	testPub := DefaultMinisignPublicKey
+
+	archiveName := "sendbeam-cli-linux-amd64.tar.gz"
+
+	var srv *httptest.Server
+	manifest := ChannelManifest{
+		SchemaVersion: 1,
+		Version:       "1.6.0",
+		Channel:       "stable",
+		PublishedAt:   time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC),
+		ReleaseNotes:  "SendBeam v1.6.0 release",
+		Assets: map[string]ReleaseAsset{
+			"linux-amd64": {
+				Name:        archiveName,
+				DownloadURL: "", // populated below
+				SHA256:      tarHash,
+				Size:        int64(len(tarData)),
+			},
+		},
+	}
+
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		manifest.Assets["linux-amd64"] = ReleaseAsset{
+			Name:        archiveName,
+			DownloadURL: srv.URL + "/download/" + archiveName,
+			SHA256:      tarHash,
+			Size:        int64(len(tarData)),
+		}
+		data, _ := json.Marshal(manifest)
+		sig, _ := SignMinisign(data, testSeed, testPub, "stable.json")
+
+		switch r.URL.Path {
+		case "/stable.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(data)
+		case "/stable.json.minisig":
+			_, _ = w.Write([]byte(sig))
+		case "/download/" + archiveName:
+			_, _ = w.Write(tarData)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	u, err := New(
+		"1.5.0",
+		"Akshay7273/sendbeam",
+		WithBaseURL(srv.URL),
+		WithChannel(ChannelStable),
+		WithTargetPlatform("linux", "amd64"),
+		WithExecutablePath(targetBinary),
+		WithMinisignPublicKey(testPub),
+		WithHTTPClient(srv.Client()),
+	)
+	if err != nil {
+		t.Fatalf("New updater: %v", err)
+	}
+
+	check, err := u.Check(context.Background())
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+
+	if !check.UpdateAvailable {
+		t.Fatalf("expected update to be available, got: %s", check.Message)
+	}
+	if check.LatestVersion.String() != "1.6.0" {
+		t.Fatalf("expected version 1.6.0, got: %s", check.LatestVersion)
+	}
+
+	if err := u.Apply(context.Background(), check); err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+
+	updated, err := os.ReadFile(targetBinary)
+	if err != nil {
+		t.Fatalf("ReadFile after apply: %v", err)
+	}
+	if !bytes.Equal(updated, newBinary) {
+		t.Fatalf("target binary content mismatch: %s", string(updated))
+	}
+}
+
+func TestUpdater_SignedChannelManifest_TamperedPayload(t *testing.T) {
+	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
+	testPub := DefaultMinisignPublicKey
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/stable.json":
+			// Return tampered JSON payload
+			_, _ = w.Write([]byte(`{"version":"1.6.0","channel":"stable","tampered":true}`))
+		case "/stable.json.minisig":
+			// Signature of untampered JSON
+			orig := []byte(`{"version":"1.6.0","channel":"stable"}`)
+			sig, _ := SignMinisign(orig, testSeed, testPub, "stable.json")
+			_, _ = w.Write([]byte(sig))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	u, _ := New(
+		"1.5.0",
+		"Akshay7273/sendbeam",
+		WithBaseURL(srv.URL),
+		WithChannel(ChannelStable),
+		WithMinisignPublicKey(testPub),
+		WithHTTPClient(srv.Client()),
+	)
+
+	_, err := u.Check(context.Background())
+	if err == nil {
+		t.Fatal("expected signature verification error on tampered payload, got nil")
+	}
+}
+
+func TestUpdater_SignedChannelManifest_DowngradeRejection(t *testing.T) {
+	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
+	testPub := DefaultMinisignPublicKey
+
+	manifest := ChannelManifest{
+		SchemaVersion: 1,
+		Version:       "1.5.0", // older than current 1.6.0
+		Channel:       "stable",
+		PublishedAt:   time.Now().UTC(),
+		Assets: map[string]ReleaseAsset{
+			"linux-amd64": {
+				Name:        "sendbeam-cli-linux-amd64.tar.gz",
+				DownloadURL: "https://example.com/sendbeam.tar.gz",
+				SHA256:      "0000000000000000000000000000000000000000000000000000000000000000",
+			},
+		},
+	}
+	data, _ := json.Marshal(manifest)
+	sig, _ := SignMinisign(data, testSeed, testPub, "stable.json")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/stable.json":
+			_, _ = w.Write(data)
+		case "/stable.json.minisig":
+			_, _ = w.Write([]byte(sig))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	u, _ := New(
+		"1.6.0", // running newer version
+		"Akshay7273/sendbeam",
+		WithBaseURL(srv.URL),
+		WithChannel(ChannelStable),
+		WithTargetPlatform("linux", "amd64"),
+		WithMinisignPublicKey(testPub),
+		WithHTTPClient(srv.Client()),
+	)
+
+	check, err := u.Check(context.Background())
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if check.UpdateAvailable {
+		t.Fatal("expected UpdateAvailable to be false for older candidate (downgrade rejection)")
 	}
 }
