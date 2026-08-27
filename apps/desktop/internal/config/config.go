@@ -41,23 +41,32 @@ type DesktopConfig struct {
 	StartMinimized bool `json:"startMinimized"`
 	// Theme is the UI theme ("system", "dark", "light").
 	Theme string `json:"theme"`
+	// UpdateChannel is the preferred update distribution channel ("stable", "beta").
+	UpdateChannel string `json:"updateChannel"`
+	// AutoCheckUpdate controls whether the app automatically checks for updates on startup.
+	AutoCheckUpdate bool `json:"autoCheckUpdate"`
 }
 
 // DefaultConfig returns the default safe configuration.
 func DefaultConfig() DesktopConfig {
 	return DesktopConfig{
-		ServerURL:      DefaultServerURL,
-		ICEServers:     []string{"stun:stun.l.google.com:19302"},
-		DownloadDir:    "",
-		AutoAccept:     false, // strictly false by default
-		CloseToTray:    false,
-		StartMinimized: false,
-		Theme:          "system",
+		ServerURL:       DefaultServerURL,
+		ICEServers:      []string{"stun:stun.l.google.com:19302"},
+		DownloadDir:     "",
+		AutoAccept:      false, // strictly false by default
+		CloseToTray:     false,
+		StartMinimized:  false,
+		Theme:           "system",
+		UpdateChannel:   "stable",
+		AutoCheckUpdate: true,
 	}
 }
 
 // Validate validates the configuration values.
 func (c *DesktopConfig) Validate() error {
+	if c.UpdateChannel != "" && c.UpdateChannel != "stable" && c.UpdateChannel != "beta" && c.UpdateChannel != "dev" {
+		return fmt.Errorf("invalid update channel %q (must be stable, beta, or dev)", c.UpdateChannel)
+	}
 	if c.ServerURL != "" {
 		u, err := url.Parse(c.ServerURL)
 		if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" {

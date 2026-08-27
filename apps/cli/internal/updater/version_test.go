@@ -1,3 +1,4 @@
+// Package updater provides version tests.
 package updater
 
 import (

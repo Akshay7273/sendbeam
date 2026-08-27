@@ -205,6 +205,33 @@
       button.ghost:hover:not(:disabled) {
         text-decoration: underline;
       }
+      button.small {
+        padding: 0.25rem 0.6rem;
+        font-size: 0.8rem;
+      }
+
+      .update-banner {
+        background: linear-gradient(90deg, rgba(56, 139, 253, 0.15), rgba(35, 134, 54, 0.15));
+        border: 1px solid var(--primary);
+        border-radius: 6px;
+        padding: 0.6rem 1rem;
+        margin-bottom: 1.25rem;
+      }
+      .update-banner-content {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        justify-content: space-between;
+      }
+      .update-banner-text {
+        font-size: 0.85rem;
+        color: var(--text-heading);
+        font-weight: 500;
+      }
+      .update-banner-actions {
+        display: flex;
+        gap: 0.5rem;
+      }
 
       .controls { display: flex; gap: 0.5rem; margin-top: 0.75rem; align-items: center; }
       .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace; }
@@ -292,6 +319,17 @@
       <h1>SendBeam</h1>
       <span class="sub">End-to-end encrypted, peer-to-peer file transfer</span>
     </header>
+
+    <!-- UPDATE BANNER -->
+    <div class="update-banner hidden" id="update-banner">
+      <div class="update-banner-content">
+        <span class="update-banner-text" id="update-banner-text">SendBeam update available</span>
+        <div class="update-banner-actions">
+          <button class="primary small" id="update-banner-apply">Update now</button>
+          <button class="ghost small" id="update-banner-dismiss">Dismiss</button>
+        </div>
+      </div>
+    </div>
 
     <div class="tabs">
       <button class="tab active" id="tab-send">Send</button>
@@ -442,12 +480,33 @@
         </div>
         <div class="statusline" id="settings-status"></div>
       </div>
+
+      <div class="card" id="card-updates" style="margin-top: 1.25rem;">
+        <h2>Software Updates &amp; Channel</h2>
+        <label for="cfg-update-channel">Release Channel</label>
+        <select id="cfg-update-channel" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.5rem; border-radius:6px; font-size:0.85rem; outline:none;">
+          <option value="stable">Stable (Official releases)</option>
+          <option value="beta">Beta (Release candidates &amp; betas)</option>
+        </select>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:1rem;">
+          <div>
+            <span id="update-status-label" style="font-size:0.85rem; color:var(--text-muted);">SendBeam Desktop is up to date.</span>
+          </div>
+          <button id="check-update-btn">Check for updates</button>
+        </div>
+        <div id="update-details" class="hidden" style="margin-top:0.75rem; padding:0.75rem; background:var(--surface); border-radius:6px; font-size:0.8rem;">
+          <div id="update-notes" style="white-space:pre-wrap; margin-bottom:0.5rem; max-height:100px; overflow-y:auto; color:var(--text-muted);"></div>
+          <button class="primary small" id="update-install-btn">Install Update</button>
+        </div>
+      </div>
     </section>
 
     <script>
       const SV = {
         Service:  "github.com/sendbeam/desktop/internal/engine.Service",
         Transfer: "github.com/sendbeam/desktop/internal/engine.TransferService",
+        Update:   "github.com/sendbeam/desktop/internal/engine.UpdateService",
       };
       const call = (fqn, ...args) => wails.Call.ByName(fqn, ...args);
       const $ = (id) => document.getElementById(id);
@@ -774,10 +833,120 @@
 
       $("reset-settings").addEventListener("click", loadSettings);
 
+      // UPDATES
+      let updateDismissed = false;
+
+      function renderUpdateStatus(st) {
+        if (!st) return;
+        const banner = $("update-banner");
+        const bannerText = $("update-banner-text");
+        const statusLabel = $("update-status-label");
+        const details = $("update-details");
+        const notes = $("update-notes");
+        const checkBtn = $("check-update-btn");
+        const installBtn = $("update-install-btn");
+        const channelSelect = $("cfg-update-channel");
+
+        if (st.channel && channelSelect.value !== st.channel) {
+          channelSelect.value = st.channel;
+        }
+
+        if (st.state === "checking") {
+          statusLabel.textContent = "Checking for updates…";
+          checkBtn.disabled = true;
+        } else {
+          checkBtn.disabled = false;
+        }
+
+        if (st.state === "available") {
+          statusLabel.innerHTML = '<span class="ok">✓ Version ' + st.latestVersion + ' available</span>';
+          if (!updateDismissed) {
+            bannerText.textContent = "SendBeam Desktop " + st.latestVersion + " is available!";
+            banner.classList.remove("hidden");
+          }
+          if (st.releaseNotes) {
+            notes.textContent = st.releaseNotes;
+            details.classList.remove("hidden");
+          }
+          installBtn.disabled = false;
+          installBtn.textContent = "Install Update";
+        } else if (st.state === "downloading") {
+          statusLabel.textContent = "Downloading and verifying update…";
+          bannerText.textContent = "Downloading update " + (st.latestVersion || "") + "…";
+          banner.classList.remove("hidden");
+          installBtn.disabled = true;
+          installBtn.textContent = "Downloading…";
+        } else if (st.state === "ready_to_restart") {
+          statusLabel.innerHTML = '<span class="ok">✓ Update installed! Restart to apply.</span>';
+          bannerText.textContent = "Update ready! Restart SendBeam to apply.";
+          $("update-banner-apply").textContent = "Restart now";
+          banner.classList.remove("hidden");
+          installBtn.disabled = true;
+          installBtn.textContent = "Restart required";
+        } else if (st.state === "managed_by_pkg_manager") {
+          statusLabel.innerHTML = '<span style="color:var(--text-muted);">' + (st.message || "Managed by package manager.") + '</span>';
+          banner.classList.add("hidden");
+          details.classList.add("hidden");
+        } else if (st.state === "up_to_date") {
+          statusLabel.textContent = st.message || "SendBeam Desktop is up to date.";
+          banner.classList.add("hidden");
+          details.classList.add("hidden");
+        } else if (st.state === "error") {
+          statusLabel.innerHTML = '<span class="err">✗ ' + (st.error || "Update check failed") + '</span>';
+          details.classList.add("hidden");
+        }
+      }
+
+      wails.Events.On("sendbeam:update", (ev) => {
+        renderUpdateStatus(ev);
+      });
+
+      $("check-update-btn").addEventListener("click", async () => {
+        const ch = $("cfg-update-channel").value;
+        try {
+          const st = await call(SV.Update + ".CheckUpdate", ch);
+          renderUpdateStatus(st);
+        } catch (e) {
+          $("update-status-label").innerHTML = '<span class="err">✗ ' + e + '</span>';
+        }
+      });
+
+      $("cfg-update-channel").addEventListener("change", async () => {
+        const ch = $("cfg-update-channel").value;
+        try {
+          await call(SV.Update + ".SetChannel", ch);
+          const st = await call(SV.Update + ".CheckUpdate", ch);
+          renderUpdateStatus(st);
+        } catch (e) {
+          console.error(e);
+        }
+      });
+
+      async function triggerApply() {
+        try {
+          const st = await call(SV.Update + ".ApplyUpdate");
+          renderUpdateStatus(st);
+        } catch (e) {
+          $("update-status-label").innerHTML = '<span class="err">✗ ' + e + '</span>';
+        }
+      }
+
+      $("update-banner-apply").addEventListener("click", triggerApply);
+      $("update-install-btn").addEventListener("click", triggerApply);
+      $("update-banner-dismiss").addEventListener("click", () => {
+        updateDismissed = true;
+        $("update-banner").classList.add("hidden");
+      });
+
       (async () => {
         try {
           const info = await call(SV.Service + ".Info");
           document.title = "SendBeam Desktop — " + (info.engineVer ? "engine " + info.engineVer : "linked");
+        } catch (err) {}
+
+        try {
+          const st = await call(SV.Update + ".GetStatus");
+          if (st) renderUpdateStatus(st);
         } catch (err) {}
       })();
     </script>
