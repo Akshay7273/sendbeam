@@ -1,4 +1,3 @@
-// Package updater provides updater tests.
 package updater
 
 import (
@@ -285,10 +284,8 @@ func TestUpdater_SignedChannelManifest_TamperedPayload(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/stable.json":
-			// Return tampered JSON payload
 			_, _ = w.Write([]byte(`{"version":"1.6.0","channel":"stable","tampered":true}`))
 		case "/stable.json.minisig":
-			// Signature of untampered JSON
 			orig := []byte(`{"version":"1.6.0","channel":"stable"}`)
 			sig, _ := SignMinisign(orig, testSeed, testPub, "stable.json")
 			_, _ = w.Write([]byte(sig))
@@ -361,5 +358,122 @@ func TestUpdater_SignedChannelManifest_DowngradeRejection(t *testing.T) {
 	}
 	if check.UpdateAvailable {
 		t.Fatal("expected UpdateAvailable to be false for older candidate (downgrade rejection)")
+	}
+}
+
+func TestUpdater_Desktop_SignedChannelManifest_AppImage(t *testing.T) {
+	tempDir := t.TempDir()
+	targetAppImage := filepath.Join(tempDir, "SendBeam-linux-amd64.AppImage")
+
+	oldContent := []byte("desktop-v1.5.0-appimage")
+	if err := os.WriteFile(targetAppImage, oldContent, 0755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	newAppImage := []byte("desktop-v1.6.0-appimage-updated")
+	appImageHash := sha256Hex(newAppImage)
+
+	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
+	testPub := DefaultMinisignPublicKey
+
+	var srv *httptest.Server
+	manifest := ChannelManifest{
+		SchemaVersion: 1,
+		Version:       "1.6.0",
+		Channel:       "stable",
+		PublishedAt:   time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC),
+		ReleaseNotes:  "SendBeam Desktop v1.6.0",
+		Assets: map[string]ReleaseAsset{
+			"SendBeam-linux-amd64.AppImage": {
+				Name:        "SendBeam-linux-amd64.AppImage",
+				DownloadURL: "",
+				SHA256:      appImageHash,
+				Size:        int64(len(newAppImage)),
+			},
+		},
+	}
+
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		manifest.Assets["SendBeam-linux-amd64.AppImage"] = ReleaseAsset{
+			Name:        "SendBeam-linux-amd64.AppImage",
+			DownloadURL: srv.URL + "/download/SendBeam-linux-amd64.AppImage",
+			SHA256:      appImageHash,
+			Size:        int64(len(newAppImage)),
+		}
+		data, _ := json.Marshal(manifest)
+		sig, _ := SignMinisign(data, testSeed, testPub, "stable.json")
+
+		switch r.URL.Path {
+		case "/stable.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(data)
+		case "/stable.json.minisig":
+			_, _ = w.Write([]byte(sig))
+		case "/download/SendBeam-linux-amd64.AppImage":
+			_, _ = w.Write(newAppImage)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	u, err := New(
+		"1.5.0",
+		"Akshay7273/sendbeam",
+		WithProductKind(ProductKindDesktop),
+		WithBaseURL(srv.URL),
+		WithChannel(ChannelStable),
+		WithTargetPlatform("linux", "amd64"),
+		WithDesktopFormat("appimage"),
+		WithExecutablePath(targetAppImage),
+		WithMinisignPublicKey(testPub),
+		WithHTTPClient(srv.Client()),
+	)
+	if err != nil {
+		t.Fatalf("New desktop updater: %v", err)
+	}
+
+	check, err := u.Check(context.Background())
+	if err != nil {
+		t.Fatalf("Desktop Check failed: %v", err)
+	}
+
+	if !check.UpdateAvailable {
+		t.Fatalf("expected update to be available, message: %s", check.Message)
+	}
+
+	if err := u.Apply(context.Background(), check); err != nil {
+		t.Fatalf("Desktop Apply failed: %v", err)
+	}
+
+	updated, err := os.ReadFile(targetAppImage)
+	if err != nil {
+		t.Fatalf("ReadFile after update: %v", err)
+	}
+	if !bytes.Equal(updated, newAppImage) {
+		t.Fatalf("desktop AppImage content not updated: got %q", string(updated))
+	}
+}
+
+func TestUpdater_Desktop_PackageManager_Detection(t *testing.T) {
+	t.Setenv("SENDBEAM_PACKAGE_MANAGER", "deb")
+
+	u, _ := New(
+		"1.5.0",
+		"Akshay7273/sendbeam",
+		WithProductKind(ProductKindDesktop),
+		WithExecutablePath("/usr/bin/sendbeam"),
+	)
+
+	check, err := u.Check(context.Background())
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+
+	if check.ManagedByPkgManager != "deb" {
+		t.Fatalf("expected ManagedByPkgManager=deb, got %q", check.ManagedByPkgManager)
+	}
+	if check.UpdateAvailable {
+		t.Fatal("expected UpdateAvailable=false when managed by package manager")
 	}
 }

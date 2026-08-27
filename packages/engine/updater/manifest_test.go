@@ -1,4 +1,3 @@
-// Package updater provides manifest tests.
 package updater
 
 import (
@@ -54,6 +53,15 @@ func TestTargetNames(t *testing.T) {
 	if got := TargetCLIBinaryName("windows"); got != "sendbeam.exe" {
 		t.Errorf("unexpected windows binary name %q", got)
 	}
+	if got := TargetDesktopAssetName("linux", "amd64", "appimage"); got != "SendBeam-linux-amd64.AppImage" {
+		t.Errorf("unexpected linux appimage name %q", got)
+	}
+	if got := TargetDesktopAssetName("windows", "amd64", "installer"); got != "SendBeam-windows-amd64-installer.exe" {
+		t.Errorf("unexpected windows installer name %q", got)
+	}
+	if got := TargetDesktopAssetName("darwin", "arm64", "dmg"); got != "SendBeam-macos-universal.dmg" {
+		t.Errorf("unexpected macos dmg name %q", got)
+	}
 }
 
 func TestChannelManifest_FindTargetAsset(t *testing.T) {
@@ -74,6 +82,12 @@ func TestChannelManifest_FindTargetAsset(t *testing.T) {
 				SHA256:      "5b8e123456789012345678901234567890123456789012345678901234567890",
 				Size:        2000,
 			},
+			"SendBeam-linux-amd64.AppImage": {
+				Name:        "SendBeam-linux-amd64.AppImage",
+				DownloadURL: "https://example.com/SendBeam-linux-amd64.AppImage",
+				SHA256:      "6c9f123456789012345678901234567890123456789012345678901234567890",
+				Size:        50000000,
+			},
 		},
 	}
 
@@ -93,6 +107,14 @@ func TestChannelManifest_FindTargetAsset(t *testing.T) {
 		t.Errorf("unexpected asset name: %s", assetWin.Name)
 	}
 
+	assetDesktop, err := manifest.FindDesktopTargetAsset("linux", "amd64", "appimage")
+	if err != nil {
+		t.Fatalf("FindDesktopTargetAsset(linux, amd64) failed: %v", err)
+	}
+	if assetDesktop.Name != "SendBeam-linux-amd64.AppImage" {
+		t.Errorf("unexpected desktop asset: %s", assetDesktop.Name)
+	}
+
 	_, err = manifest.FindTargetAsset("freebsd", "arm")
 	if err == nil {
 		t.Error("expected error for unsupported platform, got nil")
@@ -100,7 +122,6 @@ func TestChannelManifest_FindTargetAsset(t *testing.T) {
 }
 
 func TestVerifyMinisignSignature(t *testing.T) {
-	// Generate mock keypair seed (32 bytes hex)
 	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
 	testPub := DefaultMinisignPublicKey
 

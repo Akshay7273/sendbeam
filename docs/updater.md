@@ -6,7 +6,7 @@ This document describes SendBeam's self-update engine, distribution channels, cr
 
 ## 1. Overview
 
-SendBeam provides a framework-independent Go updater engine (`apps/cli/internal/updater`) shared by the CLI (`sendbeam update`) and desktop services. The updater ensures that standalone binaries can safely upgrade without compromising runtime integrity, corrupting active installations, or exposing users to downgrade attacks.
+SendBeam provides a framework-independent Go updater engine (`packages/engine/updater`) shared by the CLI (`sendbeam update`) and desktop application (`UpdateService`). The updater ensures that standalone binaries, Linux AppImages, macOS `.app` bundles, and Windows installers can safely upgrade without compromising runtime integrity, corrupting active installations, or exposing users to downgrade attacks.
 
 ---
 
@@ -125,3 +125,15 @@ When SendBeam is installed via system package managers (e.g. Debian `.deb`, Home
 - Debian/Ubuntu: `apt update && apt upgrade sendbeam-desktop`
 - macOS Homebrew: `brew upgrade sendbeam`
 - Windows WinGet: `winget upgrade SendBeam`
+
+---
+
+## 7. Desktop Self-Update Engine
+
+SendBeam Desktop integrates `UpdateService` (`apps/desktop/internal/engine/update_service.go`) connected to the Wails frontend via bridge RPC and event bus (`sendbeam:update`):
+
+- **Linux AppImage:** Performs atomic in-place file replacement of active `.AppImage` with same-filesystem `.tmp-*` staging, `chmod 0755`, `.old` backup, and rollback safety.
+- **macOS `.app` Bundle:** Decompresses verified update archive into staged `.app.tmp-*` directory, renames active `.app` bundle to `.app.old`, and atomically renames the staging bundle. On any failure, `.app.old` is restored immediately.
+- **Windows Installer / Portable:** Downloads and verifies NSIS installer executable into local temporary storage, staging automated background relaunch on application exit.
+- **UI Integration:** The desktop UI features a non-intrusive update banner, release notes inspection modal, manual "Check for updates" controls, and channel switching between `stable` and `beta` in Settings.
+- **Package Manager Fail-Safe:** When running from system package manager paths (`/usr/bin`, `/opt/sendbeam-desktop`, Homebrew, WinGet), self-update is disabled and the UI displays native package manager upgrade instructions (`apt update && apt upgrade sendbeam-desktop`).

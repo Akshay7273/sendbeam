@@ -99,9 +99,19 @@ func main() {
 		defer deviceSvc.Close()
 	}
 
+	updateSvc := engine.NewUpdateService(
+		func(name string, data any) {
+			if app := application.Get(); app != nil && app.Event != nil {
+				app.Event.Emit(name, data)
+			}
+		},
+		nil,
+	)
+
 	services := []application.Service{
 		application.NewService(engine.NewService()),
 		application.NewService(transferSvc),
+		application.NewService(updateSvc),
 	}
 	if deviceSvc != nil {
 		services = append(services, application.NewService(deviceSvc))
