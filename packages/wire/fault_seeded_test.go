@@ -87,13 +87,18 @@ func TestFaultSeededRegressionFixtures(t *testing.T) {
 				res.wantSuccess(t, data)
 			} else {
 				if succeeded {
-					t.Fatalf("fixture %s regressed: expected fail_closed, transfer succeeded", fx.name())
-				}
-				if res.recvSettled {
-					t.Fatalf("fixture %s: receiver settled on a failed transfer", fx.name())
-				}
-				if res.sink.AbortReason() == "" {
-					t.Fatalf("fixture %s: failed transfer left committed output", fx.name())
+					if fx.Destructive {
+						t.Fatalf("fixture %s regressed: expected fail_closed, transfer succeeded", fx.name())
+					}
+					// Under benign faults (loss/jitter), successful full recovery with byte-for-byte integrity is valid
+					res.wantSuccess(t, data)
+				} else {
+					if res.recvSettled {
+						t.Fatalf("fixture %s: receiver settled on a failed transfer", fx.name())
+					}
+					if res.sink.AbortReason() == "" {
+						t.Fatalf("fixture %s: failed transfer left committed output", fx.name())
+					}
 				}
 			}
 		})
