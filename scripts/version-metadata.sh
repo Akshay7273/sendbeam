@@ -56,6 +56,8 @@ if [ "${REF_TYPE}" = "tag" ] && [[ "${REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0
     DEB_VERSION="${RAW_VER}"
   fi
 
+  SIGNING_STATUS="signed"
+
   # Parse semver components for Windows FixedFileInfo
   IFS='.' read -r MAJOR MINOR PATCH_REST <<< "${RAW_VER}"
   WIN_MAJOR="${MAJOR:-0}"
@@ -66,12 +68,13 @@ if [ "${REF_TYPE}" = "tag" ] && [[ "${REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0
   WINDOWS_FIXED_VERSION="${WIN_MAJOR}.${WIN_MINOR}.${WIN_PATCH}.${WIN_BUILD}"
 else
   PRODUCT_VERSION="dev"
-  DISPLAY_VERSION="dev"
+  DISPLAY_VERSION="unsigned-dev"
   NUMERIC_VERSION="0.0.0"
   MACOS_SHORT_VERSION="0.0.0"
   MACOS_BUNDLE_VERSION="0.0.0"
   DEB_VERSION="0.0.0~dev+git.${SHORT_SHA}"
   IS_PRERELEASE="false"
+  SIGNING_STATUS="unsigned-dev"
 
   WIN_MAJOR="0"
   WIN_MINOR="0"
@@ -96,6 +99,7 @@ if [ "${OUTPUT_MODE}" = "--github-output" ] && [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "win_build=${WIN_BUILD}"
     echo "deb_version=${DEB_VERSION}"
     echo "is_prerelease=${IS_PRERELEASE}"
+    echo "signing_status=${SIGNING_STATUS}"
     echo "commit=${SHA}"
     echo "short_commit=${SHORT_SHA}"
   } >> "${GITHUB_OUTPUT}"
@@ -115,6 +119,7 @@ win_patch=${WIN_PATCH}
 win_build=${WIN_BUILD}
 deb_version=${DEB_VERSION}
 is_prerelease=${IS_PRERELEASE}
+signing_status=${SIGNING_STATUS}
 commit=${SHA}
 short_commit=${SHORT_SHA}
 EOF

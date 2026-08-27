@@ -50,7 +50,8 @@ Build and packaging metadata is resolved deterministically through [scripts/vers
 | Version Field                | Untagged / Development / PR Builds | Tagged Release Builds (`vX.Y.Z`) | Prerelease Builds (`vX.Y.Z-rcN`) | Description                                                          |
 | :--------------------------- | :--------------------------------- | :------------------------------- | :------------------------------- | :------------------------------------------------------------------- |
 | **Internal Product Version** | `dev`                              | `X.Y.Z`                          | `X.Y.Z-rcN`                      | Go `-ldflags` embedded product build version (`ProductVersion`)      |
-| **Display Version**          | `dev`                              | `X.Y.Z`                          | `X.Y.Z-rcN`                      | Human-facing CLI version UX and installer display string             |
+| **Display Version**          | `unsigned-dev`                     | `X.Y.Z`                          | `X.Y.Z-rcN`                      | Human-facing CLI version UX and installer display string             |
+| **Signing Status**           | `unsigned-dev`                     | `signed`                         | `signed`                         | Cryptographic release signing status indicator                       |
 | **macOS Short Version**      | `0.0.0`                            | `X.Y.Z`                          | `X.Y.Z`                          | `CFBundleShortVersionString` (strictly numeric `[0-9]+(\.[0-9]+)*`)  |
 | **macOS Bundle Version**     | `0.0.0`                            | `X.Y.Z`                          | `X.Y.Z`                          | `CFBundleVersion` (strictly numeric dotted version)                  |
 | **Windows Fixed Version**    | `0.0.0.0`                          | `X.Y.Z.0`                        | `X.Y.Z.0`                        | 4-part numeric PE `FixedFileInfo` (`FileVersion` / `ProductVersion`) |
@@ -64,7 +65,7 @@ Wire protocol versioning remains immutable (`sendbeam/1` and `sendbeam/2`) and i
 ```bash
 # Development build:
 sendbeam version
-# Output: sendbeam dev (1e937f5e07ea)
+# Output: sendbeam dev (1e937f5e07ea) [unsigned-dev]
 
 # Tagged release build:
 sendbeam version
@@ -88,19 +89,23 @@ Packaging is automated across native GitHub-hosted runners in two dedicated work
    - Triggered on push of version tags (`v*`) or manual `workflow_dispatch`.
    - Compiles all 6 CLI platforms and all 4 desktop formats.
    - Generates canonical `SHA256SUMS.txt`, in-toto build provenance attestations, and SPDX 2.3 SBOMs.
+   - Signs `SHA256SUMS.txt` with Minisign Ed25519 (`SHA256SUMS.txt.minisig`) and Sigstore Cosign keyless OIDC (`SHA256SUMS.txt.sigstore.json`).
    - Creates a **Draft GitHub Release** with all assets and checksums attached. Prerelease tags (`v*-rc*`) are marked as pre-releases.
-   - Runs a **Release Verification Gate** job that downloads the release bundle, re-checks SHA-256 sums, smoke tests the native binary, and validates draft status.
+   - Runs a **Release Verification Gate** (`scripts/verify-release.sh`) that downloads the release bundle, re-checks SHA-256 sums, smoke tests the native binary, and validates draft status.
    - Maintainer reviews the draft release notes and publishes the release.
 
 ### Checksum Manifest & Supply Chain Integrity
 
-All produced distribution archives, installers, and SPDX 2.3 SBOM manifests are hashed with SHA-256 and collected into a canonical manifest:
+All produced distribution archives, installers, and SPDX 2.3 SBOM manifests are hashed with SHA-256 and signed:
 
 ```text
 SHA256SUMS.txt
+SHA256SUMS.txt.minisig
+SHA256SUMS.txt.sigstore.json
 ```
 
 - Cryptographic build provenance: attested in CI via `actions/attest-build-provenance@v2`.
 - Software Bill of Materials: generated via `scripts/generate-sbom.sh` (`sendbeam-cli.spdx.json`, `sendbeam-desktop.spdx.json`).
+- Automated release verification: `scripts/verify-release.sh`.
 - Detailed supply chain security model: [docs/supply-chain.md](supply-chain.md).
 - Standalone self-updater architecture & rollback: [docs/updater.md](updater.md).
