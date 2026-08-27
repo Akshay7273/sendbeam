@@ -39,7 +39,7 @@ The SendBeam Desktop application packages the Go transfer engine with native pla
 | **Linux** (amd64)     | AppImage       | `SendBeam-linux-amd64.AppImage`                       | `SendBeam-linux-amd64.AppImage`        | Portable Linux executable with embedded runtime               |
 
 > [!NOTE]
-> CI distribution artifacts are unsigned validation packages stored as GitHub Actions workflow artifacts (retained for 14 days). Formal GitHub Releases, production code signing (Authenticode, Apple Developer ID, Notarization), and auto-updater channels belong to future milestones.
+> Pull request and branch builds generate unsigned validation packages stored as GitHub Actions workflow artifacts (retained for 14 days in `.github/workflows/distribution.yml`). Pushing a release tag (`vX.Y.Z` or `vX.Y.Z-rcN`) triggers `.github/workflows/release.yml`, which compiles all native distributions, generates canonical `SHA256SUMS.txt`, creates in-toto provenance & SPDX 2.3 SBOM attestations, and stages a **Draft GitHub Release** for maintainer review and publication.
 
 ---
 
@@ -47,17 +47,17 @@ The SendBeam Desktop application packages the Go transfer engine with native pla
 
 Build and packaging metadata is resolved deterministically through [scripts/version-metadata.sh](scripts/version-metadata.sh) across all CLI and desktop platforms:
 
-| Version Field                | Untagged / Development / PR Builds | Tagged Release Builds (`vX.Y.Z`) | Description                                                          |
-| :--------------------------- | :--------------------------------- | :------------------------------- | :------------------------------------------------------------------- |
-| **Internal Product Version** | `dev`                              | `X.Y.Z`                          | Go `-ldflags` embedded product build version (`ProductVersion`)      |
-| **Display Version**          | `dev`                              | `X.Y.Z`                          | Human-facing CLI version UX and installer display string             |
-| **macOS Short Version**      | `0.0.0`                            | `X.Y.Z`                          | `CFBundleShortVersionString` (strictly `[0-9]+(\.[0-9]+)*`)          |
-| **macOS Bundle Version**     | `0.0.0`                            | `X.Y.Z`                          | `CFBundleVersion` (strictly numeric dotted version)                  |
-| **Windows Fixed Version**    | `0.0.0.0`                          | `X.Y.Z.0`                        | 4-part numeric PE `FixedFileInfo` (`FileVersion` / `ProductVersion`) |
-| **Debian Package Version**   | `0.0.0~dev+git.<shortsha>`         | `X.Y.Z`                          | Debian-compliant package version string                              |
-| **Git Commit**               | Exact 40-character commit SHA      | Exact 40-character commit SHA    | Full git commit SHA embedded via `-ldflags`                          |
+| Version Field                | Untagged / Development / PR Builds | Tagged Release Builds (`vX.Y.Z`) | Prerelease Builds (`vX.Y.Z-rcN`) | Description                                                          |
+| :--------------------------- | :--------------------------------- | :------------------------------- | :------------------------------- | :------------------------------------------------------------------- |
+| **Internal Product Version** | `dev`                              | `X.Y.Z`                          | `X.Y.Z-rcN`                      | Go `-ldflags` embedded product build version (`ProductVersion`)      |
+| **Display Version**          | `dev`                              | `X.Y.Z`                          | `X.Y.Z-rcN`                      | Human-facing CLI version UX and installer display string             |
+| **macOS Short Version**      | `0.0.0`                            | `X.Y.Z`                          | `X.Y.Z`                          | `CFBundleShortVersionString` (strictly numeric `[0-9]+(\.[0-9]+)*`)  |
+| **macOS Bundle Version**     | `0.0.0`                            | `X.Y.Z`                          | `X.Y.Z`                          | `CFBundleVersion` (strictly numeric dotted version)                  |
+| **Windows Fixed Version**    | `0.0.0.0`                          | `X.Y.Z.0`                        | `X.Y.Z.0`                        | 4-part numeric PE `FixedFileInfo` (`FileVersion` / `ProductVersion`) |
+| **Debian Package Version**   | `0.0.0~dev+git.<shortsha>`         | `X.Y.Z`                          | `X.Y.Z~rcN`                      | Debian-compliant package version string                              |
+| **Git Commit**               | Exact 40-character commit SHA      | Exact 40-character commit SHA    | Exact 40-character commit SHA    | Full git commit SHA embedded via `-ldflags`                          |
 
-Wire protocol versioning remains immutable (`sendbeam/1`) and is decoupled from product release versions.
+Wire protocol versioning remains immutable (`sendbeam/1` and `sendbeam/2`) and is decoupled from product release versions.
 
 ### CLI Version UX
 
@@ -68,18 +68,29 @@ sendbeam version
 
 # Tagged release build:
 sendbeam version
-# Output: sendbeam 1.4.0 (1e937f5e07ea)
+# Output: sendbeam 1.6.0 (1e937f5e07ea)
+
+# Prerelease build:
+sendbeam version
+# Output: sendbeam 1.6.0-rc1 (1e937f5e07ea)
 ```
 
 ---
 
-## Packaging Workflow and Verification
+## Packaging Workflow and GitHub Releases
 
-Packaging is automated in `.github/workflows/distribution.yml` across native GitHub-hosted runners:
+Packaging is automated across native GitHub-hosted runners in two dedicated workflows:
 
-- `ubuntu-24.04` (Linux packaging + GTK/WebKit)
-- `macos-latest` (Universal Mach-O + DMG creation)
-- `windows-latest` (Windows PE resource embedding + NSIS compilation)
+1. **Validation & PR Packaging (`.github/workflows/distribution.yml`):**
+   - Runs on PRs touching client code and packaging files.
+   - Compiles all matrix platforms and attaches 14-day test artifacts for CI smoke testing.
+2. **Formal Release Packaging (`.github/workflows/release.yml`):**
+   - Triggered on push of version tags (`v*`) or manual `workflow_dispatch`.
+   - Compiles all 6 CLI platforms and all 4 desktop formats.
+   - Generates canonical `SHA256SUMS.txt`, in-toto build provenance attestations, and SPDX 2.3 SBOMs.
+   - Creates a **Draft GitHub Release** with all assets and checksums attached. Prerelease tags (`v*-rc*`) are marked as pre-releases.
+   - Runs a **Release Verification Gate** job that downloads the release bundle, re-checks SHA-256 sums, smoke tests the native binary, and validates draft status.
+   - Maintainer reviews the draft release notes and publishes the release.
 
 ### Checksum Manifest & Supply Chain Integrity
 
