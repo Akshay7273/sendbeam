@@ -1,0 +1,710 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and package (e.g. v1.6.0 or v1.6.0-rc1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  cli:
+    name: cli (${{ matrix.os }}/${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            ext: ''
+            archive: tar.gz
+          - os: linux
+            arch: arm64
+            ext: ''
+            archive: tar.gz
+          - os: darwin
+            arch: amd64
+            ext: ''
+            archive: tar.gz
+          - os: darwin
+            arch: arm64
+            ext: ''
+            archive: tar.gz
+          - os: windows
+            arch: amd64
+            ext: '.exe'
+            archive: zip
+          - os: windows
+            arch: arm64
+            ext: '.exe'
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: apps/cli/go.sum
+
+      - name: Determine version metadata
+        id: meta
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            GITHUB_REF_TYPE="tag" GITHUB_REF_NAME="${{ inputs.tag }}" bash ./scripts/version-metadata.sh --github-output
+          else
+            bash ./scripts/version-metadata.sh --github-output
+          fi
+
+      - name: Test version resolution policy
+        if: matrix.os == 'linux' && matrix.arch == 'amd64'
+        run: bash ./scripts/version-metadata_test.sh
+
+      - name: Build CLI binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist-bin
+          BIN_NAME="sendbeam${{ matrix.ext }}"
+          go build -trimpath \
+            -ldflags "-s -w -X main.Version=${{ steps.meta.outputs.version }} -X main.GitCommit=${{ steps.meta.outputs.commit }}" \
+            -o "dist-bin/${BIN_NAME}" \
+            ./apps/cli/cmd/sendbeam
+
+      - name: Smoke test native binary
+        if: matrix.os == 'linux' && matrix.arch == 'amd64'
+        run: |
+          ./dist-bin/sendbeam version
+          ./dist-bin/sendbeam --version
+          ./dist-bin/sendbeam --help
+
+      - name: Package archive
+        run: |
+          mkdir -p staging
+          cp dist-bin/sendbeam${{ matrix.ext }} staging/
+          cp LICENSE staging/
+          cp README.md staging/
+          mkdir -p artifacts
+          ARCHIVE_NAME="sendbeam-cli-${{ matrix.os }}-${{ matrix.arch }}"
+          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
+            tar -czf "artifacts/${ARCHIVE_NAME}.tar.gz" -C staging .
+          else
+            ( cd staging && zip -r "../artifacts/${ARCHIVE_NAME}.zip" . )
+          fi
+
+      - name: Validate archive contents
+        run: |
+          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
+            tar -tzf artifacts/sendbeam-cli-${{ matrix.os }}-${{ matrix.arch }}.tar.gz | grep -q "sendbeam${{ matrix.ext }}"
+            tar -tzf artifacts/sendbeam-cli-${{ matrix.os }}-${{ matrix.arch }}.tar.gz | grep -q "LICENSE"
+          else
+            unzip -l artifacts/sendbeam-cli-${{ matrix.os }}-${{ matrix.arch }}.zip | grep -q "sendbeam${{ matrix.ext }}"
+            unzip -l artifacts/sendbeam-cli-${{ matrix.os }}-${{ matrix.arch }}.zip | grep -q "LICENSE"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.os }}-${{ matrix.arch }}
+          path: artifacts/*
+          retention-days: 14
+
+  desktop-windows:
+    name: desktop (windows/amd64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: apps/desktop/go.sum
+
+      - name: Determine version metadata
+        id: meta
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            GITHUB_REF_TYPE="tag" GITHUB_REF_NAME="${{ inputs.tag }}" bash ./scripts/version-metadata.sh --github-output
+          else
+            bash ./scripts/version-metadata.sh --github-output
+          fi
+
+      - name: Generate Windows PE Resources
+        shell: pwsh
+        run: |
+          go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1
+          cd apps/desktop
+          goversioninfo -64 `
+            -icon="build/windows/icon.ico" `
+            -manifest="build/windows/wails.exe.manifest" `
+            -product-name="SendBeam" `
+            -company="Akshay7273" `
+            -description="SendBeam Desktop" `
+            -copyright="Copyright (c) 2026 Akshay7273" `
+            -internal-name="sendbeam-desktop" `
+            -original-name="sendbeam-desktop.exe" `
+            -product-version="${{ steps.meta.outputs.version }}" `
+            -file-version="${{ steps.meta.outputs.windows_fixed_version }}" `
+            -ver-major=${{ steps.meta.outputs.win_major }} `
+            -ver-minor=${{ steps.meta.outputs.win_minor }} `
+            -ver-patch=${{ steps.meta.outputs.win_patch }} `
+            -ver-build=${{ steps.meta.outputs.win_build }} `
+            -product-ver-major=${{ steps.meta.outputs.win_major }} `
+            -product-ver-minor=${{ steps.meta.outputs.win_minor }} `
+            -product-ver-patch=${{ steps.meta.outputs.win_patch }} `
+            -product-ver-build=${{ steps.meta.outputs.win_build }} `
+            -o="resource_windows_amd64.syso" `
+            build/windows/info.json
+
+      - name: Build Windows Desktop Binary
+        shell: bash
+        working-directory: apps/desktop
+        env:
+          CGO_ENABLED: 0
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          mkdir -p bin
+          go build -trimpath \
+            -ldflags "-H windowsgui -s -w -X github.com/sendbeam/desktop/internal/engine.ProductVersion=${{ steps.meta.outputs.version }} -X github.com/sendbeam/desktop/internal/engine.GitCommit=${{ steps.meta.outputs.commit }}" \
+            -o bin/sendbeam-desktop.exe .
+
+      - name: Validate Windows Executable Resources (PE)
+        shell: pwsh
+        run: |
+          $exe = "apps/desktop/bin/sendbeam-desktop.exe"
+          if (-not (Test-Path $exe)) { throw "Executable not found at $exe" }
+
+          $vi = (Get-Item $exe).VersionInfo
+          Write-Host "Validating Windows PE VersionInfo:"
+          Write-Host "  ProductName:     $($vi.ProductName)"
+          Write-Host "  FileDescription: $($vi.FileDescription)"
+          Write-Host "  ProductVersion:  $($vi.ProductVersion)"
+          Write-Host "  FileVersion:     $($vi.FileVersion)"
+          Write-Host "  CompanyName:     $($vi.CompanyName)"
+
+          if ($vi.ProductName -ne "SendBeam") { throw "Expected ProductName 'SendBeam', got '$($vi.ProductName)'" }
+          if ($vi.FileDescription -ne "SendBeam Desktop") { throw "Expected FileDescription 'SendBeam Desktop', got '$($vi.FileDescription)'" }
+          if ($vi.ProductVersion -ne "${{ steps.meta.outputs.version }}") { throw "Expected ProductVersion '${{ steps.meta.outputs.version }}', got '$($vi.ProductVersion)'" }
+          if ($vi.FileVersion -ne "${{ steps.meta.outputs.windows_fixed_version }}") { throw "Expected FileVersion '${{ steps.meta.outputs.windows_fixed_version }}', got '$($vi.FileVersion)'" }
+          if ($vi.CompanyName -ne "Akshay7273") { throw "Expected CompanyName 'Akshay7273', got '$($vi.CompanyName)'" }
+
+          # Validate PE x64 machine header
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          if ($machine -ne 0x8664) { throw "Expected x64 PE machine type (0x8664), got 0x$($machine.ToString('X4'))" }
+
+          # Validate .rsrc section exists
+          $numSections = [BitConverter]::ToUInt16($bytes, $peOffset + 6)
+          $optHeaderSize = [BitConverter]::ToUInt16($bytes, $peOffset + 20)
+          $sectionTableOffset = $peOffset + 24 + $optHeaderSize
+          $foundRsrc = $false
+          for ($i = 0; $i -lt $numSections; $i++) {
+              $secOffset = $sectionTableOffset + ($i * 40)
+              $secNameBytes = $bytes[$secOffset..($secOffset + 7)]
+              $secName = [System.Text.Encoding]::ASCII.GetString($secNameBytes).Trim("`0")
+              if ($secName -eq ".rsrc") { $foundRsrc = $true; break }
+          }
+          if (-not $foundRsrc) { throw "Executable is missing .rsrc section (embedded icon/manifest/versioninfo missing)!" }
+          Write-Host "PE .rsrc section verified successfully."
+
+      - name: Package Portable ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging-portable, artifacts
+          Copy-Item apps/desktop/bin/sendbeam-desktop.exe staging-portable/
+          Copy-Item LICENSE staging-portable/
+          Copy-Item README.md staging-portable/
+          Compress-Archive -Path staging-portable/* -DestinationPath artifacts/SendBeam-windows-amd64-portable.zip -Force
+
+      - name: Build NSIS Installer
+        shell: pwsh
+        run: |
+          $makensis = (Get-Command makensis.exe -ErrorAction SilentlyContinue)?.Source
+          if (-not $makensis) {
+            if (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe") {
+              $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
+            } elseif (Test-Path "C:\Program Files\NSIS\makensis.exe") {
+              $makensis = "C:\Program Files\NSIS\makensis.exe"
+            } else {
+              choco install nsis -y
+              $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
+            }
+          }
+          & $makensis `
+            -DINFO_PRODUCTNAME="SendBeam" `
+            -DINFO_COMPANYNAME="Akshay7273" `
+            -DINFO_PRODUCTVERSION="${{ steps.meta.outputs.display_version }}" `
+            -DINFO_FIXEDVERSION="${{ steps.meta.outputs.windows_fixed_version }}" `
+            -DOUTPUT_FILE="$env:GITHUB_WORKSPACE\artifacts\SendBeam-windows-amd64-installer.exe" `
+            -DBIN_FILE="$env:GITHUB_WORKSPACE\apps\desktop\bin\sendbeam-desktop.exe" `
+            -DICON_FILE="$env:GITHUB_WORKSPACE\apps\desktop\build\windows\icon.ico" `
+            apps\desktop\build\windows\nsis\project.nsi
+
+      - name: Validate Windows Artifacts
+        shell: bash
+        run: |
+          test -f artifacts/SendBeam-windows-amd64-portable.zip
+          test -f artifacts/SendBeam-windows-amd64-installer.exe
+          PORTABLE_SIZE=$(wc -c < artifacts/SendBeam-windows-amd64-portable.zip)
+          INSTALLER_SIZE=$(wc -c < artifacts/SendBeam-windows-amd64-installer.exe)
+          echo "Portable ZIP size: $PORTABLE_SIZE bytes"
+          echo "NSIS Installer size: $INSTALLER_SIZE bytes"
+          if [ "$PORTABLE_SIZE" -lt 1000000 ]; then
+            echo "Error: Portable zip is unexpectedly small ($PORTABLE_SIZE bytes)"
+            exit 1
+          fi
+          if [ "$INSTALLER_SIZE" -lt 1000000 ]; then
+            echo "Error: Installer is unexpectedly small ($INSTALLER_SIZE bytes)"
+            exit 1
+          fi
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-amd64
+          path: artifacts/*
+          retention-days: 14
+
+  desktop-macos:
+    name: desktop (macos/universal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: apps/desktop/go.sum
+
+      - name: Determine version metadata
+        id: meta
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            GITHUB_REF_TYPE="tag" GITHUB_REF_NAME="${{ inputs.tag }}" bash ./scripts/version-metadata.sh --github-output
+          else
+            bash ./scripts/version-metadata.sh --github-output
+          fi
+
+      - name: Build arm64 slice
+        working-directory: apps/desktop
+        env:
+          CGO_ENABLED: 1
+          GOOS: darwin
+          GOARCH: arm64
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+        run: |
+          mkdir -p bin
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/sendbeam/desktop/internal/engine.ProductVersion=${{ steps.meta.outputs.version }} -X github.com/sendbeam/desktop/internal/engine.GitCommit=${{ steps.meta.outputs.commit }}" \
+            -o bin/sendbeam-desktop-arm64 .
+
+      - name: Build amd64 slice
+        working-directory: apps/desktop
+        env:
+          CGO_ENABLED: 1
+          GOOS: darwin
+          GOARCH: amd64
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+        run: |
+          mkdir -p bin
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/sendbeam/desktop/internal/engine.ProductVersion=${{ steps.meta.outputs.version }} -X github.com/sendbeam/desktop/internal/engine.GitCommit=${{ steps.meta.outputs.commit }}" \
+            -o bin/sendbeam-desktop-amd64 .
+
+      - name: Create Universal Mach-O binary
+        working-directory: apps/desktop
+        run: |
+          lipo -create -output bin/sendbeam-desktop bin/sendbeam-desktop-arm64 bin/sendbeam-desktop-amd64
+          lipo -info bin/sendbeam-desktop | grep -q "x86_64"
+          lipo -info bin/sendbeam-desktop | grep -q "arm64"
+
+      - name: Assemble SendBeam.app bundle
+        working-directory: apps/desktop
+        run: |
+          APP_BUNDLE="bin/SendBeam.app"
+          rm -rf "$APP_BUNDLE"
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
+          mkdir -p "$APP_BUNDLE/Contents/Resources"
+          cp bin/sendbeam-desktop "$APP_BUNDLE/Contents/MacOS/sendbeam-desktop"
+          cp build/darwin/Info.plist "$APP_BUNDLE/Contents/Info.plist"
+          cp build/darwin/icons.icns "$APP_BUNDLE/Contents/Resources/icons.icns"
+
+          # Inject authoritative version values into Info.plist
+          plutil -replace CFBundleVersion -string "${{ steps.meta.outputs.macos_bundle_version }}" "$APP_BUNDLE/Contents/Info.plist"
+          plutil -replace CFBundleShortVersionString -string "${{ steps.meta.outputs.macos_short_version }}" "$APP_BUNDLE/Contents/Info.plist"
+          plutil -lint "$APP_BUNDLE/Contents/Info.plist"
+
+          codesign --force --deep --sign - "$APP_BUNDLE"
+
+      - name: Package macOS Universal ZIP and DMG
+        run: |
+          mkdir -p artifacts
+          ( cd apps/desktop/bin && zip -r -y "$GITHUB_WORKSPACE/artifacts/SendBeam-macos-universal.zip" "SendBeam.app" )
+
+          # Prepare DMG contents
+          DMG_STAGING="dmg-staging"
+          mkdir -p "$DMG_STAGING"
+          cp -R apps/desktop/bin/SendBeam.app "$DMG_STAGING/"
+          ln -s /Applications "$DMG_STAGING/Applications"
+
+          hdiutil create -volname "SendBeam" -srcfolder "$DMG_STAGING" -ov -format UDZO "$GITHUB_WORKSPACE/artifacts/SendBeam-macos-universal.dmg"
+          rm -rf "$DMG_STAGING"
+
+      - name: Validate macOS artifacts
+        run: |
+          test -f artifacts/SendBeam-macos-universal.zip
+          test -f artifacts/SendBeam-macos-universal.dmg
+
+          # Validate Info.plist in the assembled bundle
+          SHORT_VER=$(defaults read "$PWD/apps/desktop/bin/SendBeam.app/Contents/Info.plist" CFBundleShortVersionString)
+          BUNDLE_VER=$(defaults read "$PWD/apps/desktop/bin/SendBeam.app/Contents/Info.plist" CFBundleVersion)
+
+          echo "macOS CFBundleShortVersionString: $SHORT_VER"
+          echo "macOS CFBundleVersion: $BUNDLE_VER"
+
+          # Assert exact values match authoritative policy
+          test "$SHORT_VER" = "${{ steps.meta.outputs.macos_short_version }}"
+          test "$BUNDLE_VER" = "${{ steps.meta.outputs.macos_bundle_version }}"
+
+          # Validate Apple numeric dotted-version shape (X.Y.Z)
+          echo "$SHORT_VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+          echo "$BUNDLE_VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+
+          # Mount DMG and verify structure
+          MOUNT_POINT=$(mktemp -d)
+          hdiutil attach artifacts/SendBeam-macos-universal.dmg -mountpoint "$MOUNT_POINT" -nobrowse
+          test -d "$MOUNT_POINT/SendBeam.app"
+          test -L "$MOUNT_POINT/Applications"
+          hdiutil detach "$MOUNT_POINT"
+          rm -rf "$MOUNT_POINT"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-universal
+          path: artifacts/*
+          retention-days: 14
+
+  desktop-linux:
+    name: desktop (linux/amd64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: apps/desktop/go.sum
+
+      - name: Cache APT packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-webkit-${{ hashFiles('apps/desktop/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-webkit-
+
+      - name: Install Linux WebView / GTK dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev file dpkg
+
+      - name: Determine version metadata
+        id: meta
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            GITHUB_REF_TYPE="tag" GITHUB_REF_NAME="${{ inputs.tag }}" bash ./scripts/version-metadata.sh --github-output
+          else
+            bash ./scripts/version-metadata.sh --github-output
+          fi
+
+      - name: Build Linux Desktop Binary
+        working-directory: apps/desktop
+        env:
+          CGO_ENABLED: 1
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          mkdir -p bin
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/sendbeam/desktop/internal/engine.ProductVersion=${{ steps.meta.outputs.version }} -X github.com/sendbeam/desktop/internal/engine.GitCommit=${{ steps.meta.outputs.commit }}" \
+            -o bin/sendbeam-desktop .
+          file bin/sendbeam-desktop | grep -q "ELF 64-bit"
+
+      - name: Build Debian (.deb) Package
+        run: |
+          DEB_DIR="deb-staging/sendbeam-desktop"
+          mkdir -p "$DEB_DIR/usr/bin"
+          mkdir -p "$DEB_DIR/usr/share/applications"
+          mkdir -p "$DEB_DIR/usr/share/doc/sendbeam-desktop"
+          mkdir -p "$DEB_DIR/usr/share/icons/hicolor/512x512/apps"
+          mkdir -p "$DEB_DIR/usr/share/icons/hicolor/256x256/apps"
+          mkdir -p "$DEB_DIR/usr/share/icons/hicolor/128x128/apps"
+          mkdir -p "$DEB_DIR/usr/share/icons/hicolor/64x64/apps"
+          mkdir -p "$DEB_DIR/usr/share/icons/hicolor/32x32/apps"
+          mkdir -p "$DEB_DIR/usr/share/icons/hicolor/16x16/apps"
+          mkdir -p "$DEB_DIR/DEBIAN"
+
+          cp apps/desktop/bin/sendbeam-desktop "$DEB_DIR/usr/bin/"
+          chmod 755 "$DEB_DIR/usr/bin/sendbeam-desktop"
+          cp apps/desktop/build/linux/sendbeam-desktop.desktop "$DEB_DIR/usr/share/applications/"
+          cp apps/desktop/build/linux/sendbeam-desktop.png "$DEB_DIR/usr/share/icons/hicolor/512x512/apps/"
+          cp apps/desktop/build/icons/256x256.png "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/sendbeam-desktop.png"
+          cp apps/desktop/build/icons/128x128.png "$DEB_DIR/usr/share/icons/hicolor/128x128/apps/sendbeam-desktop.png"
+          cp apps/desktop/build/icons/64x64.png "$DEB_DIR/usr/share/icons/hicolor/64x64/apps/sendbeam-desktop.png"
+          cp apps/desktop/build/icons/32x32.png "$DEB_DIR/usr/share/icons/hicolor/32x32/apps/sendbeam-desktop.png"
+          cp apps/desktop/build/icons/16x16.png "$DEB_DIR/usr/share/icons/hicolor/16x16/apps/sendbeam-desktop.png"
+          cp LICENSE "$DEB_DIR/usr/share/doc/sendbeam-desktop/copyright"
+
+          cat <<EOF > "$DEB_DIR/DEBIAN/control"
+          Package: sendbeam-desktop
+          Version: ${{ steps.meta.outputs.deb_version }}
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Akshay <https://github.com/Akshay7273/sendbeam>
+          Description: SendBeam Desktop — Secure, peer-to-peer file transfer
+          Depends: libgtk-4-1 | libgtk-3-0, libwebkitgtk-6.0-4 | libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37
+          Homepage: https://omnitrix.space
+          EOF
+
+          mkdir -p artifacts
+          DEB_FILE="artifacts/sendbeam-desktop_${{ steps.meta.outputs.deb_version }}_amd64.deb"
+          dpkg-deb --build --root-owner-group "$DEB_DIR" "$DEB_FILE"
+
+      - name: Build AppImage Package
+        run: |
+          mkdir -p artifacts
+          APPDIR="appimage-staging/AppDir"
+          mkdir -p "$APPDIR/usr/bin"
+          mkdir -p "$APPDIR/usr/share/applications"
+          mkdir -p "$APPDIR/usr/share/icons/hicolor/512x512/apps"
+
+          cp apps/desktop/bin/sendbeam-desktop "$APPDIR/usr/bin/"
+          chmod 755 "$APPDIR/usr/bin/sendbeam-desktop"
+          cp apps/desktop/build/linux/appimage/AppRun "$APPDIR/AppRun"
+          chmod 755 "$APPDIR/AppRun"
+          cp apps/desktop/build/linux/sendbeam-desktop.desktop "$APPDIR/"
+          cp apps/desktop/build/linux/sendbeam-desktop.desktop "$APPDIR/usr/share/applications/"
+          cp apps/desktop/build/linux/sendbeam-desktop.png "$APPDIR/"
+          cp apps/desktop/build/linux/sendbeam-desktop.png "$APPDIR/usr/share/icons/hicolor/512x512/apps/"
+
+          # Fetch appimagetool continuous release
+          curl -sSL -o appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          sed -i 's|AI\x02|\x00\x00\x00|' appimagetool || true
+
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run "$APPDIR" artifacts/SendBeam-linux-amd64.AppImage
+
+      - name: Validate Linux Artifacts
+        run: |
+          test -f artifacts/sendbeam-desktop_${{ steps.meta.outputs.deb_version }}_amd64.deb
+          test -f artifacts/SendBeam-linux-amd64.AppImage
+
+          # Inspect Debian control metadata
+          dpkg-deb -f artifacts/sendbeam-desktop_${{ steps.meta.outputs.deb_version }}_amd64.deb Version | grep -q "${{ steps.meta.outputs.deb_version }}"
+          dpkg-deb -I artifacts/sendbeam-desktop_${{ steps.meta.outputs.deb_version }}_amd64.deb
+          dpkg-deb -c artifacts/sendbeam-desktop_${{ steps.meta.outputs.deb_version }}_amd64.deb | grep -q "usr/bin/sendbeam-desktop"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-amd64
+          path: artifacts/*
+          retention-days: 14
+
+  manifest:
+    name: release packaging & draft publication
+    runs-on: ubuntu-latest
+    needs: [cli, desktop-windows, desktop-macos, desktop-linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version metadata
+        id: meta
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            GITHUB_REF_TYPE="tag" GITHUB_REF_NAME="${{ inputs.tag }}" bash ./scripts/version-metadata.sh --github-output
+          else
+            bash ./scripts/version-metadata.sh --github-output
+          fi
+
+      - name: Test SBOM generator
+        run: bash ./scripts/generate-sbom_test.sh
+
+      - name: Generate SPDX SBOMs
+        run: |
+          mkdir -p sboms
+          bash ./scripts/generate-sbom.sh --target cli --output sboms/sendbeam-cli.spdx.json --version "${{ steps.meta.outputs.version }}" --commit "${{ steps.meta.outputs.commit }}"
+          bash ./scripts/generate-sbom.sh --target desktop --output sboms/sendbeam-desktop.spdx.json --version "${{ steps.meta.outputs.version }}" --commit "${{ steps.meta.outputs.commit }}"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+          merge-multiple: true
+
+      - name: Assemble release bundle
+        run: |
+          mkdir -p release-bundle
+          cp all-artifacts/* release-bundle/
+          cp sboms/* release-bundle/
+          cd release-bundle
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Validate checksums against bundle
+        working-directory: release-bundle
+        run: |
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Attest Build Provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release-bundle/*
+
+      - name: Attest CLI SBOM
+        uses: actions/attest-sbom@v2
+        with:
+          subject-path: release-bundle/sendbeam-cli-*
+          sbom-path: release-bundle/sendbeam-cli.spdx.json
+
+      - name: Attest Desktop SBOM
+        uses: actions/attest-sbom@v2
+        with:
+          subject-path: release-bundle/SendBeam-*
+          sbom-path: release-bundle/sendbeam-desktop.spdx.json
+
+      - name: Generate release notes
+        run: |
+          TAG_VAL="${{ inputs.tag || github.ref_name }}"
+          cat <<EOF > release-notes.md
+          ## SendBeam ${TAG_VAL}
+
+          ### Release Assets & Checksums
+
+          All binaries and installer packages are cryptographically checksummed in \`SHA256SUMS.txt\` and accompanied by in-toto build provenance attestations and SPDX 2.3 Software Bill of Materials (SBOMs).
+
+          \`\`\`bash
+          # Verify downloaded asset against SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt --ignore-missing
+          \`\`\`
+
+          ### Changes
+          EOF
+
+          # If release doc exists for this milestone, include excerpt
+          if [ -f "docs/RELEASE-${TAG_VAL%%.*}.md" ]; then
+            echo "" >> release-notes.md
+            head -n 30 "docs/RELEASE-${TAG_VAL%%.*}.md" >> release-notes.md || true
+          elif [ -f "docs/RELEASE-v1.6.md" ]; then
+            echo "" >> release-notes.md
+            head -n 30 "docs/RELEASE-v1.6.md" >> release-notes.md || true
+          fi
+
+      - name: Create or update draft GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ inputs.tag || github.ref_name }}"
+          PRERELEASE_OPT=""
+          if [ "${{ steps.meta.outputs.is_prerelease }}" = "true" ]; then
+            PRERELEASE_OPT="--prerelease"
+          fi
+
+          echo "Publishing draft release for tag ${TAG_NAME} (prerelease: ${{ steps.meta.outputs.is_prerelease }})..."
+
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            echo "Release ${TAG_NAME} exists; updating assets and notes..."
+            gh release edit "${TAG_NAME}" --draft ${PRERELEASE_OPT} --notes-file release-notes.md
+            gh release upload "${TAG_NAME}" release-bundle/* --clobber
+          else
+            echo "Creating draft release ${TAG_NAME}..."
+            gh release create "${TAG_NAME}" release-bundle/* \
+              --title "SendBeam ${{ steps.meta.outputs.display_version }}" \
+              --draft \
+              ${PRERELEASE_OPT} \
+              --notes-file release-notes.md
+          fi
+
+      - name: Upload complete release bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sendbeam-release-bundle-${{ steps.meta.outputs.version }}
+          path: release-bundle/*
+          retention-days: 30
+
+  verify:
+    name: release verification gate
+    runs-on: ubuntu-latest
+    needs: [manifest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version metadata
+        id: meta
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            GITHUB_REF_TYPE="tag" GITHUB_REF_NAME="${{ inputs.tag }}" bash ./scripts/version-metadata.sh --github-output
+          else
+            bash ./scripts/version-metadata.sh --github-output
+          fi
+
+      - name: Download release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: sendbeam-release-bundle-${{ steps.meta.outputs.version }}
+          path: bundle
+
+      - name: Verify checksums in bundle
+        working-directory: bundle
+        run: |
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Unpack and smoke test Linux CLI binary
+        working-directory: bundle
+        run: |
+          mkdir -p unpacked-cli
+          tar -xzf sendbeam-cli-linux-amd64.tar.gz -C unpacked-cli
+          test -x unpacked-cli/sendbeam
+          unpacked-cli/sendbeam version
+          unpacked-cli/sendbeam --help
+          unpacked-cli/sendbeam update --check --json
+          unpacked-cli/sendbeam transfers list
+
+      - name: Verify SPDX SBOM documents
+        working-directory: bundle
+        run: |
+          test -f sendbeam-cli.spdx.json
+          test -f sendbeam-desktop.spdx.json
+          python3 -c "import json; d = json.load(open('sendbeam-cli.spdx.json')); assert d['spdxVersion'] == 'SPDX-2.3'; assert len(d['packages']) > 1"
+          python3 -c "import json; d = json.load(open('sendbeam-desktop.spdx.json')); assert d['spdxVersion'] == 'SPDX-2.3'; assert len(d['packages']) > 1"
+
+      - name: Verify draft release status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ inputs.tag || github.ref_name }}"
+          echo "Verifying draft release state for ${TAG_NAME}..."
+          gh release view "${TAG_NAME}" --json isDraft,isPrerelease,tagName,assets | grep -q '"isDraft":true'
+          echo "Draft release successfully verified."

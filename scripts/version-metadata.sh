@@ -39,21 +39,29 @@ REF_NAME="${GITHUB_REF_NAME:-}"
 SHA="${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || echo "0000000000000000000000000000000000000000")}"
 SHORT_SHA="${SHA:0:12}"
 
-if [ "${REF_TYPE}" = "tag" ] && [[ "${REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [ "${REF_TYPE}" = "tag" ] && [[ "${REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
   # Strip leading 'v'
   RAW_VER="${REF_NAME#v}"
   PRODUCT_VERSION="${RAW_VER}"
   DISPLAY_VERSION="${RAW_VER}"
-  NUMERIC_VERSION="${RAW_VER}"
-  MACOS_SHORT_VERSION="${RAW_VER}"
-  MACOS_BUNDLE_VERSION="${RAW_VER}"
-  DEB_VERSION="${RAW_VER}"
+  NUMERIC_VERSION="${RAW_VER%%-*}"
+  MACOS_SHORT_VERSION="${NUMERIC_VERSION}"
+  MACOS_BUNDLE_VERSION="${NUMERIC_VERSION}"
+
+  if [[ "${RAW_VER}" == *-* ]]; then
+    IS_PRERELEASE="true"
+    DEB_VERSION="$(echo "${RAW_VER}" | sed 's/-/~/g')"
+  else
+    IS_PRERELEASE="false"
+    DEB_VERSION="${RAW_VER}"
+  fi
 
   # Parse semver components for Windows FixedFileInfo
-  IFS='.' read -r MAJOR MINOR PATCH <<< "${RAW_VER}"
+  IFS='.' read -r MAJOR MINOR PATCH_REST <<< "${RAW_VER}"
   WIN_MAJOR="${MAJOR:-0}"
   WIN_MINOR="${MINOR:-0}"
-  WIN_PATCH="${PATCH:-0}"
+  WIN_PATCH="${PATCH_REST%%-*}"
+  WIN_PATCH="${WIN_PATCH:-0}"
   WIN_BUILD="0"
   WINDOWS_FIXED_VERSION="${WIN_MAJOR}.${WIN_MINOR}.${WIN_PATCH}.${WIN_BUILD}"
 else
@@ -63,6 +71,7 @@ else
   MACOS_SHORT_VERSION="0.0.0"
   MACOS_BUNDLE_VERSION="0.0.0"
   DEB_VERSION="0.0.0~dev+git.${SHORT_SHA}"
+  IS_PRERELEASE="false"
 
   WIN_MAJOR="0"
   WIN_MINOR="0"
@@ -86,6 +95,7 @@ if [ "${OUTPUT_MODE}" = "--github-output" ] && [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "win_patch=${WIN_PATCH}"
     echo "win_build=${WIN_BUILD}"
     echo "deb_version=${DEB_VERSION}"
+    echo "is_prerelease=${IS_PRERELEASE}"
     echo "commit=${SHA}"
     echo "short_commit=${SHORT_SHA}"
   } >> "${GITHUB_OUTPUT}"
@@ -104,6 +114,7 @@ win_minor=${WIN_MINOR}
 win_patch=${WIN_PATCH}
 win_build=${WIN_BUILD}
 deb_version=${DEB_VERSION}
+is_prerelease=${IS_PRERELEASE}
 commit=${SHA}
 short_commit=${SHORT_SHA}
 EOF

@@ -45,8 +45,8 @@ func (r *loopbackRelay) route(from *loopbackEnd, m rendezvous.Message) {
 		r.once.Do(func() { close(r.created) })
 	case "join":
 		<-r.created
-		r.off.enqueue(rendezvous.Message{Type: "peer-joined", Role: r.off.role})
 		r.join.enqueue(rendezvous.Message{Type: "peer-joined", Role: r.join.role})
+		r.off.enqueue(rendezvous.Message{Type: "peer-joined", Role: r.off.role})
 	case rendezvous.TypeRelayOpen:
 		r.mu.Lock()
 		from.relayOpen = true
