@@ -19,9 +19,13 @@ export default defineConfig({
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
     { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+    { name: 'mobile-chrome', use: { ...devices['Pixel 7'] } },
     // WebKit support on Linux is best-effort; opt in locally with E2E_WEBKIT=1.
     ...(process.env.E2E_WEBKIT === '1'
-      ? [{ name: 'webkit', use: { ...devices['Desktop Safari'] } }]
+      ? [
+          { name: 'webkit', use: { ...devices['Desktop Safari'] } },
+          { name: 'mobile-safari', use: { ...devices['iPhone 14'] } },
+        ]
       : []),
   ],
   webServer: {

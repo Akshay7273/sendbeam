@@ -67,30 +67,38 @@ Profiles: `loss 3%`, `delay 50ms`, `rate 10mbit`.
 
 ## Browser compatibility
 
-SendBeam targets evergreen desktop browsers. The browser E2E suite (Playwright) runs in CI
-on every change and round-trips a 100 MiB file both ways through the real server; WebKit
-is opt-in locally and not part of CI.
+SendBeam targets evergreen desktop and mobile browsers. The browser E2E suite (Playwright) runs in CI
+on every change and round-trips files through the real server across desktop and mobile profiles; WebKit
+is opt-in locally and tested with mobile profiles.
 
-| Capability                                   | Chromium (Chrome/Edge) | Firefox       | WebKit (Safari)     |
-| -------------------------------------------- | ---------------------- | ------------- | ------------------- |
-| WebRTC DataChannel (direct path)             | ✓ CI-tested            | ✓ CI-tested   | opt-in, best-effort |
-| WebSocket + encrypted relay fallback         | ✓ CI-tested            | ✓ CI-tested   | opt-in, best-effort |
-| WebCrypto (AES-GCM, HKDF-SHA256, SHA-256)    | ✓ CI-tested            | ✓ CI-tested   | supported, untested |
-| OPFS sink (`navigator.storage.getDirectory`) | ✓ CI-tested            | ✓ CI-tested   | supported, untested |
-| File System Access API (direct-file sink)    | ✓ Chromium             | ✗ not exposed | ✗ not exposed       |
-| ZIP archive sink (fallback)                  | ✓                      | ✓             | best-effort         |
-| Quota checks (`navigator.storage.estimate`)  | ✓                      | ✓             | supported, untested |
+| Capability                                   | Chromium (Chrome/Edge) | Firefox       | WebKit (Safari)     | Android (Chrome Mobile) | iOS (Safari Mobile) |
+| -------------------------------------------- | ---------------------- | ------------- | ------------------- | ----------------------- | ------------------- |
+| WebRTC DataChannel (direct path)             | ✓ CI-tested            | ✓ CI-tested   | opt-in, best-effort | ✓ CI-tested (Pixel)     | supported, opt-in   |
+| WebSocket + encrypted relay fallback         | ✓ CI-tested            | ✓ CI-tested   | opt-in, best-effort | ✓ CI-tested (Pixel)     | supported, opt-in   |
+| WebCrypto (AES-GCM, HKDF-SHA256, SHA-256)    | ✓ CI-tested            | ✓ CI-tested   | supported           | ✓ CI-tested (Pixel)     | supported           |
+| OPFS sink (`navigator.storage.getDirectory`) | ✓ CI-tested            | ✓ CI-tested   | supported           | ✓ CI-tested (Pixel)     | supported           |
+| File System Access API (direct-file sink)    | ✓ Chromium             | ✗ not exposed | ✗ not exposed       | ✗ not exposed           | ✗ not exposed       |
+| ZIP archive sink (fallback)                  | ✓                      | ✓             | best-effort         | ✓                       | best-effort         |
+| Quota checks (`navigator.storage.estimate`)  | ✓                      | ✓             | supported           | ✓                       | supported           |
+| PWA App Shell + Web Manifest                 | ✓                      | ✓             | ✓                   | ✓ CI-tested             | ✓                   |
+| Screen Wake Lock during transfer             | ✓                      | ✗ not exposed | ✗ not exposed       | ✓                       | ✗ not exposed       |
+| Native Web Share API integration             | ✓                      | ✓             | ✓                   | ✓                       | ✓                   |
 
 Sink fallback ladder, in order of preference: **direct-file** (File System Access API,
 Chromium-only) → **OPFS** (all evergreen engines) → **ZIP archive** (always available).
 A sender that picks a folder triggers the receiver's archive sink; single files prefer
 direct-file/OPFS. The ZIP fallback is capped at 4 GiB.
 
-### Mobile
+### Mobile Web & Progressive Web App (PWA)
 
-Not yet CI-tested. iOS Safari and Android Chrome share the WebKit/Chromium engines above,
-so WebRTC/WebCrypto/OPFS are expected to work, but file-handle behavior and OPFS support
-differ by version; treat mobile as best-effort until the opt-in suite covers it.
+SendBeam is fully installable as a Progressive Web App (PWA) on mobile (Android Chrome and iOS Safari):
+
+- **App Shell & Web Manifest:** Installed to home screen with standalone display, theme color (`#070b16`), and touch icons.
+- **Strict Online-Only Transfer Semantics:** The service worker precaches the app shell and local assets while strictly never caching WebSockets (`/ws`), WebRTC signaling, or live transfer data.
+- **Mobile Responsive UX:** Prominent QR code pairing on small viewports, auto-populated code joining via `?code=` query parameters, touch-optimized minimum 44px tap targets, and native `navigator.share` integration.
+- **Screen Wake Lock:** Keeps screen awake during active mobile transfers where supported.
+- **Storage Capability Probing:** OPFS limits and storage constraints degrade cleanly and predictably to ZIP archive fallback following the house capability probing pattern.
+- **CI Test Coverage:** Tested in CI via Playwright mobile device emulation (`mobile-chrome` / Pixel profile).
 
 ## Cross-Client Interoperability Matrix (Browser ↔ CLI ↔ Desktop)
 

@@ -170,7 +170,30 @@
   }
 
   function readHashCode(): string {
-    return typeof window === 'undefined' ? '' : codeFromHash(window.location.hash);
+    if (typeof window === 'undefined') return '';
+    const hash = codeFromHash(window.location.hash);
+    if (hash) return hash;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const codeParam = params.get('code') || params.get('c');
+      if (codeParam) return codeParam.trim();
+    } catch {
+      // Ignore URL parsing errors in restricted environments
+    }
+    return '';
+  }
+
+  async function shareViaWebShare(): Promise<void> {
+    if (typeof navigator === 'undefined' || !('share' in navigator)) return;
+    try {
+      await navigator.share({
+        title: 'SendBeam Transfer',
+        text: `Receive files securely with SendBeam using code: ${code}`,
+        url: link,
+      });
+    } catch {
+      // User cancelled or share failed
+    }
   }
 
   /**
@@ -987,20 +1010,37 @@
         {#if link}
           <div class="invite">
             <div class="qr">
-              <QrCode data={link} size={128} />
-              <button class="link" onclick={() => copy(link)} title="Copy invite link">
-                {#if copied}
-                  Link copied
-                {:else}
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z"
-                      fill="currentColor"
-                    />
-                  </svg>
-                  Copy invite link
+              <QrCode data={link} size={144} />
+              <div class="invite-actions">
+                {#if typeof navigator !== 'undefined' && 'share' in navigator}
+                  <button
+                    class="primary share-btn"
+                    onclick={shareViaWebShare}
+                    title="Share invite link"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                    Share link
+                  </button>
                 {/if}
-              </button>
+                <button class="link" onclick={() => copy(link)} title="Copy invite link">
+                  {#if copied}
+                    Link copied
+                  {:else}
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                    Copy invite link
+                  {/if}
+                </button>
+              </div>
             </div>
           </div>
         {/if}
@@ -1365,7 +1405,7 @@
   main {
     max-width: 44rem;
     margin: 0 auto;
-    padding: 3.5rem 1.5rem 4rem;
+    padding: max(2rem, env(safe-area-inset-top)) 1.25rem max(3rem, env(safe-area-inset-bottom));
     line-height: 1.5;
   }
 
@@ -1388,6 +1428,7 @@
     border: 1px solid rgba(255, 255, 255, 0.12);
     color: #e4e4e7;
     padding: 0.4rem 0.8rem;
+    min-height: 44px;
     border-radius: 8px;
     font-size: 0.875rem;
     font-weight: 500;
@@ -1437,6 +1478,12 @@
       inset 0 1px 0 rgba(255, 255, 255, 0.05);
     backdrop-filter: blur(14px);
     padding: 1.75rem;
+  }
+  @media (max-width: 560px) {
+    .card {
+      padding: 1.25rem;
+      border-radius: 1rem;
+    }
   }
   .card-head h2 {
     margin: 0.6rem 0 0.3rem;
@@ -1653,26 +1700,48 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.75rem;
-    padding: 1.1rem;
+    gap: 0.85rem;
+    padding: 1.25rem;
     border-radius: 1rem;
     background: #f8faff;
     border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
   }
   .qr :global(canvas) {
     border-radius: 0.4rem;
+    max-width: 100%;
+    height: auto;
+  }
+  .invite-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+  }
+  .share-btn {
+    width: 100%;
+    padding: 0.6rem 1rem;
+    font-size: 0.9rem;
   }
   .link {
     background: none;
     border: none;
-    padding: 0;
-    color: #7dd3fc;
-    font-size: 0.85rem;
+    padding: 0.4rem 0.6rem;
+    min-height: 44px;
+    color: #2563eb;
+    font-size: 0.88rem;
+    font-weight: 600;
     text-align: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    cursor: pointer;
   }
   .link svg {
-    width: 0.9rem;
-    height: 0.9rem;
+    width: 1rem;
+    height: 1rem;
   }
   .link:hover {
     text-decoration: underline;
