@@ -1,24 +1,22 @@
 // Command sendbeamd serves the SendBeam web bundle over TLS (or reverse-proxies the Vite
-// development server), exposes /healthz, and hosts the blind signaling endpoint.
+// development server), exposes /healthz and /readyz, and hosts the blind signaling endpoint.
 package main
 
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/sendbeam/server/internal/httpserver"
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
 	cfg := httpserver.ConfigFromEnv()
+	logger := httpserver.BuildLogger(cfg.LogFormat, cfg.LogLevel)
+
 	srv, err := httpserver.New(cfg, logger)
 	if err != nil {
 		logger.Error("failed to build server", "err", err)
@@ -34,6 +32,7 @@ func main() {
 			"addr", cfg.Addr,
 			"tls", cfg.TLSCert != "",
 			"mode", cfg.Mode(),
+			"log_format", cfg.LogFormat,
 		)
 		errCh <- srv.ListenAndServe()
 	}()
@@ -46,7 +45,7 @@ func main() {
 		}
 	case <-ctx.Done():
 		logger.Info("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			logger.Error("graceful shutdown failed", "err", err)

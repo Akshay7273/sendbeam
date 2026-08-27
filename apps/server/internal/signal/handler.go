@@ -2,7 +2,6 @@ package signal
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,10 +20,18 @@ func (h *Hub) Handler(baseCtx context.Context) http.Handler {
 			h.logger.Warn("signal: rejected origin", "origin", r.Header.Get("Origin"))
 			return
 		}
-		if !h.allowConnection(clientIP(r)) {
-			http.Error(w, "too many connections", http.StatusTooManyRequests)
+
+		ip := ClientIP(r, h.trustedProxies)
+		ok, release, errCode := h.acquireConnection(ip)
+		if !ok {
+			if errCode == errDraining {
+				http.Error(w, "server shutting down", http.StatusServiceUnavailable)
+			} else {
+				http.Error(w, "too many connections", http.StatusTooManyRequests)
+			}
 			return
 		}
+		defer release()
 
 		// originAllowed above is our origin policy, so we disable the library's own
 		// origin check to keep that policy in one place (and to admit native clients
@@ -38,7 +45,7 @@ func (h *Hub) Handler(baseCtx context.Context) http.Handler {
 			return // Accept has already written the failure
 		}
 
-		p := newPeer(ws, h)
+		p := newPeer(ws, h, ip)
 		p.serve(baseCtx)
 	})
 }
@@ -64,15 +71,4 @@ func (h *Hub) originAllowed(r *http.Request) bool {
 		}
 	}
 	return false
-}
-
-// clientIP extracts the remote IP for per-IP rate limiting. It trusts only the direct
-// socket peer — the server sits behind no header-setting proxy in its threat model,
-// so forwarded-for headers are deliberately ignored (they are client-controlled).
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }

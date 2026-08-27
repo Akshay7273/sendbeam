@@ -67,6 +67,8 @@ const (
 	errRoomFull      = "room_full"
 	errNotPaired     = "not_paired"
 	errRateLimited   = "rate_limited"
+	errRoomLimit     = "room_limit"
+	errDraining      = "draining"
 	errProtocol      = "protocol"
 	errRelayNotReady = "relay_not_ready"
 	errRelayCredit   = "relay_credit"
@@ -170,16 +172,36 @@ func creditFrame(bytes int64) []byte {
 	return mustJSON(relayMsg{Type: typeCredit, Bytes: bytes})
 }
 
-// Config controls the signaling server's limits and origin policy.
+// Config controls the signaling server's limits, quotas, rate limiting, and origin policy.
 type Config struct {
 	// AllowedOrigins is the WSS origin allowlist for browser clients. An empty list
 	// permits only same-origin browser connections. Native clients (CLI) send no
 	// Origin header and are always allowed.
 	AllowedOrigins []string
 
+	// TrustedProxies is a list of CIDRs or bare IP addresses of upstream reverse proxies
+	// (e.g. "127.0.0.1/32, 10.0.0.0/8"). When set, client IP extraction trusts
+	// CF-Connecting-IP, X-Real-IP, and X-Forwarded-For headers from these peers.
+	TrustedProxies []string
+
+	// RateLimitEnabled controls whether token-bucket rate limiting and IP quotas are enforced.
+	RateLimitEnabled bool
+
+	// MaxConnections caps the global number of concurrent active WebSocket connections.
+	MaxConnections int
+
+	// MaxConnsPerIP caps the concurrent active WebSocket connections from a single client IP.
+	MaxConnsPerIP int
+
+	// MaxRooms caps the global number of concurrent signaling rooms.
+	MaxRooms int
+
 	// IdleTimeout closes a socket that sends nothing for this long, and bounds how
 	// long an unpaired room lingers before the reaper frees it.
 	IdleTimeout time.Duration
+
+	// DrainTimeout is the maximum duration to wait for active transfers to drain during shutdown.
+	DrainTimeout time.Duration
 
 	// MaxMessageBytes caps a single inbound WebSocket message; larger frames close
 	// the connection. Handshake and caps frames are small, so this stays modest.
@@ -189,10 +211,17 @@ type Config struct {
 	MsgBurst  int
 	MsgPerSec float64
 
-	// ConnBurst / ConnPerSec are the per-IP connection-rate token bucket applied at
-	// upgrade time.
+	// ConnBurst / ConnPerSec are the per-IP connection-rate token bucket applied at upgrade time.
 	ConnBurst  int
 	ConnPerSec float64
+
+	// RoomCreateBurst / RoomCreatePerSec are the per-IP room creation rate token bucket.
+	RoomCreateBurst  int
+	RoomCreatePerSec float64
+
+	// JoinFailBurst / JoinFailPerSec are the per-IP failed join attempt rate token bucket.
+	JoinFailBurst  int
+	JoinFailPerSec float64
 
 	// Relay limits bound every layer of the opaque binary data path.
 	MaxRelayFrameBytes   int64
@@ -207,12 +236,21 @@ type Config struct {
 // enough for ordinary transfers while keeping memory, bandwidth, and lifetime bytes explicit.
 func DefaultConfig() Config {
 	return Config{
+		RateLimitEnabled:     true,
+		MaxConnections:       10000,
+		MaxConnsPerIP:        32,
+		MaxRooms:             5000,
 		IdleTimeout:          10 * time.Minute,
+		DrainTimeout:         15 * time.Second,
 		MaxMessageBytes:      64 * 1024,
 		MsgBurst:             32,
 		MsgPerSec:            16,
 		ConnBurst:            16,
 		ConnPerSec:           8,
+		RoomCreateBurst:      8,
+		RoomCreatePerSec:     2.0,
+		JoinFailBurst:        10,
+		JoinFailPerSec:       1.0,
 		MaxRelayFrameBytes:   128 * 1024,
 		RelayWindowBytes:     1 * 1024 * 1024,
 		RelayQueueBytes:      2 * 1024 * 1024,
@@ -232,11 +270,61 @@ func ConfigFromEnv() Config {
 			}
 		}
 	}
+	if v := os.Getenv("SENDBEAM_TRUSTED_PROXIES"); v != "" {
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				cfg.TrustedProxies = append(cfg.TrustedProxies, p)
+			}
+		}
+	}
+	if b, ok := envBool("SENDBEAM_RATE_LIMIT_ENABLED"); ok {
+		cfg.RateLimitEnabled = b
+	}
+	if n, ok := envInt("SENDBEAM_MAX_CONNECTIONS"); ok {
+		cfg.MaxConnections = n
+	}
+	if n, ok := envInt("SENDBEAM_MAX_CONNS_PER_IP"); ok {
+		cfg.MaxConnsPerIP = n
+	}
+	if n, ok := envInt("SENDBEAM_MAX_ROOMS"); ok {
+		cfg.MaxRooms = n
+	}
 	if d, ok := envDuration("SENDBEAM_SIGNAL_IDLE_TIMEOUT"); ok {
 		cfg.IdleTimeout = d
 	}
+	if d, ok := envDuration("SENDBEAM_DRAIN_TIMEOUT"); ok {
+		cfg.DrainTimeout = d
+	}
 	if n, ok := envInt("SENDBEAM_SIGNAL_MAX_MESSAGE_BYTES"); ok {
 		cfg.MaxMessageBytes = int64(n)
+	}
+	if n, ok := envInt("SENDBEAM_SIGNAL_MSG_BURST"); ok {
+		cfg.MsgBurst = n
+	}
+	if f, ok := envFloat64("SENDBEAM_SIGNAL_MSG_PER_SEC"); ok {
+		cfg.MsgPerSec = f
+	}
+	if n, ok := envInt("SENDBEAM_CONN_BURST"); ok {
+		cfg.ConnBurst = n
+	} else if n, ok := envInt("SENDBEAM_SIGNAL_CONN_BURST"); ok {
+		cfg.ConnBurst = n
+	}
+	if f, ok := envFloat64("SENDBEAM_CONN_PER_SEC"); ok {
+		cfg.ConnPerSec = f
+	} else if f, ok := envFloat64("SENDBEAM_SIGNAL_CONN_PER_SEC"); ok {
+		cfg.ConnPerSec = f
+	}
+	if n, ok := envInt("SENDBEAM_ROOM_CREATE_BURST"); ok {
+		cfg.RoomCreateBurst = n
+	}
+	if f, ok := envFloat64("SENDBEAM_ROOM_CREATE_PER_SEC"); ok {
+		cfg.RoomCreatePerSec = f
+	}
+	if n, ok := envInt("SENDBEAM_JOIN_FAIL_BURST"); ok {
+		cfg.JoinFailBurst = n
+	}
+	if f, ok := envFloat64("SENDBEAM_JOIN_FAIL_PER_SEC"); ok {
+		cfg.JoinFailPerSec = f
 	}
 	if n, ok := envInt64("SENDBEAM_RELAY_MAX_FRAME_BYTES"); ok {
 		cfg.MaxRelayFrameBytes = n
@@ -257,6 +345,30 @@ func ConfigFromEnv() Config {
 		cfg.RelayMaxSessionBytes = n
 	}
 	return cfg
+}
+
+func envBool(key string) (bool, bool) {
+	v := os.Getenv(key)
+	if v == "" {
+		return false, false
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, false
+	}
+	return b, true
+}
+
+func envFloat64(key string) (float64, bool) {
+	v := os.Getenv(key)
+	if v == "" {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f <= 0 {
+		return 0, false
+	}
+	return f, true
 }
 
 func envDuration(key string) (time.Duration, bool) {

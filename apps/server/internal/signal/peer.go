@@ -30,9 +30,10 @@ type outboundFrame struct {
 // owns every write to ws; all other goroutines hand it frames through send. done is
 // closed exactly once to unwind both the reader and the writer.
 type peer struct {
-	ws     *websocket.Conn
-	hub    *Hub
-	logger *slog.Logger
+	ws       *websocket.Conn
+	hub      *Hub
+	logger   *slog.Logger
+	clientIP string
 
 	room int    // -1 until the peer creates or joins a room
 	role string // set on create/join
@@ -51,11 +52,12 @@ type peer struct {
 	graceful         bool // set when this peer sent a bye; makes teardown non-resumable
 }
 
-func newPeer(ws *websocket.Conn, h *Hub) *peer {
+func newPeer(ws *websocket.Conn, h *Hub, clientIP string) *peer {
 	return &peer{
 		ws:               ws,
 		hub:              h,
 		logger:           h.logger,
+		clientIP:         clientIP,
 		room:             -1,
 		send:             make(chan outboundFrame, 16),
 		relayRate:        newTokenBucket(int(h.cfg.RelayBurstBytes), float64(h.cfg.RelayBytesPerSec)),
@@ -69,7 +71,10 @@ func newPeer(ws *websocket.Conn, h *Hub) *peer {
 // the socket closes or a protocol error ends it, then tears the room down.
 func (p *peer) serve(ctx context.Context) {
 	p.ws.SetReadLimit(max(p.hub.cfg.MaxMessageBytes, p.hub.cfg.MaxRelayFrameBytes))
-	msgLimiter := newTokenBucket(p.hub.cfg.MsgBurst, p.hub.cfg.MsgPerSec)
+	var msgLimiter *tokenBucket
+	if p.hub.cfg.RateLimitEnabled {
+		msgLimiter = newTokenBucket(p.hub.cfg.MsgBurst, p.hub.cfg.MsgPerSec)
+	}
 
 	go p.writeLoop(ctx)
 	defer p.teardown()
@@ -112,12 +117,14 @@ func (p *peer) dispatch(data []byte, msgLimiter *tokenBucket) bool {
 		p.fail(errBadMessage, "invalid message")
 		return false
 	}
+	p.hub.recordMessage(m.Type)
+
 	if m.Type == typeRelayCredit {
-		if !p.relayControlRate.allow() {
+		if p.hub.cfg.RateLimitEnabled && !p.relayControlRate.allow() {
 			p.fail(errRateLimited, "too many relay credit messages")
 			return false
 		}
-	} else if !msgLimiter.allow() {
+	} else if msgLimiter != nil && !msgLimiter.allow() {
 		p.fail(errRateLimited, "too many messages")
 		return false
 	}
@@ -128,7 +135,11 @@ func (p *peer) dispatch(data []byte, msgLimiter *tokenBucket) bool {
 			p.fail(errProtocol, "already in a room")
 			return false
 		}
-		room := p.hub.createRoom(p)
+		room, code := p.hub.createRoom(p, p.clientIP)
+		if code != "" {
+			p.fail(code, "")
+			return false
+		}
 		p.logger.Info("signal: room created", "room", room)
 		p.enqueue(createdFrame(room))
 		return true
@@ -142,7 +153,7 @@ func (p *peer) dispatch(data []byte, msgLimiter *tokenBucket) bool {
 			p.fail(errBadMessage, "join requires a room")
 			return false
 		}
-		other, code := p.hub.join(p, *m.Room)
+		other, code := p.hub.join(p, *m.Room, p.clientIP)
 		if code != "" {
 			p.fail(code, "")
 			return false
@@ -161,7 +172,7 @@ func (p *peer) dispatch(data []byte, msgLimiter *tokenBucket) bool {
 			p.fail(errBadMessage, "resume requires a room")
 			return false
 		}
-		other, code := p.hub.resume(p, *m.Room, m.Role)
+		other, code := p.hub.resume(p, *m.Room, m.Role, p.clientIP)
 		if code != "" {
 			p.fail(code, "")
 			return false
