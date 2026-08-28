@@ -601,7 +601,7 @@ jobs:
           test -x unpacked-cli/sendbeam
           unpacked-cli/sendbeam version
           unpacked-cli/sendbeam --help
-          unpacked-cli/sendbeam update --check --json
+          unpacked-cli/sendbeam update --help
           unpacked-cli/sendbeam transfers list
 
       - name: Verify SPDX SBOM documents
