@@ -50,6 +50,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "${PUBKEY_FILE}" != /* ]]; then
+  PUBKEY_FILE="$(pwd)/${PUBKEY_FILE}"
+fi
+if [[ "${TARGET_DIR}" != /* ]]; then
+  TARGET_DIR="$(pwd)/${TARGET_DIR}"
+fi
+
 cd "${TARGET_DIR}"
 
 if [[ ! -f "SHA256SUMS.txt" ]]; then
