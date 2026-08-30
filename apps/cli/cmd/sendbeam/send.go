@@ -50,6 +50,7 @@ func executeSend(args []string, stdout, stderr io.Writer) int {
 	var iceServer iceServerList
 	fs.Var(&iceServer, "ice-server", "STUN server URL for direct-path candidates (repeatable; default stun:stun.l.google.com:19302)")
 	privateMode := fs.Bool("private", false, "enable negotiated traffic padding for wire privacy")
+	jitter := fs.Duration("jitter", 0, "maximum random scheduling jitter for relay frames (e.g. 15ms)")
 	jsonOutput := fs.Bool("json", false, "output structured JSON result")
 	concurrency := fs.Int("concurrency", 4, "maximum concurrent target transfers")
 	configDir := fs.String("config-dir", "", "path to custom configuration directory")
@@ -71,13 +72,13 @@ func executeSend(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(toDevices) == 0 {
-		return runSingleInteractiveSend(filePaths, *server, *insecure, *words, *relayOnly, iceServer, *privateMode, *jsonOutput, stdout, stderr)
+		return runSingleInteractiveSend(filePaths, *server, *insecure, *words, *relayOnly, iceServer, *privateMode, *jitter, *jsonOutput, stdout, stderr)
 	}
 
-	return runBroadcastSend(filePaths, toDevices, *server, *insecure, *relayOnly, iceServer, *privateMode, *jsonOutput, *concurrency, *configDir, stdout, stderr)
+	return runBroadcastSend(filePaths, toDevices, *server, *insecure, *relayOnly, iceServer, *privateMode, *jitter, *jsonOutput, *concurrency, *configDir, stdout, stderr)
 }
 
-func runSingleInteractiveSend(filePaths []string, server string, insecure bool, words int, relayOnly bool, iceServer iceServerList, privateMode bool, jsonOutput bool, stdout, stderr io.Writer) int {
+func runSingleInteractiveSend(filePaths []string, server string, insecure bool, words int, relayOnly bool, iceServer iceServerList, privateMode bool, jitter time.Duration, jsonOutput bool, stdout, stderr io.Writer) int {
 	ice, err := iceServers(iceServer)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", err)
@@ -189,6 +190,7 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 		},
 		ForceRelay:       relayOnly,
 		Private:          privateMode,
+		RelayJitter:      jitter,
 		ICEServers:       ice,
 		OnTransport:      transportPrinter,
 		OnConnect:        connectPrinter(fmt.Sprintf("Sending %s (%s) …", label, humanBytes(totalSize))),
@@ -267,7 +269,7 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 	return 0
 }
 
-func runBroadcastSend(filePaths []string, toDevices []string, server string, insecure bool, relayOnly bool, iceServer iceServerList, privateMode bool, jsonOutput bool, concurrency int, configDir string, stdout, stderr io.Writer) int {
+func runBroadcastSend(filePaths []string, toDevices []string, server string, insecure bool, relayOnly bool, iceServer iceServerList, privateMode bool, jitter time.Duration, jsonOutput bool, concurrency int, configDir string, stdout, stderr io.Writer) int {
 	env, err := InitCLIEnvironment(configDir)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam send: %v\n", err)
@@ -335,11 +337,12 @@ func runBroadcastSend(filePaths []string, toDevices []string, server string, ins
 			Label:  r.record.LocalLabel,
 			Signal: sig,
 			Spec: transfer.Spec{
-				Session:    session,
-				Sources:    sources,
-				ICEServers: ice,
-				ForceRelay: relayOnly,
-				Private:    privateMode,
+				Session:     session,
+				Sources:     sources,
+				ICEServers:  ice,
+				ForceRelay:  relayOnly,
+				Private:     privateMode,
+				RelayJitter: jitter,
 			},
 		}
 	}

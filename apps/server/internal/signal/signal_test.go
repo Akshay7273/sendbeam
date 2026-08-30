@@ -1,11 +1,14 @@
 package signal
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -481,4 +484,93 @@ func FuzzClientMsg(f *testing.F) {
 			t.Fatalf("clientMsg round-trip marshal failed for %+v: %v", m, err)
 		}
 	})
+}
+
+type captureLogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *captureLogHandler) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (h *captureLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *captureLogHandler) WithAttrs(_ []slog.Attr) slog.Handler {
+	return h
+}
+
+func (h *captureLogHandler) WithGroup(_ string) slog.Handler {
+	return h
+}
+
+func TestRelayZeroPerFrameLoggingAndMetricsAudit(t *testing.T) {
+	capture := &captureLogHandler{}
+	logger := slog.New(capture)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := DefaultConfig()
+	cfg.RelayWindowBytes = 1024 * 1024
+	hub := NewHub(ctx, cfg, logger)
+	srv := httptest.NewServer(hub.Handler(ctx))
+	defer srv.Close()
+
+	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+
+	offerer, joiner, _ := pair(t, url)
+	openRelay(t, offerer, joiner)
+
+	// Clear setup records
+	capture.mu.Lock()
+	setupCount := len(capture.records)
+	capture.records = nil
+	capture.mu.Unlock()
+
+	// Send credit
+	joiner.send(map[string]any{"type": typeRelayCredit, "bytes": 65536})
+	if got := offerer.recv(); got["type"] != typeCredit {
+		t.Fatalf("expected credit, got %v", got)
+	}
+
+	// Transmit several distinct binary payloads (mimicking padded frame ciphertexts)
+	frames := [][]byte{
+		bytes.Repeat([]byte{0xAA}, 256),
+		bytes.Repeat([]byte{0xBB}, 512),
+		bytes.Repeat([]byte{0xCC}, 1024),
+	}
+
+	for _, frame := range frames {
+		offerer.sendBinary(frame)
+		recvd := joiner.recvBinary()
+		if !bytes.Equal(recvd, frame) {
+			t.Fatalf("frame mismatch: received %d bytes, expected %d", len(recvd), len(frame))
+		}
+	}
+
+	// Audit logs: NO logs must be emitted during binary frame forwarding
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+
+	for _, rec := range capture.records {
+		msg := rec.Message
+		t.Errorf("unexpected log emitted during relay forwarding: %q (setup logs were %d)", msg, setupCount)
+	}
+
+	// Audit aggregate byte accounting
+	hub.mu.Lock()
+	totalRelayed := hub.relayBytes
+	hub.mu.Unlock()
+
+	expectedBytes := int64(256 + 512 + 1024)
+	if totalRelayed != expectedBytes {
+		t.Fatalf("aggregate relay bytes = %d, want %d", totalRelayed, expectedBytes)
+	}
 }

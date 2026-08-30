@@ -4,8 +4,11 @@ package relay
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"math/big"
 	"sync"
+	"time"
 
 	"github.com/sendbeam/engine/rendezvous"
 )
@@ -34,6 +37,7 @@ type Conn struct {
 	closed       bool
 	credit       int64
 	consumed     int64
+	jitterMax    time.Duration
 	handler      func([]byte)
 	pending      [][]byte
 	pendingBytes int64
@@ -116,6 +120,13 @@ func (c *Conn) HandleMessage(msg rendezvous.Message) bool {
 	}
 }
 
+// SetJitter configures maximum random scheduling jitter for outbound relay frames (0 disables jitter).
+func (c *Conn) SetJitter(jitter time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.jitterMax = jitter
+}
+
 // Send waits for receiver-granted capacity, then emits one opaque binary frame.
 func (c *Conn) Send(frame []byte) error {
 	size := int64(len(frame))
@@ -128,7 +139,24 @@ func (c *Conn) Send(frame []byte) error {
 		return errClosed
 	}
 	c.credit -= size
+	jitter := c.jitterMax
 	c.mu.Unlock()
+
+	if jitter > 0 {
+		if randInt, err := rand.Int(rand.Reader, big.NewInt(int64(jitter)+1)); err == nil {
+			d := time.Duration(randInt.Int64())
+			if d > 0 {
+				time.Sleep(d)
+			}
+		}
+		c.mu.Lock()
+		if c.closed {
+			c.mu.Unlock()
+			return errClosed
+		}
+		c.mu.Unlock()
+	}
+
 	return c.sig.SendBinary(frame)
 }
 

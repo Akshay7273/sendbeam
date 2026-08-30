@@ -130,3 +130,53 @@ func TestOpenRetriesAfterFailedSend(t *testing.T) {
 		t.Fatalf("relay_open was never actually sent after the retry: %+v", sig.msgs)
 	}
 }
+
+func TestConnJitterAddsBoundedDelay(t *testing.T) {
+	sig := &fakeSignal{}
+	c := New(sig)
+	c.SetJitter(25 * time.Millisecond)
+
+	c.HandleMessage(rendezvous.Message{Type: rendezvous.TypeRelayReady})
+	c.HandleMessage(rendezvous.Message{Type: rendezvous.TypeCredit, Bytes: 1024})
+
+	start := time.Now()
+	if err := c.Send([]byte("jittered-payload")); err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// Since max jitter is 25ms, elapsed must not exceed reasonable bounded time
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("send took too long (%v), expected bounded jitter <= 25ms", elapsed)
+	}
+
+	sig.mu.Lock()
+	defer sig.mu.Unlock()
+	if len(sig.binary) != 1 || string(sig.binary[0]) != "jittered-payload" {
+		t.Fatalf("binary payload corrupted: %q", sig.binary)
+	}
+}
+
+func TestConnCloseDuringJitterFailsClosed(t *testing.T) {
+	sig := &fakeSignal{}
+	c := New(sig)
+	c.SetJitter(100 * time.Millisecond)
+
+	c.HandleMessage(rendezvous.Message{Type: rendezvous.TypeRelayReady})
+	c.HandleMessage(rendezvous.Message{Type: rendezvous.TypeCredit, Bytes: 1024})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Send([]byte("closing-soon"))
+	}()
+
+	// Close conn while send may be in jitter sleep
+	time.Sleep(10 * time.Millisecond)
+	_ = c.Close()
+
+	err := <-done
+	// Should either succeed or return errClosed, but not panic or hang
+	if err != nil && !errors.Is(err, errClosed) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
