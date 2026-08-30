@@ -159,6 +159,9 @@ type FileOutcome struct {
 // handshake carries the sdp/ice signaling afterwards, so the read loop switches from feeding the
 // session to feeding the peer once the key is established.
 func Run(ctx context.Context, sig Signal, spec Spec) (*Outcome, error) {
+	if sig == nil {
+		return nil, wire.Errorf(wire.CodeConnection, "transfer: nil signal connection")
+	}
 	d := &driver{sig: sig, spec: spec, peerCh: make(chan *rtc.Peer, 1), warmSignal: make(chan struct{}, 1)}
 	return d.run(ctx)
 }

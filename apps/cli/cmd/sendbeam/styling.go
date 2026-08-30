@@ -57,6 +57,7 @@ func (s *style) dim(text string) string    { return s.paint(sgrDim, text) }
 func (s *style) cyan(text string) string   { return s.paint(sgrCyan, text) }
 func (s *style) green(text string) string  { return s.paint(sgrGreen, text) }
 func (s *style) yellow(text string) string { return s.paint(sgrYellow, text) }
+func (s *style) red(text string) string    { return s.paint(sgrRed, text) }
 func (s *style) grey(text string) string   { return s.paint(sgrGrey, text) }
 
 // check and cross render the ✔/✘ glyphs with color; plain output keeps the glyph

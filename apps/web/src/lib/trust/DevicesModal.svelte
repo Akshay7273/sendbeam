@@ -15,13 +15,15 @@
     open: boolean;
     onClose: () => void;
     onSendToDevice: (device: TrustedDeviceUI) => void;
+    onSendToDevices?: (devices: TrustedDeviceUI[]) => void;
   }
 
-  let { open = $bindable(), onClose, onSendToDevice }: Props = $props();
+  let { open = $bindable(), onClose, onSendToDevice, onSendToDevices }: Props = $props();
 
   let devices = $state<TrustedDeviceUI[]>([]);
   let loading = $state(false);
   let errorMessage = $state('');
+  let selectedDeviceIds = $state<Set<string>>(new Set());
 
   // Editing label state
   let editingDeviceId = $state<string | null>(null);
@@ -55,6 +57,39 @@
       errorMessage = err instanceof Error ? err.message : String(err);
     } finally {
       loading = false;
+    }
+  }
+
+  function toggleSelectDevice(deviceId: string) {
+    const next = new Set(selectedDeviceIds);
+    if (next.has(deviceId)) {
+      next.delete(deviceId);
+    } else {
+      next.add(deviceId);
+    }
+    selectedDeviceIds = next;
+  }
+
+  function selectAllUnrevoked() {
+    const unrevoked = devices.filter((d) => !d.revoked);
+    if (selectedDeviceIds.size === unrevoked.length) {
+      selectedDeviceIds = new Set();
+    } else {
+      selectedDeviceIds = new Set(unrevoked.map((d) => d.deviceId));
+    }
+  }
+
+  function handleSendSelected() {
+    const selected = devices.filter((d) => !d.revoked && selectedDeviceIds.has(d.deviceId));
+    if (selected.length === 1) {
+      onSendToDevice(selected[0]!);
+      onClose();
+    } else if (selected.length > 1 && onSendToDevices) {
+      onSendToDevices(selected);
+      onClose();
+    } else if (selected.length > 0) {
+      onSendToDevice(selected[0]!);
+      onClose();
     }
   }
 
@@ -226,11 +261,35 @@
             </button>
           </div>
         {:else}
+          {#if devices.filter((d) => !d.revoked).length > 1}
+            <div class="selection-toolbar">
+              <button class="btn-sm btn-toolbar" onclick={selectAllUnrevoked}>
+                {selectedDeviceIds.size === devices.filter((d) => !d.revoked).length
+                  ? 'Deselect All'
+                  : 'Select All'}
+              </button>
+              {#if selectedDeviceIds.size > 0}
+                <button class="btn-sm btn-primary btn-toolbar-send" onclick={handleSendSelected}>
+                  Send to {selectedDeviceIds.size} Selected Device{selectedDeviceIds.size === 1
+                    ? ''
+                    : 's'}…
+                </button>
+              {/if}
+            </div>
+          {/if}
           <div class="device-cards">
             {#each devices as dev (dev.deviceId)}
               <div class="device-card" class:revoked={dev.revoked}>
                 <div class="device-card-header">
                   <div class="device-title-row">
+                    {#if !dev.revoked}
+                      <input
+                        type="checkbox"
+                        class="device-checkbox"
+                        checked={selectedDeviceIds.has(dev.deviceId)}
+                        onchange={() => toggleSelectDevice(dev.deviceId)}
+                      />
+                    {/if}
                     {#if editingDeviceId === dev.deviceId}
                       <input
                         type="text"
@@ -650,6 +709,48 @@
     border-radius: 6px;
     font-weight: 500;
     cursor: pointer;
+  }
+
+  .selection-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding: 0.5rem 0.75rem;
+    background: #27272a;
+    border-radius: 6px;
+  }
+
+  .btn-toolbar {
+    background: #3f3f46;
+    color: #e4e4e7;
+    border: none;
+    padding: 0.35rem 0.7rem;
+    border-radius: 4px;
+    font-size: 0.8125rem;
+    cursor: pointer;
+  }
+
+  .btn-toolbar:hover {
+    background: #52525b;
+  }
+
+  .btn-toolbar-send {
+    background: #2563eb;
+    color: white;
+    font-weight: 500;
+  }
+
+  .btn-toolbar-send:hover {
+    background: #1d4ed8;
+  }
+
+  .device-checkbox {
+    width: 1.1rem;
+    height: 1.1rem;
+    cursor: pointer;
+    accent-color: #2563eb;
   }
 
   .device-cards {

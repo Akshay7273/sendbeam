@@ -22,7 +22,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/sendbeam/engine/rendezvous"
 	"github.com/sendbeam/engine/transfer"
@@ -74,7 +73,7 @@ func usage(w *os.File) {
 	_, _ = fmt.Fprintln(w, s.bold("SendBeam — secure peer-to-peer file transfer"))
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "Usage:")
-	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam send")+" <file-or-folder>... [@device] [flags]")
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam send")+" <file-or-folder>... [@device...] [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam receive")+" <code|link> [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam devices")+" [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam pair")+" [code] [flags]")
@@ -94,230 +93,15 @@ func usage(w *os.File) {
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, s.dim("Send flags:"))
 	_, _ = fmt.Fprintln(w, "  --words N                number of words in the invite code (0 = default)")
-	_, _ = fmt.Fprintln(w, "  --to DEVICE              send directly to trusted device name, ID, or fingerprint")
+	_, _ = fmt.Fprintln(w, "  --to DEVICE              send directly to trusted device name, ID, or fingerprint (repeatable)")
+	_, _ = fmt.Fprintln(w, "  --concurrency N          max concurrent transfers for multi-device broadcast (default 4)")
+	_, _ = fmt.Fprintln(w, "  --json                   output structured JSON result")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, s.dim("Receive flags:"))
 	_, _ = fmt.Fprintln(w, "  --out DIR                directory to write the received file into (default .)")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, s.dim("Transfers flags:"))
 	_, _ = fmt.Fprintln(w, "  --out DIR                directory whose .sendbeam durable store to manage (default .)")
-}
-
-func runSend(args []string) int {
-	fs := flag.NewFlagSet("send", flag.ExitOnError)
-	server := fs.String("server", defaultServer, "signaling server URL")
-	insecure := fs.Bool("insecure-skip-verify", false, "skip TLS verification (self-signed dev certs only)")
-	words := fs.Int("words", 0, "number of words in the invite code (0 = default)")
-	toDevice := fs.String("to", "", "send directly to trusted device name, ID, or fingerprint")
-	relayOnly := fs.Bool("relay-only", false, "force the encrypted WebSocket relay")
-	var iceServer iceServerList
-	fs.Var(&iceServer, "ice-server", "STUN server URL for direct-path candidates (repeatable; default stun:stun.l.google.com:19302)")
-	rawPositionals := parseArgs(fs, args)
-
-	var filePaths []string
-	targetDevice := *toDevice
-	for _, pos := range rawPositionals {
-		if strings.HasPrefix(pos, "@") {
-			targetDevice = strings.TrimPrefix(pos, "@")
-		} else {
-			filePaths = append(filePaths, pos)
-		}
-	}
-
-	if len(filePaths) == 0 {
-		fmt.Fprintln(os.Stderr, "sendbeam send: a file to send is required")
-		return 2
-	}
-
-	if targetDevice != "" {
-		env, err := InitCLIEnvironment("")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "sendbeam send: %v\n", err)
-			return 1
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		dev, err := ResolveDevice(ctx, env.TrustStore, targetDevice)
-		cancel()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "sendbeam send: %v\n", err)
-			return 1
-		}
-		if dev.Revoked {
-			fmt.Fprintf(os.Stderr, "sendbeam send: trust for device %q is revoked\n", dev.LocalLabel)
-			return 1
-		}
-		s := newStyle(os.Stderr)
-		fmt.Fprintf(os.Stderr, "Sending to trusted device %s (%s)...\n", s.bold(dev.LocalLabel), dev.Fingerprint())
-	}
-
-	ice, err := iceServers(iceServer)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sendbeam send: %s\n", err)
-		return 2
-	}
-	sources, totalSize, err := transfer.NewOSFileSources(filePaths)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sendbeam send: %s\n", err)
-		return 1
-	}
-	// Sender restart state (V13-PR04): the stable transfer id and the canonical source
-	// identity are persisted strictly before the manifest frame is transmitted, so a
-	// crash can be resumed by re-running the same command. A missing, changed, or
-	// corrupt source state fails closed before anything is advertised.
-	senderDir, err := transfer.SenderStoreDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sendbeam send: %s\n", err)
-		return 1
-	}
-	senderStore, err := transfer.OpenSenderStore(senderDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sendbeam send: %s\n", err)
-		return 1
-	}
-	transferID, onSendManifest, reused, err := transfer.PrepareSender(senderStore, filePaths, sources)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sendbeam send: %s\n", err)
-		return 1
-	}
-	// V13-PR08 cross-session resume: a reused record resumes only through authenticated
-	// resume-auth (a fresh invite code authenticates the NEW session only). A record
-	// without a transfer-scoped credential is legacy pre-PR07 state: the id must never be
-	// reused, so the send refuses with explicit restart/discard guidance. With a
-	// credential, this send advertises resume-auth-v1 and authenticates with the original
-	// receiver before any verified progress is reused.
-	session := rendezvous.Options{
-		Role:      rendezvous.RoleOfferer,
-		WordCount: *words,
-		OnCode:    codePrinter(*server),
-		OnPhase:   phasePrinter(rendezvous.RoleOfferer),
-	}
-	var resumeCtx *transfer.ResumeContext
-	if reused {
-		srec, ok, lookupErr := senderStore.Lookup(transfer.PathKey(filePaths))
-		if lookupErr != nil {
-			fmt.Fprintf(os.Stderr, "sendbeam send: %s\n", lookupErr)
-			return 1
-		}
-		if !ok {
-			fmt.Fprintf(os.Stderr, "sendbeam send: the sender record for the interrupted transfer vanished; the source cannot be verified — nothing was sent. Start fresh or discard any receiver-side state.\n")
-			return 1
-		}
-		if srec.ResumeSecret == nil {
-			// Legacy pre-PR07 record: no transfer-scoped credential, so authenticated
-			// cross-session resume is unavailable and the id must not be reused (the
-			// receiver would otherwise silently trust old progress). No downgrade path is
-			// offered: an old receiver/binary/protocol is never recommended as a
-			// workaround. The only actions are discard/forget the record and start a
-			// fresh transfer.
-			fmt.Fprintf(os.Stderr, "sendbeam send: the sender record for transfer %s carries no resume credential (legacy pre-PR07 state); authenticated cross-session resume is unavailable and the transfer id cannot be reused — nothing was sent. Discard the record with %q and send fresh.\n",
-				srec.TransferID, "sendbeam transfers discard "+srec.TransferID)
-			return 1
-		}
-		secret, err := wire.DecodeResumeSecretEnvelope(srec.ResumeSecret)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "sendbeam send: sender record %s has a corrupt resume credential (%v); refusing to reuse the id — discard the record with %q\n",
-				srec.TransferID, err, "sendbeam transfers discard "+srec.TransferID)
-			return 1
-		}
-		resumeCtx = &transfer.ResumeContext{
-			TransferID:          srec.TransferID,
-			ManifestFingerprint: srec.ManifestFingerprint,
-			Role:                wire.RoleOfferer,
-			ResumeSecret:        secret,
-		}
-		caps := rendezvous.DefaultCaps()
-		caps.Features = append(caps.Features, wire.ResumeAuthCapability)
-		session.LocalCaps = &caps
-		s := newStyle(os.Stderr)
-		fmt.Fprintln(os.Stderr, s.dim("Interrupted transfer "+transferID+" — resuming requires authenticating with the original receiver before any verified progress is reused."))
-	}
-	progressFiles := make([]progressFile, len(sources))
-	for i, source := range sources {
-		meta := source.Meta()
-		progressFiles[i] = progressFile{name: meta.Name, size: meta.Size}
-	}
-	label := progressFiles[0].name
-	if len(progressFiles) > 1 {
-		label = fmt.Sprintf("%d files", len(progressFiles))
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	client, err := dial(ctx, *server, *insecure)
-	if err != nil {
-		s := newStyle(os.Stderr)
-		fmt.Fprintf(os.Stderr, "\n%s\n", s.cross("Failed: "+handshakeError(err)))
-		return 1
-	}
-	defer client.Close()
-
-	progress := newProgress(totalSize)
-	progress.setFiles(progressFiles)
-	out, err := transfer.Run(ctx, client, transfer.Spec{
-		Session:        session,
-		Sources:        sources,
-		TransferID:     transferID,
-		OnSendManifest: onSendManifest,
-		// V13-PR07: after the record (or its verification) persisted above, attach the
-		// transfer-scoped resume credential derived from the ORIGINAL session master —
-		// strictly before the manifest frame is transmitted. Only a record created during
-		// THIS original session (reused == false) may receive the credential; a reused
-		// record keeps exactly what it already has (a pre-PR07 or no-secret record stays
-		// without one — never fabricated from a later session master).
-		OnResumeCredential: func(manifest wire.Manifest, resumeRoot []byte) error {
-			return senderStore.AttachResumeSecret(manifest, resumeRoot, !reused)
-		},
-		Resume: resumeCtx,
-		OnResume: func(r transfer.ResumeResult) {
-			s := newStyle(os.Stderr)
-			if r.Authenticated {
-				fmt.Fprintln(os.Stderr, s.check("Authenticated with the original receiver — resuming from the verified checkpoint with fresh keys."))
-			} else if r.Attempted {
-				fmt.Fprintln(os.Stderr, s.cyan("Authenticating the interrupted transfer with the receiver …"))
-			}
-		},
-		ForceRelay:       *relayOnly,
-		ICEServers:       ice,
-		OnTransport:      transportPrinter,
-		OnConnect:        connectPrinter(fmt.Sprintf("Sending %s (%s) …", label, humanBytes(totalSize))),
-		OnFileProgress:   progress.reportFile,
-		OnResumeProgress: progress.setReused,
-		OnControls:       terminalControls(),
-		OnStateChange:    progress.setState,
-	})
-	progress.finish()
-	s := newStyle(os.Stderr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "\n%s\n", s.cross("Failed: "+handshakeError(err)))
-		// The sender record was persisted before the manifest went out: keep it and tell
-		// the user how to resume. Lookup is bounded to this source set and idempotent.
-		if srec, ok, lookupErr := senderStore.Lookup(transfer.PathKey(filePaths)); lookupErr == nil && ok {
-			fmt.Fprintf(os.Stderr, "%s\n", s.dim("Sender state for transfer "+srec.TransferID+" was kept; re-run this command to resume it with the same receiver."))
-		}
-		return 1
-	}
-	// Verified success: drop the sender record for this source set (bounded cleanup, never
-	// implicit for other transfers). A corrupt record can only have appeared after the
-	// transfer, so surface it for manual discard without failing the send.
-	if srec, ok, lookupErr := senderStore.Lookup(transfer.PathKey(filePaths)); lookupErr == nil && ok {
-		if err := senderStore.Discard(srec.TransferID); err != nil {
-			fmt.Fprintf(os.Stderr, "sendbeam send: warning: could not discard sender record %s: %v\n", srec.TransferID, err)
-		}
-	}
-	fmt.Println()
-	if len(out.Files) == 1 {
-		fmt.Println(s.green("✓") + " Sent " + s.bold(out.Name) + " (" + humanBytes(out.Size) + ").")
-	} else {
-		fmt.Println(s.green("✓") + " Sent " + s.bold(fmt.Sprintf("%d files", len(out.Files))) + " (" + humanBytes(out.Size) + ").")
-	}
-	fmt.Printf("  %s  %s\n", s.grey("Fingerprint:"), fingerprint(out.Handshake.Master))
-	if len(out.Files) == 1 {
-		fmt.Printf("  %s  %s\n", s.grey("SHA-256:"), out.Digest)
-	} else {
-		fmt.Printf("  %s  %s\n", s.grey("File-set SHA-256:"), out.Digest)
-	}
-	return 0
 }
 
 func runReceive(args []string) int {
