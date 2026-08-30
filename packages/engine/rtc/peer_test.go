@@ -3,6 +3,7 @@ package rtc
 import (
 	"bytes"
 	"context"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,14 @@ import (
 // hostOnly forces ICE to gather host candidates only (no STUN), so the loopback test needs no
 // network egress: on a machine with a working loopback the two peers connect over 127.0.0.1.
 var hostOnly = []webrtc.ICEServer{}
+
+func testLoopbackAPI() *webrtc.API {
+	s := webrtc.SettingEngine{}
+	s.SetIncludeLoopbackCandidate(true)
+	s.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() })
+	s.SetICETimeouts(10*time.Second, 20*time.Second, 2*time.Second)
+	return webrtc.NewAPI(webrtc.WithSettingEngine(s))
+}
 
 // linkedPeers wires an offerer and a joiner mouth-to-ear over two buffered signaling channels,
 // each drained by a goroutine that feeds the other peer's Accept. Decoupling through channels
@@ -32,6 +41,13 @@ func linkedPeersOptions(t testing.TB, offOpts, joinOpts PeerOptions) (offerer, j
 	toJoiner := make(chan rendezvous.Message, 64)
 	toOfferer := make(chan rendezvous.Message, 64)
 
+	api := testLoopbackAPI()
+	if offOpts.API == nil {
+		offOpts.API = api
+	}
+	if joinOpts.API == nil {
+		joinOpts.API = api
+	}
 	offOpts.Role = wire.RoleOfferer
 	offOpts.Auth = offAuth
 	offOpts.ICEServers = hostOnly
@@ -237,8 +253,9 @@ func TestPeerRecoveryCallbacks(t *testing.T) {
 	toOfferer := make(chan rendezvous.Message, 64)
 	offAuth, joinAuth := newPair(testRoom)
 
+	api := testLoopbackAPI()
 	offerer, err := NewPeer(PeerOptions{
-		Role: wire.RoleOfferer, Auth: offAuth, ICEServers: hostOnly,
+		Role: wire.RoleOfferer, Auth: offAuth, ICEServers: hostOnly, API: api,
 		Send:            func(m rendezvous.Message) error { toJoiner <- m; return nil },
 		RecoverWindow:   30 * time.Millisecond,
 		OnRecovering:    record,
@@ -248,20 +265,23 @@ func TestPeerRecoveryCallbacks(t *testing.T) {
 		t.Fatalf("new offerer: %v", err)
 	}
 	joiner, err := NewPeer(PeerOptions{
-		Role: wire.RoleJoiner, Auth: joinAuth, ICEServers: hostOnly,
+		Role: wire.RoleJoiner, Auth: joinAuth, ICEServers: hostOnly, API: api,
 		Send: func(m rendezvous.Message) error { toOfferer <- m; return nil },
 	})
 	if err != nil {
 		_ = offerer.Close()
 		t.Fatalf("new joiner: %v", err)
 	}
+	var drop atomic.Bool
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		for {
 			select {
 			case m := <-toJoiner:
-				joiner.Accept(m)
+				if !drop.Load() {
+					joiner.Accept(m)
+				}
 			case <-done:
 				return
 			}
@@ -271,7 +291,9 @@ func TestPeerRecoveryCallbacks(t *testing.T) {
 		for {
 			select {
 			case m := <-toOfferer:
-				offerer.Accept(m)
+				if !drop.Load() {
+					offerer.Accept(m)
+				}
 			case <-done:
 				return
 			}
@@ -313,6 +335,7 @@ func TestPeerRecoveryCallbacks(t *testing.T) {
 	}
 
 	// A bounded, unrecovered window fails over within the window, without leaking the timer.
+	drop.Store(true)
 	recoverFailed.Store(false)
 	offerer.enterRecover()
 	deadline := time.Now().Add(5 * time.Second)
@@ -359,11 +382,13 @@ func TestPeerRepeatedRecoveryCyclesKeepChannelAlive(t *testing.T) {
 		}
 		// Enter and clear the recovery window (the transient disconnect it models).
 		offerer.enterRecover()
-		// Wait for the offer/answer exchange to settle to stable state on both peers.
+		// Wait for the offer/answer exchange and ICE re-establishment to settle on both peers.
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			if offerer.pc.SignalingState() == webrtc.SignalingStateStable &&
-				joiner.pc.SignalingState() == webrtc.SignalingStateStable {
+				joiner.pc.SignalingState() == webrtc.SignalingStateStable &&
+				(offerer.pc.ICEConnectionState() == webrtc.ICEConnectionStateConnected || offerer.pc.ICEConnectionState() == webrtc.ICEConnectionStateCompleted) &&
+				(joiner.pc.ICEConnectionState() == webrtc.ICEConnectionStateConnected || joiner.pc.ICEConnectionState() == webrtc.ICEConnectionStateCompleted) {
 				break
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -394,8 +419,9 @@ func TestPeerTeardownDuringRecoveryIsClean(t *testing.T) {
 	toOfferer := make(chan rendezvous.Message, 64)
 	var recoverFailed atomic.Bool
 
+	api := testLoopbackAPI()
 	offerer, err := NewPeer(PeerOptions{
-		Role: wire.RoleOfferer, Auth: offAuth, ICEServers: hostOnly,
+		Role: wire.RoleOfferer, Auth: offAuth, ICEServers: hostOnly, API: api,
 		Send:            func(m rendezvous.Message) error { toJoiner <- m; return nil },
 		RecoverWindow:   50 * time.Millisecond,
 		OnRecoverFailed: func() { recoverFailed.Store(true) },
@@ -404,7 +430,7 @@ func TestPeerTeardownDuringRecoveryIsClean(t *testing.T) {
 		t.Fatalf("new offerer: %v", err)
 	}
 	joiner, err := NewPeer(PeerOptions{
-		Role: wire.RoleJoiner, Auth: joinAuth, ICEServers: hostOnly,
+		Role: wire.RoleJoiner, Auth: joinAuth, ICEServers: hostOnly, API: api,
 		Send: func(m rendezvous.Message) error { toOfferer <- m; return nil },
 	})
 	if err != nil {
