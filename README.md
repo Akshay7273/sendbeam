@@ -179,11 +179,17 @@ SendBeam is fully optimized for mobile devices and installable as a PWA on Andro
 SendBeam v1.5 introduces cryptographic device identity, mutual pairing, and instant transfer automation across your personal device fleet — with zero cloud accounts or centralized directories:
 
 - **Pair Once, Connect Forever:** Pair two devices over an authenticated SPAKE2 ceremony (`sendbeam pair` in CLI, or via Web/Desktop UI). Once paired, devices establish mutual forward-secret sessions (`sendbeam/2`) without typing room codes.
-- **Targeted Sending:** Send files directly to any paired device by name or ID:
+- **Targeted & Multi-Device Broadcast Sending (v1.7):** Send files directly to one or multiple paired devices concurrently with independent failure isolation:
   ```bash
   sendbeam send report.pdf @macbook
+  sendbeam send report.pdf @laptop @phone @desktop
   ```
 - **Automated Receiver Listener:** Run `sendbeam listen` on home servers or workstations to automatically receive files from authorized devices under strict path-contained policies (`--dest`, `--max-size`, `--auto-accept`).
+- **Wire Privacy & Traffic Padding (v1.7):** Opt-in `--private` mode quantizes frame payloads into discrete power-of-two buckets ($256, 512, \dots, 65535$) and introduces sender timing jitter, concealing exact file sizes and burst timing signatures from network observers:
+  ```bash
+  sendbeam send --private sensitive-doc.pdf
+  ```
+- **Signed Mesh Revocation Sync (v1.7):** Revoking a device propagates signed revocation records across mutual peers in your mesh automatically and verifiably.
 - **Privacy-Preserving Presence:** Devices announce availability using 15-minute epoch-rotated blinded handles across the Internet and blinded UDP multicast beacons on LANs. The rendezvous server never learns device identities, IP associations, or pairwise relationships.
 - **Unified Across All Platforms:** Supported in the CLI, Desktop application, and evergreen web browsers via origin-scoped IndexedDB storage.
 
@@ -235,6 +241,7 @@ Full analysis, accepted limitations, and the trust boundary are in the
 - [Supply Chain Integrity](docs/supply-chain.md) — build provenance attestations, SPDX 2.3 SBOMs, checksum manifests
 - [Updater Architecture](docs/updater.md) — self-update channels, cryptographic verification, and rollback safety
 - [Distribution](docs/distribution.md) — multi-platform packaging, artifacts, and build metadata
+- [Release Gate v1.7](docs/RELEASE-v1.7.md) — v1.7 milestone criteria, verification evidence, and release checklist
 - [Release Gate v1.6](docs/RELEASE-v1.6.md) — v1.6 milestone criteria, verification evidence, and release checklist
 - [Release Gate v1.5](docs/RELEASE-v1.5.md) — v1.5 milestone criteria, verification evidence, and release checklist
 - [Release Gate v1.4](docs/RELEASE-v1.4.md) — v1.4 milestone criteria, verification evidence, and release checklist
