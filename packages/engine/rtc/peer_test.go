@@ -22,28 +22,32 @@ var hostOnly = []webrtc.ICEServer{}
 // (rather than calling Accept inline from Send) avoids re-entrancy: handling an offer synchronously
 // signs and sends the answer, which would otherwise recurse back into the sender.
 func linkedPeers(t testing.TB) (offerer, joiner *Peer) {
+	return linkedPeersOptions(t, PeerOptions{}, PeerOptions{})
+}
+
+func linkedPeersOptions(t testing.TB, offOpts, joinOpts PeerOptions) (offerer, joiner *Peer) {
 	t.Helper()
 	offAuth, joinAuth := newPair(testRoom)
 
 	toJoiner := make(chan rendezvous.Message, 64)
 	toOfferer := make(chan rendezvous.Message, 64)
 
+	offOpts.Role = wire.RoleOfferer
+	offOpts.Auth = offAuth
+	offOpts.ICEServers = hostOnly
+	offOpts.Send = func(m rendezvous.Message) error { toJoiner <- m; return nil }
+
+	joinOpts.Role = wire.RoleJoiner
+	joinOpts.Auth = joinAuth
+	joinOpts.ICEServers = hostOnly
+	joinOpts.Send = func(m rendezvous.Message) error { toOfferer <- m; return nil }
+
 	var err error
-	offerer, err = NewPeer(PeerOptions{
-		Role:       wire.RoleOfferer,
-		Auth:       offAuth,
-		ICEServers: hostOnly,
-		Send:       func(m rendezvous.Message) error { toJoiner <- m; return nil },
-	})
+	offerer, err = NewPeer(offOpts)
 	if err != nil {
 		t.Fatalf("new offerer: %v", err)
 	}
-	joiner, err = NewPeer(PeerOptions{
-		Role:       wire.RoleJoiner,
-		Auth:       joinAuth,
-		ICEServers: hostOnly,
-		Send:       func(m rendezvous.Message) error { toOfferer <- m; return nil },
-	})
+	joiner, err = NewPeer(joinOpts)
 	if err != nil {
 		_ = offerer.Close()
 		t.Fatalf("new joiner: %v", err)
@@ -495,54 +499,14 @@ func TestPeerOnICEStatePublishesTransitions(t *testing.T) {
 	var mu sync.Mutex
 	var connectionStates []webrtc.ICEConnectionState
 
-	toJoiner := make(chan rendezvous.Message, 64)
-	toOfferer := make(chan rendezvous.Message, 64)
-	offAuth, joinAuth := newPair(testRoom)
-
-	offerer, err := NewPeer(PeerOptions{
-		Role: wire.RoleOfferer, Auth: offAuth, ICEServers: hostOnly,
-		Send: func(m rendezvous.Message) error { toJoiner <- m; return nil },
+	offerer, joiner := linkedPeersOptions(t, PeerOptions{
 		OnICEState: func(s ICEState) {
 			fired.Store(true)
 			mu.Lock()
 			connectionStates = append(connectionStates, s.Connection)
 			mu.Unlock()
 		},
-	})
-	if err != nil {
-		t.Fatalf("new offerer: %v", err)
-	}
-	joiner, err := NewPeer(PeerOptions{
-		Role: wire.RoleJoiner, Auth: joinAuth, ICEServers: hostOnly,
-		Send: func(m rendezvous.Message) error { toOfferer <- m; return nil },
-	})
-	if err != nil {
-		_ = offerer.Close()
-		t.Fatalf("new joiner: %v", err)
-	}
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		for {
-			select {
-			case m := <-toJoiner:
-				joiner.Accept(m)
-			case <-done:
-				return
-			}
-		}
-	}()
-	go func() {
-		for {
-			select {
-			case m := <-toOfferer:
-				offerer.Accept(m)
-			case <-done:
-				return
-			}
-		}
-	}()
-	defer func() { _ = offerer.Close(); _ = joiner.Close() }()
+	}, PeerOptions{})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

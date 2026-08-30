@@ -149,6 +149,11 @@
     startSend();
   }
 
+  function handleSendToTrustedDevices(devs: TrustedDeviceUI[]) {
+    void devs;
+    startSend();
+  }
+
   function handleAcceptIncoming() {
     incomingTransfer = null;
     startReceive();
@@ -1324,6 +1329,7 @@
       showDevicesModal = false;
     }}
     onSendToDevice={handleSendToTrustedDevice}
+    onSendToDevices={handleSendToTrustedDevices}
   />
 
   <IncomingTransferModal

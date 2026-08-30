@@ -126,4 +126,61 @@ describe('Trusted Devices Frontend Bridge', () => {
     expect(devs[0]!.revokedBy).toBe('sb-dev-laptop1234567890');
     expect(devs[0]!.revocationSeq).toBe(1);
   });
+
+  it('supports multi-device filtering for broadcast sends', async () => {
+    const mockDevices = [
+      {
+        deviceId: 'dev-1',
+        localLabel: 'Work Laptop',
+        fingerprint: '1234 5678',
+        publicKey: '001122',
+        status: 'lan_direct' as const,
+        revoked: false,
+        lastSeenAt: new Date().toISOString(),
+        firstSeenAt: new Date().toISOString(),
+        capabilities: ['transfer.v1'],
+        policy: { autoAccept: true },
+      },
+      {
+        deviceId: 'dev-2',
+        localLabel: 'Phone',
+        fingerprint: '5678 1234',
+        publicKey: '223344',
+        status: 'online' as const,
+        revoked: false,
+        lastSeenAt: new Date().toISOString(),
+        firstSeenAt: new Date().toISOString(),
+        capabilities: ['transfer.v1'],
+        policy: { autoAccept: false },
+      },
+      {
+        deviceId: 'dev-3',
+        localLabel: 'Old Tablet',
+        fingerprint: '9999 0000',
+        publicKey: '445566',
+        status: 'revoked' as const,
+        revoked: true,
+        lastSeenAt: new Date().toISOString(),
+        firstSeenAt: new Date().toISOString(),
+        capabilities: ['transfer.v1'],
+        policy: { autoAccept: false },
+      },
+    ];
+
+    globalThis.window = {
+      go: {
+        engine: {
+          DeviceService: {
+            ListTrustedDevices: async () => mockDevices,
+          },
+        },
+      },
+    } as unknown as Window & typeof globalThis;
+
+    const devs = await listTrustedDevices();
+    expect(devs).toHaveLength(3);
+    const sendable = devs.filter((d) => !d.revoked);
+    expect(sendable).toHaveLength(2);
+    expect(sendable.map((d) => d.localLabel)).toEqual(['Work Laptop', 'Phone']);
+  });
 });

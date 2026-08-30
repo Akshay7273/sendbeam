@@ -27,3 +27,17 @@ export interface IncomingTransferRequest {
   totalBytes: number;
   files: Array<{ name: string; size: number }>;
 }
+
+export type BroadcastDeviceStatus =
+  'pending' | 'connecting' | 'sending' | 'ok' | 'offline' | 'refused' | 'failed';
+
+export interface BroadcastDeviceState {
+  deviceId: string;
+  label: string;
+  status: BroadcastDeviceStatus;
+  progressBytes: number;
+  totalBytes: number;
+  durationMs?: number;
+  digest?: string;
+  error?: string;
+}
