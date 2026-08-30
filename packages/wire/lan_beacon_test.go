@@ -51,8 +51,8 @@ func TestLanBeaconMatching(t *testing.T) {
 
 	// Alice's trust store has Bob and Charlie
 	localPairs := map[string][]byte{
-		"sb-dev-bob":     kPairAlice[:],   // shared secret with Bob
-		"sb-dev-stranger": kPairBob[:],     // stranger
+		"sb-dev-bob":      kPairAlice[:], // shared secret with Bob
+		"sb-dev-stranger": kPairBob[:],   // stranger
 	}
 
 	matched := MatchLanBeacon(beacon, localPairs, now, 15*time.Minute)

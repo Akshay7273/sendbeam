@@ -735,4 +735,61 @@ describe('resume role binding (V13-PR08 review)', () => {
     });
     await expect(recvP).rejects.toThrow(/receiver resume attempt must carry the joiner role/);
   });
+
+  it('completes a padded transfer through the worker message protocol', async () => {
+    const keys = await deriveTransferKeys(new Uint8Array(32).fill(99));
+    const bytes = new Uint8Array(50 * 1024).map((_, i) => (i * 17) & 0xff);
+    const file = new File([bytes], 'padded.bin', { type: 'application/octet-stream' });
+
+    const sendPort = new FakePort();
+    const recvPort = new FakePort();
+    const sink = new MemorySink();
+
+    let senderDone: Extract<WorkerToHost, { kind: 'done' }> | undefined;
+    let receiverDone: Extract<WorkerToHost, { kind: 'done' }> | undefined;
+
+    sendPort.onWorkerOut = (msg) => {
+      if (msg.kind === 'outbound-frame')
+        recvPort.toWorker({ kind: 'inbound-frame', frame: msg.frame });
+      if (msg.kind === 'done') senderDone = msg;
+    };
+    recvPort.onWorkerOut = (msg) => {
+      if (msg.kind === 'outbound-frame')
+        sendPort.toWorker({ kind: 'inbound-frame', frame: msg.frame });
+      if (msg.kind === 'done') receiverDone = msg;
+    };
+
+    const deps: TransferCoreDeps = {
+      createDigest: await createSha256DigestFactory(),
+      createSink: () => sink,
+      fileSource: blobFileSource,
+    };
+
+    const sendP = runTransferCore(sendPort, deps);
+    const recvP = runTransferCore(recvPort, deps);
+
+    sendPort.toWorker({
+      kind: 'start-send',
+      files: [file],
+      sendDir: keys.o2j,
+      recvDir: keys.j2o,
+      sendCounter: 1,
+      recvCounter: 1,
+      padding: true,
+    });
+    recvPort.toWorker({
+      kind: 'start-recv',
+      destination: { kind: 'auto' },
+      sendDir: keys.j2o,
+      recvDir: keys.o2j,
+      sendCounter: 1,
+      recvCounter: 1,
+      padding: true,
+    });
+
+    await Promise.all([sendP, recvP]);
+    expect(senderDone?.digest).toBeDefined();
+    expect(senderDone?.digest).toBe(receiverDone?.digest);
+    expect(sink.bytes()).toEqual(bytes);
+  });
 });

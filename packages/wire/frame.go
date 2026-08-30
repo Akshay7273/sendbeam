@@ -12,6 +12,26 @@ const frameHeaderBytes = 16
 // layout changes.
 const FrameVersion uint8 = 1
 
+// FrameHeader flags (the Flags byte).
+const (
+	// FrameFlagLastInBlock marks the final data frame in a logical block.
+	FrameFlagLastInBlock uint8 = 0x01
+	// FrameFlagPadded indicates the AEAD payload is padded to a power-of-two bucket (V17-PR03).
+	FrameFlagPadded uint8 = 0x02
+	// FlagPadded is an alias for FrameFlagPadded.
+	FlagPadded uint8 = FrameFlagPadded
+)
+
+// Padding parameters.
+const (
+	// PaddingCapability is the feature announced in caps for negotiated traffic padding.
+	PaddingCapability = "padding"
+	// MinPadBucketSize is the smallest quantized bucket (256 bytes).
+	MinPadBucketSize = 256
+	// MaxPadBucketSize is the maximum frame bucket matching u16 max (65535 bytes).
+	MaxPadBucketSize = 65535
+)
+
 // FrameHeader is the 16-byte frame header. Its encoded bytes are the
 // AES-GCM additional authenticated data, so the codec must be exact and stable.
 //
@@ -60,6 +80,57 @@ const (
 	// TrustedAuthResponse, or TrustedAuthConfirm JSON) for paired devices (V15-PR03).
 	FrameTrustedAuth uint8 = 15
 )
+
+// PadBucketSize returns the smallest power-of-two bucket size >= (unpaddedLen + 2),
+// clamped to [MinPadBucketSize, MaxPadBucketSize].
+func PadBucketSize(unpaddedLen int) int {
+	target := unpaddedLen + 2
+	if target <= MinPadBucketSize {
+		return MinPadBucketSize
+	}
+	if target > 32768 {
+		return MaxPadBucketSize
+	}
+	bucket := MinPadBucketSize
+	for bucket < target {
+		bucket <<= 1
+	}
+	return bucket
+}
+
+// PadPayload creates a padded payload buffer of the appropriate bucket size
+// containing uint16(len(plaintext)) || plaintext || zero-padding.
+func PadPayload(plaintext []byte) ([]byte, error) {
+	if len(plaintext) > u16Max-2 {
+		return nil, fmt.Errorf("payload length %d exceeds max %d", len(plaintext), u16Max-2)
+	}
+	bucket := PadBucketSize(len(plaintext))
+	if len(plaintext)+2 > bucket {
+		return nil, fmt.Errorf("payload %d + prefix exceeds bucket size %d", len(plaintext), bucket)
+	}
+	buf := make([]byte, bucket)
+	binary.BigEndian.PutUint16(buf[:2], uint16(len(plaintext)))
+	copy(buf[2:], plaintext)
+	return buf, nil
+}
+
+// UnpadPayload extracts the unpadded plaintext from a padded payload buffer, verifying
+// the prefix length and ensuring all trailing padding bytes are strictly zero.
+func UnpadPayload(padded []byte) ([]byte, error) {
+	if len(padded) < 2 {
+		return nil, fmt.Errorf("%w: padded buffer too short (%d bytes)", ErrMalformedFrame, len(padded))
+	}
+	unpaddedLen := int(binary.BigEndian.Uint16(padded[:2]))
+	if 2+unpaddedLen > len(padded) {
+		return nil, fmt.Errorf("%w: unpadded length %d exceeds buffer %d", ErrMalformedFrame, unpaddedLen, len(padded))
+	}
+	for i, b := range padded[2+unpaddedLen:] {
+		if b != 0 {
+			return nil, fmt.Errorf("%w: non-zero padding byte at index %d", ErrMalformedFrame, 2+unpaddedLen+i)
+		}
+	}
+	return padded[2 : 2+unpaddedLen], nil
+}
 
 // encodeFrameHeader encodes h into a fresh 16-byte buffer.
 func encodeFrameHeader(h FrameHeader) []byte {

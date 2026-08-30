@@ -40,7 +40,7 @@ type LanDiscoveryService struct {
 	peers    map[string]*DiscoveredPeer
 	handlers []func(peer DiscoveredPeer)
 
-	conn   net.PacketConn
+	conn          net.PacketConn
 	isConnManaged bool
 }
 

@@ -11,26 +11,26 @@ import (
 )
 
 type PairingTestVector struct {
-	Name             string   `json:"name"`
-	MasterKeyHex     string   `json:"master_key_hex"`
-	ReqSeedHex       string   `json:"req_seed_hex"`
-	ReqDeviceID      string   `json:"req_device_id"`
-	ReqPubKeyHex     string   `json:"req_pub_key_hex"`
-	ReqName          string   `json:"req_name"`
-	ReqCaps          []string `json:"req_caps"`
-	ReqNonceHex      string   `json:"req_nonce_hex"`
-	ReqSigHex        string   `json:"req_sig_hex"`
-	RespSeedHex      string   `json:"resp_seed_hex"`
-	RespDeviceID     string   `json:"resp_device_id"`
-	RespPubKeyHex    string   `json:"resp_pub_key_hex"`
-	RespName         string   `json:"resp_name"`
-	RespCaps         []string `json:"resp_caps"`
-	RespNonceHex     string   `json:"resp_nonce_hex"`
-	RespSigHex       string   `json:"resp_sig_hex"`
-	KPairHex         string   `json:"k_pair_hex"`
-	PairCredRef      string   `json:"pair_cred_ref"`
-	ReqConfirmTag    string   `json:"req_confirm_tag"`
-	RespConfirmTag   string   `json:"resp_confirm_tag"`
+	Name           string   `json:"name"`
+	MasterKeyHex   string   `json:"master_key_hex"`
+	ReqSeedHex     string   `json:"req_seed_hex"`
+	ReqDeviceID    string   `json:"req_device_id"`
+	ReqPubKeyHex   string   `json:"req_pub_key_hex"`
+	ReqName        string   `json:"req_name"`
+	ReqCaps        []string `json:"req_caps"`
+	ReqNonceHex    string   `json:"req_nonce_hex"`
+	ReqSigHex      string   `json:"req_sig_hex"`
+	RespSeedHex    string   `json:"resp_seed_hex"`
+	RespDeviceID   string   `json:"resp_device_id"`
+	RespPubKeyHex  string   `json:"resp_pub_key_hex"`
+	RespName       string   `json:"resp_name"`
+	RespCaps       []string `json:"resp_caps"`
+	RespNonceHex   string   `json:"resp_nonce_hex"`
+	RespSigHex     string   `json:"resp_sig_hex"`
+	KPairHex       string   `json:"k_pair_hex"`
+	PairCredRef    string   `json:"pair_cred_ref"`
+	ReqConfirmTag  string   `json:"req_confirm_tag"`
+	RespConfirmTag string   `json:"resp_confirm_tag"`
 }
 
 func TestPairingCeremonyEndToEnd(t *testing.T) {

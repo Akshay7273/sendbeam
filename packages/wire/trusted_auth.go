@@ -63,18 +63,18 @@ var (
 
 // TrustedAuthInit is sent by the initiating device to authenticate a trusted connection.
 type TrustedAuthInit struct {
-	Type               string             `json:"type"`
-	ProtocolVersion    string             `json:"protocol_version"`
-	InitiatorDeviceID  string             `json:"initiator_device_id"`
-	ResponderDeviceID  string             `json:"responder_device_id"`
-	PairCredentialRef  string             `json:"pair_credential_ref"`
-	EphemeralPub       string             `json:"ephemeral_pub"`
-	Nonce              string             `json:"nonce"`
-	Capabilities       []string           `json:"capabilities"`
-	Timestamp          string             `json:"timestamp"`
-	Signature          string             `json:"signature"`
-	AuthTag            string             `json:"auth_tag"`
-	Revocations        []RevocationRecord `json:"revocations,omitempty"`
+	Type              string             `json:"type"`
+	ProtocolVersion   string             `json:"protocol_version"`
+	InitiatorDeviceID string             `json:"initiator_device_id"`
+	ResponderDeviceID string             `json:"responder_device_id"`
+	PairCredentialRef string             `json:"pair_credential_ref"`
+	EphemeralPub      string             `json:"ephemeral_pub"`
+	Nonce             string             `json:"nonce"`
+	Capabilities      []string           `json:"capabilities"`
+	Timestamp         string             `json:"timestamp"`
+	Signature         string             `json:"signature"`
+	AuthTag           string             `json:"auth_tag"`
+	Revocations       []RevocationRecord `json:"revocations,omitempty"`
 }
 
 // TrustedAuthResponse is sent by the responder upon verifying the TrustedAuthInit.

@@ -42,9 +42,9 @@ var (
 
 // DeviceIdentity represents a local long-term device identity backed by an Ed25519 keypair.
 type DeviceIdentity struct {
-	DeviceID    string            `json:"device_id"`
-	Fingerprint string            `json:"fingerprint"`
-	PublicKey   ed25519.PublicKey `json:"public_key"`
+	DeviceID    string             `json:"device_id"`
+	Fingerprint string             `json:"fingerprint"`
+	PublicKey   ed25519.PublicKey  `json:"public_key"`
 	PrivateKey  ed25519.PrivateKey `json:"-"`
 }
 

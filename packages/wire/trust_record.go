@@ -12,11 +12,11 @@ import (
 
 // Standard capability flags for trusted devices.
 const (
-	CapTransferV1   = "transfer.v1"
-	CapTransferV2   = "transfer.v2"
-	CapAutoAccept   = "auto_accept"
-	CapLANDirect    = "lan_direct"
-	CapRelayFall    = "relay_fallback"
+	CapTransferV1 = "transfer.v1"
+	CapTransferV2 = "transfer.v2"
+	CapAutoAccept = "auto_accept"
+	CapLANDirect  = "lan_direct"
+	CapRelayFall  = "relay_fallback"
 )
 
 var (

@@ -263,8 +263,12 @@ func TestBroadcast_EmptyTargets(t *testing.T) {
 
 type mockClosedSignal struct{}
 
-func (m *mockClosedSignal) Send(rendezvous.Message) error     { return errors.New("peer offline: connection refused") }
-func (m *mockClosedSignal) SendBinary([]byte) error           { return errors.New("peer offline: connection refused") }
+func (m *mockClosedSignal) Send(rendezvous.Message) error {
+	return errors.New("peer offline: connection refused")
+}
+func (m *mockClosedSignal) SendBinary([]byte) error {
+	return errors.New("peer offline: connection refused")
+}
 func (m *mockClosedSignal) Run(context.Context, func(rendezvous.Message), func([]byte)) error {
 	return errors.New("peer offline: connection refused")
 }
@@ -274,8 +278,8 @@ type mockErrorSignal struct {
 	err error
 }
 
-func (m *mockErrorSignal) Send(rendezvous.Message) error     { return m.err }
-func (m *mockErrorSignal) SendBinary([]byte) error           { return m.err }
+func (m *mockErrorSignal) Send(rendezvous.Message) error { return m.err }
+func (m *mockErrorSignal) SendBinary([]byte) error       { return m.err }
 func (m *mockErrorSignal) Run(context.Context, func(rendezvous.Message), func([]byte)) error {
 	return m.err
 }
@@ -285,8 +289,10 @@ type mockCustomSignal struct {
 	onRun func(ctx context.Context) error
 }
 
-func (m *mockCustomSignal) Send(rendezvous.Message) error     { return errors.New("simulated socket error") }
-func (m *mockCustomSignal) SendBinary([]byte) error           { return errors.New("simulated socket error") }
+func (m *mockCustomSignal) Send(rendezvous.Message) error {
+	return errors.New("simulated socket error")
+}
+func (m *mockCustomSignal) SendBinary([]byte) error { return errors.New("simulated socket error") }
 func (m *mockCustomSignal) Run(ctx context.Context, _ func(rendezvous.Message), _ func([]byte)) error {
 	if m.onRun != nil {
 		return m.onRun(ctx)

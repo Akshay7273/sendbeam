@@ -34,7 +34,7 @@ export enum FrameType {
 }
 
 /** Feature flags negotiated in caps. */
-export type Feature = 'folders' | 'resume' | 'relay' | 'archive' | 'resume-auth-v1';
+export type Feature = 'folders' | 'resume' | 'relay' | 'archive' | 'resume-auth-v1' | 'padding';
 
 /** Hints about which receiver sink is available. */
 export type SinkHint = 'direct-file' | 'opfs' | 'archive';

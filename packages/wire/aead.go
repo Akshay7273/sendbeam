@@ -63,6 +63,17 @@ func Seal(dir DirectionalKey, counter uint64, h FrameHeaderInput, plaintext []by
 	return gcm.Seal(aad, nonce(dir.Salt, counter), plaintext, aad), nil
 }
 
+// SealPadded pads plaintext to a power-of-two bucket size with a prefix length, sets FrameFlagPadded,
+// and encrypts the padded payload under AES-GCM (V17-PR03).
+func SealPadded(dir DirectionalKey, counter uint64, h FrameHeaderInput, plaintext []byte) ([]byte, error) {
+	padded, err := PadPayload(plaintext)
+	if err != nil {
+		return nil, err
+	}
+	h.Flags |= FrameFlagPadded
+	return Seal(dir, counter, h, padded)
+}
+
 // OpenedFrame is a decrypted frame: its parsed header and recovered plaintext.
 type OpenedFrame struct {
 	Counter   uint64
@@ -123,9 +134,17 @@ func openEmbedded(dir DirectionalKey, counter uint64, frame []byte) (*OpenedFram
 	if err != nil {
 		return nil, err
 	}
-	plaintext, err := gcm.Open(nil, nonce(dir.Salt, counter), body, aad)
+	decrypted, err := gcm.Open(nil, nonce(dir.Salt, counter), body, aad)
 	if err != nil {
 		return nil, err
+	}
+	plaintext := decrypted
+	if header.Flags&FrameFlagPadded != 0 {
+		unpadded, err := UnpadPayload(decrypted)
+		if err != nil {
+			return nil, err
+		}
+		plaintext = unpadded
 	}
 	return &OpenedFrame{Counter: counter, Header: header, Plaintext: plaintext}, nil
 }

@@ -85,6 +85,8 @@ type Spec struct {
 	ICEServers []webrtc.ICEServer
 	// ForceRelay skips direct negotiation and goes straight to the encrypted relay.
 	ForceRelay bool
+	// Private enables negotiated traffic padding on the transfer (V17-PR03).
+	Private bool
 	// OnTransport reports "direct" or "relay" when the selected byte path changes.
 	OnTransport func(string)
 	// OnConnect fires once the DataChannel opens, before the first byte moves.
@@ -215,6 +217,16 @@ func (d *driver) SendBinary(frame []byte) error {
 func (d *driver) run(ctx context.Context) (*Outcome, error) {
 	opts := d.spec.Session
 	opts.Transport = d
+	if d.spec.Private {
+		var localCaps rendezvous.Caps
+		if opts.LocalCaps != nil {
+			localCaps = *opts.LocalCaps
+		} else {
+			localCaps = rendezvous.DefaultCaps()
+		}
+		padded := localCaps.WithPadding()
+		opts.LocalCaps = &padded
+	}
 	d.sess = rendezvous.New(opts)
 
 	// On a handshake failure, close the socket so the read loop unblocks; on success keep it
@@ -751,6 +763,7 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 			d.spec.OnResume(ResumeResult{Attempted: true, Authenticated: true})
 		}
 	}
+	paddingNegotiated := containsString(res.LocalCaps.Features, wire.PaddingCapability) && containsString(res.RemoteCaps.Features, wire.PaddingCapability)
 	sender := wire.NewSender(wire.SenderOptions{
 		Files:            sources,
 		Send:             conn.Send,
@@ -760,6 +773,7 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 		RecvCounterStart: recvStart,
 		BlockSize:        negotiate(res.LocalCaps.BlockSize, res.RemoteCaps.BlockSize, wire.DefaultBlockBytes),
 		FrameSize:        negotiate(res.LocalCaps.MaxFrame, res.RemoteCaps.MaxFrame, wire.DefaultFrameBytes),
+		Padding:          paddingNegotiated,
 		// Advertise a stable random id in the manifest so a receiver that crashes mid-file
 		// can journal its verified progress and resume it (V13-PR02); the wire layer mints
 		// and validates it without any protocol change. A restart (V13-PR04) reuses the
@@ -853,6 +867,7 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 	// value (or a TransferID mismatch) means a fresh receive, exactly as the wire layer
 	// documents for ReceiverResume.
 	var sharedResume wire.ReceiverResume
+	paddingNegotiated := containsString(res.LocalCaps.Features, wire.PaddingCapability) && containsString(res.RemoteCaps.Features, wire.PaddingCapability)
 	receiver := wire.NewReceiver(wire.ReceiverOptions{
 		Send:             conn.Send,
 		SendDir:          sendDir,
@@ -861,6 +876,7 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 		RecvCounterStart: recvStart,
 		Destination:      destination,
 		Resume:           &sharedResume,
+		Padding:          paddingNegotiated,
 		OnProgress:       d.spec.OnProgress,
 		OnFileProgress:   d.spec.OnFileProgress,
 		OnResume:         d.spec.OnResumeProgress,

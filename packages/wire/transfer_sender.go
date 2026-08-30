@@ -15,9 +15,6 @@ import (
 // A block leaves the window after the receiver has verified and committed it. NACK and timeout
 // retransmissions are sealed under fresh AEAD counters; integrity failures remain terminal.
 
-// FrameFlagLastInBlock marks the final data frame in a logical block.
-const FrameFlagLastInBlock uint8 = 0x01
-
 const (
 	// DefaultAckTimeout is the acknowledgement deadline before a block is retransmitted.
 	DefaultAckTimeout = 15 * time.Second
@@ -71,6 +68,8 @@ type SenderOptions struct {
 	// reused jump is never counted as transferred bytes: sessionBytes = acknowledged - reused.
 	OnResume      func(reusedBytes int64)
 	OnStateChange func(TransferState)
+	// Padding enables power-of-two traffic padding on all outbound frames (V17-PR03).
+	Padding bool
 	// OnManifest, when set, is called with the validated manifest immediately before its
 	// frame is transmitted. It lets the caller make sender-side state durable — the stable
 	// transfer id and canonical source identity — strictly before the manifest can
@@ -964,7 +963,13 @@ func (s *Sender) sendControl(msg ControlMsg) error {
 func (s *Sender) sendFrame(header FrameHeaderInput, payload []byte) error {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
-	frame, err := Seal(s.o.SendDir, s.sendCounter, header, payload)
+	var frame []byte
+	var err error
+	if s.o.Padding {
+		frame, err = SealPadded(s.o.SendDir, s.sendCounter, header, payload)
+	} else {
+		frame, err = Seal(s.o.SendDir, s.sendCounter, header, payload)
+	}
 	if err != nil {
 		return err
 	}

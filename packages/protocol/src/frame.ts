@@ -12,7 +12,7 @@
  * reserved(u16) — the header stays a fixed 16 bytes.
  */
 
-import { FRAME_HEADER_BYTES } from './constants.js';
+import { FRAME_HEADER_BYTES, MAX_PAD_BUCKET_BYTES, MIN_PAD_BUCKET_BYTES } from './constants.js';
 import type { FrameHeader } from './transfer.js';
 
 const U8_MAX = 0xff;
@@ -63,4 +63,63 @@ export function decodeFrameHeader(buf: Uint8Array): FrameHeader {
     frameOff: dv.getUint32(10, false),
     len: dv.getUint16(14, false),
   };
+}
+
+/**
+ * Returns the smallest power-of-two bucket size >= (unpaddedLen + 2),
+ * clamped to [MIN_PAD_BUCKET_BYTES, MAX_PAD_BUCKET_BYTES].
+ */
+export function padBucketSize(unpaddedLen: number): number {
+  const target = unpaddedLen + 2;
+  if (target <= MIN_PAD_BUCKET_BYTES) {
+    return MIN_PAD_BUCKET_BYTES;
+  }
+  if (target > 32768) {
+    return MAX_PAD_BUCKET_BYTES;
+  }
+  let bucket = MIN_PAD_BUCKET_BYTES;
+  while (bucket < target) {
+    bucket <<= 1;
+  }
+  return bucket;
+}
+
+/**
+ * Creates a padded payload buffer of the appropriate bucket size containing
+ * `uint16(unpaddedLen) || plaintext || zero-padding`.
+ */
+export function padPayload(plaintext: Uint8Array): Uint8Array {
+  if (plaintext.length > U16_MAX - 2) {
+    throw new RangeError(`payload length ${plaintext.length} exceeds max ${U16_MAX - 2}`);
+  }
+  const bucket = padBucketSize(plaintext.length);
+  if (plaintext.length + 2 > bucket) {
+    throw new RangeError(`payload ${plaintext.length} + prefix exceeds bucket size ${bucket}`);
+  }
+  const buf = new Uint8Array(bucket);
+  new DataView(buf.buffer, buf.byteOffset, 2).setUint16(0, plaintext.length, false);
+  buf.set(plaintext, 2);
+  return buf;
+}
+
+/**
+ * Extracts unpadded plaintext from a padded payload buffer, verifying the prefix
+ * length and ensuring all trailing padding bytes are strictly zero.
+ */
+export function unpadPayload(padded: Uint8Array): Uint8Array {
+  if (padded.length < 2) {
+    throw new Error(`malformed frame: padded buffer too short (${padded.length} bytes)`);
+  }
+  const unpaddedLen = new DataView(padded.buffer, padded.byteOffset, 2).getUint16(0, false);
+  if (2 + unpaddedLen > padded.length) {
+    throw new Error(
+      `malformed frame: unpadded length ${unpaddedLen} exceeds buffer ${padded.length}`,
+    );
+  }
+  for (let i = 2 + unpaddedLen; i < padded.length; i++) {
+    if (padded[i] !== 0) {
+      throw new Error(`malformed frame: non-zero padding byte at index ${i}`);
+    }
+  }
+  return padded.subarray(2, 2 + unpaddedLen);
 }

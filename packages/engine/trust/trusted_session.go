@@ -406,4 +406,3 @@ func (c *TrustedSessionCoordinator) processIncomingRevocations(ctx context.Conte
 		_ = c.store.RevokeDeviceWithRecord(ctx, &rec)
 	}
 }
-

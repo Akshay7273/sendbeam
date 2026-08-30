@@ -13,9 +13,10 @@ import {
   AEAD_NONCE_BYTES,
   AEAD_TAG_BYTES,
   FRAME_COUNTER_BYTES,
+  FRAME_FLAG_PADDED,
   FRAME_HEADER_BYTES,
 } from './constants.js';
-import { decodeFrameHeader, encodeFrameHeader } from './frame.js';
+import { decodeFrameHeader, encodeFrameHeader, padPayload, unpadPayload } from './frame.js';
 import type { DirectionalKey } from './keyschedule.js';
 import type { FrameHeader } from './transfer.js';
 import { aesGcmOpen, aesGcmSeal } from './webcrypto.js';
@@ -55,6 +56,19 @@ export async function seal(
   out.set(aad, 0);
   out.set(sealed, aad.length);
   return out;
+}
+
+/**
+ * Encrypt `plaintext` with traffic padding applied (FRAME_FLAG_PADDED set) (V17-PR03).
+ */
+export async function sealPadded(
+  dir: DirectionalKey,
+  counter: number,
+  header: FrameHeaderInput,
+  plaintext: Uint8Array,
+): Promise<Uint8Array> {
+  const padded = padPayload(plaintext);
+  return seal(dir, counter, { ...header, flags: header.flags | FRAME_FLAG_PADDED }, padded);
 }
 
 /** A decrypted frame: its parsed header and recovered plaintext. */
@@ -131,6 +145,10 @@ async function openEmbedded(
   if (body.length !== header.len + AEAD_TAG_BYTES) {
     throw new Error(`frame len field ${header.len} disagrees with body ${body.length}`);
   }
-  const plaintext = await aesGcmOpen(dir.key, nonce(dir.salt, counter), aad, body);
+  const decrypted = await aesGcmOpen(dir.key, nonce(dir.salt, counter), aad, body);
+  let plaintext = decrypted;
+  if ((header.flags & FRAME_FLAG_PADDED) !== 0) {
+    plaintext = unpadPayload(decrypted);
+  }
   return { counter, header, plaintext };
 }

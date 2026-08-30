@@ -26,23 +26,23 @@ const DeviceEventName = "sendbeam:devices"
 
 // TrustedDeviceView is the JSON-serializable representation of a paired device for the UI.
 type TrustedDeviceView struct {
-	DeviceID          string           `json:"deviceId"`
-	LocalLabel        string           `json:"localLabel"`
-	Fingerprint       string           `json:"fingerprint"`
-	PublicKey         string           `json:"publicKey"`
-	Status            string           `json:"status"` // "lan_direct" | "online" | "offline" | "revoked"
-	Revoked           bool             `json:"revoked"`
-	LastSeenAt        string           `json:"lastSeenAt"`
-	FirstSeenAt       string           `json:"firstSeenAt"`
-	Capabilities      []string         `json:"capabilities"`
-	Policy            wire.TrustPolicy `json:"policy"`
-	DirectEndpoint    string           `json:"directEndpoint,omitempty"`
+	DeviceID       string           `json:"deviceId"`
+	LocalLabel     string           `json:"localLabel"`
+	Fingerprint    string           `json:"fingerprint"`
+	PublicKey      string           `json:"publicKey"`
+	Status         string           `json:"status"` // "lan_direct" | "online" | "offline" | "revoked"
+	Revoked        bool             `json:"revoked"`
+	LastSeenAt     string           `json:"lastSeenAt"`
+	FirstSeenAt    string           `json:"firstSeenAt"`
+	Capabilities   []string         `json:"capabilities"`
+	Policy         wire.TrustPolicy `json:"policy"`
+	DirectEndpoint string           `json:"directEndpoint,omitempty"`
 }
 
 type discoveredPeerInfo struct {
-	ip        net.IP
-	port      uint16
-	lastSeen  time.Time
+	ip       net.IP
+	port     uint16
+	lastSeen time.Time
 }
 
 // desktopSecretResolver manages encrypted/file-backed persistent pair secrets with 0600 permissions.

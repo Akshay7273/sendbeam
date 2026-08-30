@@ -59,6 +59,8 @@ export interface StartSendMsg extends SessionCrypto {
   blockSize?: number;
   frameSize?: number;
   window?: number;
+  /** Enables traffic padding to power-of-two buckets (V17-PR03). */
+  padding?: boolean;
 }
 export interface StartRecvMsg extends SessionCrypto {
   kind: 'start-recv';
@@ -76,6 +78,8 @@ export interface StartRecvMsg extends SessionCrypto {
    * the pre-selected interrupted journal's verified progress be advertised.
    */
   resumeAttempt?: ResumeAttempt;
+  /** Enables traffic padding to power-of-two buckets (V17-PR03). */
+  padding?: boolean;
 }
 export type ReceiveDestinationSpec =
   | { kind: 'auto' }
