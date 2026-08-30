@@ -254,8 +254,8 @@ func TestAttackMatrix_Engine(t *testing.T) {
 			Signature:       hex.EncodeToString(forgedSig),
 		}
 
-		mockIdMgr := NewMemoryIdentityManager(idA)
-		coord := NewTrustedSessionCoordinator(mockIdMgr, syncStore, NewMemorySecretResolver())
+		mockIDMgr := NewMemoryIdentityManager(idA)
+		coord := NewTrustedSessionCoordinator(mockIDMgr, syncStore, NewMemorySecretResolver())
 		coord.processIncomingRevocations(ctx, []wire.RevocationRecord{forgedRec}, idA.DeviceID)
 
 		// Bob MUST remain trusted because the signature was forged
@@ -338,8 +338,8 @@ func TestAttackMatrix_Engine(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		mockIdMgr := NewMemoryIdentityManager(idB)
-		coord := NewTrustedSessionCoordinator(mockIdMgr, syncStore, NewMemorySecretResolver())
+		mockIDMgr := NewMemoryIdentityManager(idB)
+		coord := NewTrustedSessionCoordinator(mockIDMgr, syncStore, NewMemorySecretResolver())
 		coord.processIncomingRevocations(ctx, []wire.RevocationRecord{*aliceRevRec}, idA.DeviceID)
 
 		// Bob MUST remain trusted because Alice is already revoked
@@ -370,8 +370,8 @@ func TestAttackMatrix_Engine(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		mockIdMgr := NewMemoryIdentityManager(idB)
-		coord := NewTrustedSessionCoordinator(mockIdMgr, syncStore, NewMemorySecretResolver())
+		mockIDMgr := NewMemoryIdentityManager(idB)
+		coord := NewTrustedSessionCoordinator(mockIDMgr, syncStore, NewMemorySecretResolver())
 		coord.processIncomingRevocations(ctx, []wire.RevocationRecord{*attackerRevRec}, idAttacker.DeviceID)
 
 		// Bob MUST remain trusted because Attacker is not in trust store
