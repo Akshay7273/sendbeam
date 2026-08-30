@@ -41,6 +41,13 @@ func NewIdentityManager(keyFilePath string) (*IdentityManager, error) {
 	return mgr, nil
 }
 
+// NewMemoryIdentityManager creates an in-memory IdentityManager with a pre-configured identity (useful for tests).
+func NewMemoryIdentityManager(id *wire.DeviceIdentity) *IdentityManager {
+	return &IdentityManager{
+		currIdentity: id,
+	}
+}
+
 // GetOrCreateIdentity returns the existing device identity or generates and saves a fresh one.
 func (m *IdentityManager) GetOrCreateIdentity() (*wire.DeviceIdentity, error) {
 	m.mu.Lock()

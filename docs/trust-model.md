@@ -88,12 +88,15 @@ Paired devices are recorded in a local versioned database containing identity bi
 
 ## 4. Trust Boundaries & Revocation Semantics
 
-### 4.1 Local Revocation vs. Global Accounts
+### 4.1 Local Revocation vs. Mesh Revocation Sync
 
-SendBeam operates strictly without centralized accounts or global directory servers.
+SendBeam operates strictly without centralized accounts, global directories, or central CRL servers.
 
-- **Local Unpair / Revoke:** Revoking a device removes or marks the local trust record as revoked. Future connection attempts from that device will be rejected immediately during the authenticated handshake.
-- **Honest Limitations:** There is no centralized server revocation list (CRL) or account-wide revocation. If Device A revokes Device B, Device A will reject Device B. If Device B still has Device A in its local DB, Device B's attempts to connect to Device A will fail authentication.
+- **Local Unpair / Revoke:** Revoking a device locally marks the trust record as revoked with `revoked: true`.
+- **Signed Revocation Records & Mesh Revocation Sync (v1.7 / ADR 0008):** When a device revokes a peer, it signs a canonical, domain-separated statement:
+  $$\text{RevocationRecord} = (\text{RevokerDeviceID}, \text{RevokedDeviceID}, \text{Seq}, \text{Timestamp}, \text{Signature})$$
+  This record opportunistically propagates over existing authenticated `sendbeam/2` trusted sessions. When other paired devices in the owner's mesh connect, they verify the Ed25519 signature against their stored public key for the revoker, validate monotonic sequence ordering, and automatically mark the revoked device as distrusted (`ErrUntrustedPeer` / `ErrTrustedPeerRevoked`).
+- **Scope Honesty & Limitations:** Mesh revocation synchronization propagates distrust across mutual peers that connect to each other. It does not and cannot force an offline or compromised device to forget existing downloaded files or delete its local storage.
 
 ### 4.2 Display Names vs. Cryptographic Identity
 
@@ -272,3 +275,6 @@ SendBeam v1.5 enforces formal mitigations against 9 core attack vectors across n
 | **7. Stale/Revoked Credentials** | Unpaired or revoked device attempts connection.               | `store.IsTrusted()` check rejects revoked peers before session establishment; secrets are purged on unpair.                      |
 | **8. Auto-Accept Escape**        | Malicious peer sends `../../etc/passwd` in auto-accept mode.  | `NormalizeTransferPath` strictly enforces safe relative paths within designated destination root.                                |
 | **9. One-Time Isolation**        | Standard one-time transfer executes between devices.          | One-time transfers never mutate trust database or persist credentials without explicit mutual pairing.                           |
+| **10. Forged Revocation Record** | Attacker claims peer revoked another device.                  | Ed25519 signature verification against stored revoker public key fails; record is rejected fail-closed.                          |
+| **11. Revocation Seq Rollback**  | Attacker replays older revocation sequence number.            | Monotonic `Seq` enforcement rejects lower or identical sequence numbers (`Seq <= StoredSeq`).                                    |
+| **12. Revoked Peer Submitting**  | Already-distrusted device attempts to submit revocations.     | Ingestion rule checks `store.IsTrusted(RevokerID)` and rejects records from distrusted devices fail-closed.                      |

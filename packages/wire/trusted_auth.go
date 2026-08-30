@@ -63,30 +63,32 @@ var (
 
 // TrustedAuthInit is sent by the initiating device to authenticate a trusted connection.
 type TrustedAuthInit struct {
-	Type               string   `json:"type"`
-	ProtocolVersion    string   `json:"protocol_version"`
-	InitiatorDeviceID  string   `json:"initiator_device_id"`
-	ResponderDeviceID  string   `json:"responder_device_id"`
-	PairCredentialRef  string   `json:"pair_credential_ref"`
-	EphemeralPub       string   `json:"ephemeral_pub"`
-	Nonce              string   `json:"nonce"`
-	Capabilities       []string `json:"capabilities"`
-	Timestamp          string   `json:"timestamp"`
-	Signature          string   `json:"signature"`
-	AuthTag            string   `json:"auth_tag"`
+	Type               string             `json:"type"`
+	ProtocolVersion    string             `json:"protocol_version"`
+	InitiatorDeviceID  string             `json:"initiator_device_id"`
+	ResponderDeviceID  string             `json:"responder_device_id"`
+	PairCredentialRef  string             `json:"pair_credential_ref"`
+	EphemeralPub       string             `json:"ephemeral_pub"`
+	Nonce              string             `json:"nonce"`
+	Capabilities       []string           `json:"capabilities"`
+	Timestamp          string             `json:"timestamp"`
+	Signature          string             `json:"signature"`
+	AuthTag            string             `json:"auth_tag"`
+	Revocations        []RevocationRecord `json:"revocations,omitempty"`
 }
 
 // TrustedAuthResponse is sent by the responder upon verifying the TrustedAuthInit.
 type TrustedAuthResponse struct {
-	Type              string   `json:"type"`
-	ProtocolVersion   string   `json:"protocol_version"`
-	Status            string   `json:"status"` // "accepted", "rejected", or "revoked"
-	ResponderDeviceID string   `json:"responder_device_id"`
-	EphemeralPub      string   `json:"ephemeral_pub,omitempty"`
-	Nonce             string   `json:"nonce,omitempty"`
-	Capabilities      []string `json:"capabilities,omitempty"`
-	Signature         string   `json:"signature,omitempty"`
-	AuthTag           string   `json:"auth_tag,omitempty"`
+	Type              string             `json:"type"`
+	ProtocolVersion   string             `json:"protocol_version"`
+	Status            string             `json:"status"` // "accepted", "rejected", or "revoked"
+	ResponderDeviceID string             `json:"responder_device_id"`
+	EphemeralPub      string             `json:"ephemeral_pub,omitempty"`
+	Nonce             string             `json:"nonce,omitempty"`
+	Capabilities      []string           `json:"capabilities,omitempty"`
+	Signature         string             `json:"signature,omitempty"`
+	AuthTag           string             `json:"auth_tag,omitempty"`
+	Revocations       []RevocationRecord `json:"revocations,omitempty"`
 }
 
 // TrustedAuthConfirm finalizes mutual session establishment.
@@ -256,6 +258,11 @@ func VerifyTrustedConfirmTag(sessionMaster []byte, domain string, deviceID, tagH
 
 // NewTrustedAuthInit creates a signed and MAC-authenticated TrustedAuthInit message.
 func NewTrustedAuthInit(id *DeviceIdentity, respDeviceID, credRef string, kPair []byte, caps []string, ephemPub, nonce []byte, now time.Time) (*TrustedAuthInit, error) {
+	return NewTrustedAuthInitWithRevocations(id, respDeviceID, credRef, kPair, caps, ephemPub, nonce, now, nil)
+}
+
+// NewTrustedAuthInitWithRevocations creates a signed and MAC-authenticated TrustedAuthInit message including mesh RevocationRecords.
+func NewTrustedAuthInitWithRevocations(id *DeviceIdentity, respDeviceID, credRef string, kPair []byte, caps []string, ephemPub, nonce []byte, now time.Time, revocations []RevocationRecord) (*TrustedAuthInit, error) {
 	if id == nil {
 		return nil, ErrInvalidIdentity
 	}
@@ -299,6 +306,7 @@ func NewTrustedAuthInit(id *DeviceIdentity, respDeviceID, credRef string, kPair 
 		Timestamp:         tsStr,
 		Signature:         hex.EncodeToString(sig),
 		AuthTag:           tag,
+		Revocations:       revocations,
 	}, nil
 }
 
@@ -363,6 +371,11 @@ func VerifyTrustedAuthInit(init *TrustedAuthInit, kPair []byte, initPubKey ed255
 
 // NewTrustedAuthResponse creates a signed and MAC-authenticated TrustedAuthResponse message.
 func NewTrustedAuthResponse(id *DeviceIdentity, init *TrustedAuthInit, kPair []byte, caps []string, ephemPub, nonce []byte) (*TrustedAuthResponse, error) {
+	return NewTrustedAuthResponseWithRevocations(id, init, kPair, caps, ephemPub, nonce, nil)
+}
+
+// NewTrustedAuthResponseWithRevocations creates a signed TrustedAuthResponse message including mesh RevocationRecords.
+func NewTrustedAuthResponseWithRevocations(id *DeviceIdentity, init *TrustedAuthInit, kPair []byte, caps []string, ephemPub, nonce []byte, revocations []RevocationRecord) (*TrustedAuthResponse, error) {
 	if id == nil {
 		return nil, ErrInvalidIdentity
 	}
@@ -407,6 +420,7 @@ func NewTrustedAuthResponse(id *DeviceIdentity, init *TrustedAuthInit, kPair []b
 		Capabilities:      caps,
 		Signature:         hex.EncodeToString(sig),
 		AuthTag:           tag,
+		Revocations:       revocations,
 	}, nil
 }
 

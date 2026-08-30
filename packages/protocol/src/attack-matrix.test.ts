@@ -297,4 +297,39 @@ describe('SendBeam v1.5 Attack-Matrix & Adversarial Security Campaign', () => {
     expect(afterList).toHaveLength(1);
     expect(afterList[0]?.deviceId).toBe(devB.deviceId);
   });
+
+  // Vector 10: Rejects forged revocation records
+  it('Vector 10: Rejects forged revocation records and leaves peer trusted', async () => {
+    const forgedSig = bytesToHex(new Uint8Array(64).fill(0xcc));
+    const forgedRec = {
+      revoker_device_id: devA.deviceId,
+      revoked_device_id: devB.deviceId,
+      seq: 1,
+      timestamp: new Date().toISOString(),
+      signature: forgedSig,
+    };
+
+    const verified = await import('./revocation.js').then((m) =>
+      m.verifyRevocation(forgedRec, devA.publicKey),
+    );
+    expect(verified).toBe(false);
+
+    // MemoryTrustStore remains intact
+    expect(await trustStoreA.isTrusted(devB.deviceId)).toBe(true);
+  });
+
+  // Vector 11: Rejects sequence rollback in revocation sync
+  it('Vector 11: Rejects sequence rollback on revocation records', async () => {
+    const rec1 = await import('./revocation.js').then((m) =>
+      m.signRevocation(devA, devB.deviceId, 5),
+    );
+    await trustStoreA.revokeDeviceWithRecord(rec1);
+
+    const recOld = await import('./revocation.js').then((m) =>
+      m.signRevocation(devA, devB.deviceId, 3),
+    );
+    await expect(trustStoreA.revokeDeviceWithRecord(recOld)).rejects.toThrow(
+      'revocation sequence number rollback',
+    );
+  });
 });

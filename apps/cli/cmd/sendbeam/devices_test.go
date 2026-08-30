@@ -48,6 +48,8 @@ func TestDevicesCommand(t *testing.T) {
 		FirstSeenAt:       now,
 		LastSeenAt:        now,
 		Revoked:           true,
+		RevokedBy:         devAlice,
+		RevocationSeq:     1,
 		Policy: wire.TrustPolicy{
 			AutoAccept:        true,
 			AutoAcceptDestDir: "/var/tmp/downloads",
@@ -64,7 +66,7 @@ func TestDevicesCommand(t *testing.T) {
 	if !strings.Contains(outStr, "Alice Laptop") || !strings.Contains(outStr, "Bob Server") {
 		t.Errorf("output missing expected devices: %s", outStr)
 	}
-	if !strings.Contains(outStr, "active") || !strings.Contains(outStr, "revoked") {
+	if !strings.Contains(outStr, "active") || !strings.Contains(outStr, "revoked (via") {
 		t.Errorf("output missing status: %s", outStr)
 	}
 
@@ -81,6 +83,15 @@ func TestDevicesCommand(t *testing.T) {
 	}
 	if len(views) != 2 {
 		t.Fatalf("expected 2 devices in JSON, got %d", len(views))
+	}
+	var bobView *DeviceJSONView
+	for i := range views {
+		if views[i].DeviceID == devBob {
+			bobView = &views[i]
+		}
+	}
+	if bobView == nil || !bobView.Revoked || bobView.RevokedBy != devAlice || bobView.RevocationSeq != 1 {
+		t.Fatalf("bob JSON view missing revocation provenance: %+v", bobView)
 	}
 }
 

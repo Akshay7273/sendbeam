@@ -84,7 +84,7 @@ export async function listTrustedDevices(): Promise<TrustedDeviceUI[]> {
       fp = r.deviceId.slice(0, 16);
     }
 
-    return {
+    const dev: TrustedDeviceUI = {
       deviceId: r.deviceId,
       localLabel: r.localLabel,
       fingerprint: fp,
@@ -96,6 +96,9 @@ export async function listTrustedDevices(): Promise<TrustedDeviceUI[]> {
       capabilities: r.capabilities || [],
       policy: r.policy || { autoAccept: false },
     };
+    if (r.revokedBy !== undefined) dev.revokedBy = r.revokedBy;
+    if (r.revocationSeq !== undefined) dev.revocationSeq = r.revocationSeq;
+    return dev;
   });
 }
 

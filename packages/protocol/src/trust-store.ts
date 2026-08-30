@@ -40,6 +40,9 @@ export interface TrustRecord {
   lastSeenAt: string; // ISO 8601 string
   revoked: boolean;
   revokedAt?: string;
+  revokedBy?: string; // DeviceID of the revoker who signed the revocation record
+  revocationSeq?: number;
+  revocationSig?: string;
   policy: TrustPolicy;
 }
 
@@ -74,6 +77,8 @@ export async function validateTrustRecord(record: TrustRecord): Promise<void> {
   }
 }
 
+import { type RevocationRecord, validateRevocationRecord } from './revocation.js';
+
 /**
  * TrustStore interface for persistent trusted device management.
  */
@@ -82,10 +87,12 @@ export interface TrustStore {
   listDevices(): Promise<TrustRecord[]>;
   addOrUpdateDevice(record: TrustRecord): Promise<void>;
   revokeDevice(deviceId: string): Promise<void>;
+  revokeDeviceWithRecord(record: RevocationRecord): Promise<void>;
   unpairDevice(deviceId: string): Promise<void>;
   isTrusted(deviceId: string): Promise<boolean>;
   updateLastSeen(deviceId: string, seenAt?: string): Promise<void>;
   updatePolicy(deviceId: string, policy: TrustPolicy): Promise<void>;
+  listRevocations(): Promise<RevocationRecord[]>;
 }
 
 /**
@@ -118,6 +125,24 @@ export class MemoryTrustStore implements TrustStore {
     rec.revokedAt = new Date().toISOString();
   }
 
+  async revokeDeviceWithRecord(record: RevocationRecord): Promise<void> {
+    validateRevocationRecord(record);
+    const rec = this.records.get(record.revoked_device_id);
+    if (!rec) {
+      return;
+    }
+    if (rec.revoked && rec.revokedBy === record.revoker_device_id) {
+      if (rec.revocationSeq && record.seq <= rec.revocationSeq) {
+        throw new Error('revocation sequence number rollback');
+      }
+    }
+    rec.revoked = true;
+    rec.revokedAt = record.timestamp;
+    rec.revokedBy = record.revoker_device_id;
+    rec.revocationSeq = record.seq;
+    rec.revocationSig = record.signature;
+  }
+
   async unpairDevice(deviceId: string): Promise<void> {
     this.records.delete(deviceId);
   }
@@ -138,5 +163,21 @@ export class MemoryTrustStore implements TrustStore {
     if (!rec) throw new Error(`device not found: ${deviceId}`);
     rec.policy = JSON.parse(JSON.stringify(policy)) as TrustPolicy;
     await validateTrustRecord(rec);
+  }
+
+  async listRevocations(): Promise<RevocationRecord[]> {
+    const list: RevocationRecord[] = [];
+    for (const rec of this.records.values()) {
+      if (rec.revoked && rec.revokedBy && rec.revocationSeq && rec.revocationSig && rec.revokedAt) {
+        list.push({
+          revoker_device_id: rec.revokedBy,
+          revoked_device_id: rec.deviceId,
+          seq: rec.revocationSeq,
+          timestamp: rec.revokedAt,
+          signature: rec.revocationSig,
+        });
+      }
+    }
+    return list;
   }
 }

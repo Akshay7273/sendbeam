@@ -103,9 +103,17 @@ func (c *TrustedSessionCoordinator) InitiateTrustedSession(ctx context.Context, 
 		return nil, fmt.Errorf("get local identity: %w", err)
 	}
 
-	// 1. Create and send TrustedAuthInit
+	// 1. Create and send TrustedAuthInit with mesh revocation records
 	now := time.Now().UTC()
-	initMsg, err := wire.NewTrustedAuthInit(id, cfg.PeerDeviceID, record.PairCredentialRef, kPair, cfg.Capabilities, nil, nil, now)
+	storedRevs, _ := c.store.ListRevocations(ctx)
+	revList := make([]wire.RevocationRecord, 0, len(storedRevs))
+	for _, r := range storedRevs {
+		if r != nil {
+			revList = append(revList, *r)
+		}
+	}
+
+	initMsg, err := wire.NewTrustedAuthInitWithRevocations(id, cfg.PeerDeviceID, record.PairCredentialRef, kPair, cfg.Capabilities, nil, nil, now, revList)
 	if err != nil {
 		return nil, fmt.Errorf("create trusted auth init: %w", err)
 	}
@@ -139,6 +147,9 @@ func (c *TrustedSessionCoordinator) InitiateTrustedSession(ctx context.Context, 
 	if err != nil {
 		return nil, fmt.Errorf("verify trusted auth response: %w", err)
 	}
+
+	// Opportunistically process mesh revocation records piggybacked on response
+	c.processIncomingRevocations(ctx, respMsg.Revocations, cfg.PeerDeviceID)
 
 	// 3. Derive forward-secret session keys
 	ephemInit, _ := hex.DecodeString(initMsg.EphemeralPub)
@@ -246,8 +257,19 @@ func (c *TrustedSessionCoordinator) AcceptTrustedSession(ctx context.Context, tr
 		return nil, fmt.Errorf("verify trusted auth init: %w", err)
 	}
 
-	// 2. Create and send TrustedAuthResponse
-	respMsg, err := wire.NewTrustedAuthResponse(id, initMsg, kPair, capabilities, nil, nil)
+	// Opportunistically process mesh revocation records piggybacked on init
+	c.processIncomingRevocations(ctx, initMsg.Revocations, initMsg.InitiatorDeviceID)
+
+	// 2. Create and send TrustedAuthResponse with mesh revocation records
+	storedRevs, _ := c.store.ListRevocations(ctx)
+	revList := make([]wire.RevocationRecord, 0, len(storedRevs))
+	for _, r := range storedRevs {
+		if r != nil {
+			revList = append(revList, *r)
+		}
+	}
+
+	respMsg, err := wire.NewTrustedAuthResponseWithRevocations(id, initMsg, kPair, capabilities, nil, nil, revList)
 	if err != nil {
 		return nil, fmt.Errorf("create trusted auth response: %w", err)
 	}
@@ -321,3 +343,67 @@ func (c *TrustedSessionCoordinator) sendRejection(ctx context.Context, transport
 	data, _ := wire.EncodeTrustedAuthMessage(resp)
 	return transport.SendMessage(ctx, data)
 }
+
+// RevokeDevice explicitly revokes trust for a peer, creates a signed RevocationRecord, and updates the local trust store.
+func (c *TrustedSessionCoordinator) RevokeDevice(ctx context.Context, targetDeviceID string) error {
+	id, err := c.idMgr.GetOrCreateIdentity()
+	if err != nil {
+		return fmt.Errorf("get local identity: %w", err)
+	}
+
+	dev, err := c.store.GetDevice(ctx, targetDeviceID)
+	if err != nil {
+		return fmt.Errorf("get device: %w", err)
+	}
+
+	seq := dev.RevocationSeq + 1
+	if seq == 1 && dev.RevocationSeq == 0 {
+		seq = 1
+	}
+
+	rec, err := wire.SignRevocation(id, targetDeviceID, seq, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("sign revocation record: %w", err)
+	}
+
+	return c.store.RevokeDeviceWithRecord(ctx, rec)
+}
+
+// processIncomingRevocations parses, authenticates, and applies signed RevocationRecords from trusted peers.
+func (c *TrustedSessionCoordinator) processIncomingRevocations(ctx context.Context, revocations []wire.RevocationRecord, _ string) {
+	if len(revocations) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	for _, rec := range revocations {
+		// 1. Structure validation
+		if err := rec.Validate(); err != nil {
+			continue
+		}
+
+		// 2. Direct pairing prerequisite: Revoker must exist in local trust store
+		revokerRec, err := c.store.GetDevice(ctx, rec.RevokerDeviceID)
+		if err != nil || revokerRec == nil {
+			continue // ignore claims from revokers we have never directly paired with
+		}
+
+		// 3. Revoker must be active (not revoked)
+		if revokerRec.Revoked {
+			continue // revoked devices cannot submit revocations
+		}
+
+		// 4. Verify signature against stored revoker public key
+		pubKey, err := hex.DecodeString(revokerRec.PublicKey)
+		if err != nil || len(pubKey) != ed25519.PublicKeySize {
+			continue
+		}
+
+		if err := wire.VerifyRevocation(&rec, pubKey, wire.MaxRevocationTimestampSkew, now); err != nil {
+			continue
+		}
+
+		// 5. Apply revocation to local store
+		_ = c.store.RevokeDeviceWithRecord(ctx, &rec)
+	}
+}
+

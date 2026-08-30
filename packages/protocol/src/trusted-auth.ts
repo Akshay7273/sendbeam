@@ -13,6 +13,7 @@ import {
   verifyDeviceSignature,
   type DeviceIdentity,
 } from './identity.js';
+import type { RevocationRecord } from './revocation.js';
 import { hkdfSha256, hmacSha256, randomBytes, sha256 } from './webcrypto.js';
 
 export const MSG_TRUSTED_AUTH_INIT = 'trusted_auth_init';
@@ -47,6 +48,7 @@ export interface TrustedAuthInit {
   readonly timestamp: string;
   readonly signature: string;
   readonly auth_tag: string;
+  readonly revocations?: RevocationRecord[];
 }
 
 export interface TrustedAuthResponse {
@@ -59,6 +61,7 @@ export interface TrustedAuthResponse {
   readonly capabilities?: string[];
   readonly signature?: string;
   readonly auth_tag?: string;
+  readonly revocations?: RevocationRecord[];
 }
 
 export interface TrustedAuthConfirm {
@@ -294,6 +297,7 @@ export async function createTrustedAuthInit(
   ephemPub?: Uint8Array,
   nonce?: Uint8Array,
   now?: Date | string,
+  revocations?: RevocationRecord[],
 ): Promise<TrustedAuthInit> {
   const ephem =
     ephemPub && ephemPub.length === TRUSTED_AUTH_EPHEMERAL_SIZE
@@ -333,6 +337,7 @@ export async function createTrustedAuthInit(
     timestamp: tsStr,
     signature: bytesToHex(sig),
     auth_tag: tag,
+    ...(revocations && revocations.length > 0 ? { revocations } : {}),
   };
 }
 
@@ -430,6 +435,7 @@ export async function createTrustedAuthResponse(
   caps: string[],
   ephemPub?: Uint8Array,
   nonce?: Uint8Array,
+  revocations?: RevocationRecord[],
 ): Promise<TrustedAuthResponse> {
   const ephem =
     ephemPub && ephemPub.length === TRUSTED_AUTH_EPHEMERAL_SIZE
@@ -470,6 +476,7 @@ export async function createTrustedAuthResponse(
     capabilities: caps,
     signature: bytesToHex(sig),
     auth_tag: tag,
+    ...(revocations && revocations.length > 0 ? { revocations } : {}),
   };
 }
 

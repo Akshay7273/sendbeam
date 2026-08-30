@@ -270,7 +270,11 @@
                       {:else if dev.status === 'online'}
                         Online
                       {:else if dev.status === 'revoked'}
-                        Revoked
+                        {#if dev.revokedBy}
+                          Revoked (Mesh synced)
+                        {:else}
+                          Revoked
+                        {/if}
                       {:else}
                         Offline
                       {/if}

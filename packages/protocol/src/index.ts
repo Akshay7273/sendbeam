@@ -37,3 +37,4 @@ export * from './capability.js';
 export * from './indexeddb-trust-store.js';
 export * from './indexeddb-secret-store.js';
 export * from './browser-identity.js';
+export * from './revocation.js';

@@ -85,4 +85,45 @@ describe('Trusted Devices Frontend Bridge', () => {
     await unpairTrustedDevice(devId, true);
     expect(unpairCalledWith).toEqual([devId, true]);
   });
+
+  it('maps mesh-synced revocation provenance accurately', async () => {
+    const kp = await generateDeviceIdentity();
+    const devId = await deriveDeviceId(kp.publicKey);
+    const pubHex = bytesToHex(kp.publicKey);
+    const fp = formatFingerprint(kp.publicKey);
+
+    const mockDevices = [
+      {
+        deviceId: devId,
+        localLabel: 'Compromised Phone',
+        fingerprint: fp,
+        publicKey: pubHex,
+        status: 'revoked' as const,
+        revoked: true,
+        revokedBy: 'sb-dev-laptop1234567890',
+        revocationSeq: 1,
+        lastSeenAt: new Date().toISOString(),
+        firstSeenAt: new Date().toISOString(),
+        capabilities: ['transfer.v1'],
+        policy: { autoAccept: false },
+      },
+    ];
+
+    globalThis.window = {
+      go: {
+        engine: {
+          DeviceService: {
+            ListTrustedDevices: async () => mockDevices,
+          },
+        },
+      },
+    } as unknown as Window & typeof globalThis;
+
+    const devs = await listTrustedDevices();
+    expect(devs).toHaveLength(1);
+    expect(devs[0]!.status).toBe('revoked');
+    expect(devs[0]!.revoked).toBe(true);
+    expect(devs[0]!.revokedBy).toBe('sb-dev-laptop1234567890');
+    expect(devs[0]!.revocationSeq).toBe(1);
+  });
 });
