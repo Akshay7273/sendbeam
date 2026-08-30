@@ -12,6 +12,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 	relaytransport "github.com/sendbeam/engine/relay"
@@ -87,6 +88,8 @@ type Spec struct {
 	ForceRelay bool
 	// Private enables negotiated traffic padding on the transfer (V17-PR03).
 	Private bool
+	// RelayJitter configures optional sender-side timing jitter for relay frames (V17-PR04).
+	RelayJitter time.Duration
 	// OnTransport reports "direct" or "relay" when the selected byte path changes.
 	OnTransport func(string)
 	// OnConnect fires once the DataChannel opens, before the first byte moves.
@@ -540,6 +543,9 @@ func (d *driver) route(m rendezvous.Message) {
 		rs.SetResume(res.Room, string(res.Role))
 	}
 	d.relay = relaytransport.New(d)
+	if d.spec.RelayJitter > 0 {
+		d.relay.SetJitter(d.spec.RelayJitter)
+	}
 	d.peer = peer
 	d.peerCh <- peer
 }

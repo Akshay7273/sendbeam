@@ -139,22 +139,32 @@ The server enforces a strict **Zero-PII Observability Guarantee**:
 
 ## What the server can and cannot see
 
-- **Cannot see:** the invite words, file bytes, filenames, digests, session keys, client IPs in metrics/logs.
+- **Cannot see:** the invite words, file bytes, filenames, digests, session keys, client IPs in metrics/logs, or frame plaintext contents.
 - **Can see:** the room number, socket metadata, SDP/ICE needed to route, and — on the
   relay path only — ciphertext byte counts and timing.
 
+### Relay Metadata Defenses (v1.7)
+
+In v1.7, SendBeam introduces active defenses against metadata leakage on the relay path:
+
+| Metadata Property           | v1.6 (Baseline)                      | v1.7 (With Defenses)                                                                    | Residual Observable Surface                                   |
+| --------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| **Frame Ciphertext Length** | Exact payload length + 16 B AEAD tag | Discrete power-of-two buckets ($256, 512, \dots, 65535$) via authenticated zero-padding | Only coarse bucket size                                       |
+| **Transmission Timing**     | Immediate packet bursts              | Randomized sender-side scheduling jitter (configurable up to 15ms)                      | Fine-grained burst signatures blurred; macro duration visible |
+| **Server Logging**          | Zero per-frame logging               | Zero per-frame logging (audited via automated tests)                                    | No frame payloads, tags, or headers logged                    |
+| **Server Metrics**          | Aggregate byte counter               | Aggregate byte counter                                                                  | Only total relayed bytes per server                           |
+| **Room Association**        | 2 sockets per room                   | 2 sockets per room                                                                      | Socket correlation remains observable                         |
+
 ## Accepted limitations
 
-- **Traffic padding scope (v1.7 / ADR 0009):** When negotiated via the `padding` capability (or `--private` flag), all frame ciphertexts are quantized into discrete power-of-two buckets ($256, 512, \dots, 65535$ bytes) with authenticated zero-padding, preventing fine-grained fingerprinting of manifest and control frames. However, in unpadded mode (or when communicating with legacy v1.6 peers), exact payload lengths remain visible on the wire. Furthermore, coarse metadata (such as overall transfer duration, total frame counts, and network timing) remains observable to an eavesdropper regardless of padding.
+- **Relay socket correlation and macro traffic volume (v1.7 / V17-PR04):** While frame padding and sender-side timing jitter prevent fine-grained payload fingerprinting and burst timing analysis, the relay server necessarily observes that two client sockets belong to the same active room. Furthermore, aggregate ciphertext volume and macro session duration remain observable to the relay operator.
+- **Traffic padding scope (v1.7 / ADR 0009):** When negotiated via the `padding` capability (or `--private` flag), all frame ciphertexts are quantized into discrete power-of-two buckets ($256, 512, \dots, 65535$ bytes) with authenticated zero-padding, preventing fine-grained fingerprinting of manifest and control frames. However, in unpadded mode (or when communicating with legacy v1.6 peers), exact payload lengths remain visible on the wire.
 - **Whoever holds the code can impersonate a peer** until first-pair or room reaping. The
   human fingerprint check does not close this — a code holder can complete the handshake
   and produce the matching fingerprint — so the real mitigations are careful code
   distribution, single-use pairing, and the short room lifetime.
 - **Endpoint compromise is out of scope.** A compromised browser, extension, or OS can read
   plaintext before or after transfer; no wire protocol can prevent that.
-- **The relay has no metadata defense.** A server observing the relay path can correlate
-  the two sockets in a room (both directions cross the same server). It still cannot read
-  anything.
 
 ## Verification
 

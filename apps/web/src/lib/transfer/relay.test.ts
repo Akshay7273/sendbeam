@@ -61,4 +61,20 @@ describe('RelayTransport', () => {
     await expect(ready).rejects.toThrow('signaling lost');
     await expect(blocked).rejects.toThrow('relay closed');
   });
+
+  it('delivers frame with bounded random jitter', async () => {
+    const { channel, binary } = fakeChannel();
+    const relay = new RelayTransport(channel);
+    relay.setJitter(15);
+    relay.handleMessage({ type: 'relay_ready' });
+    relay.handleMessage({ type: 'credit', bytes: 1024 });
+
+    const frame = new Uint8Array([9, 8, 7]).buffer;
+    const start = Date.now();
+    await relay.write(frame);
+    const elapsed = Date.now() - start;
+
+    expect(binary).toEqual([frame]);
+    expect(elapsed).toBeLessThan(150);
+  });
 });

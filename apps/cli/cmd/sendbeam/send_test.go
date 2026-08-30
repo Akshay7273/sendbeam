@@ -237,3 +237,32 @@ func TestExecuteSend_PrivateFlag(t *testing.T) {
 		t.Fatalf("--private flag was not recognized: %s", stderr.String())
 	}
 }
+
+func TestExecuteSend_JitterFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+	env, err := InitCLIEnvironment(tmpDir)
+	if err != nil {
+		t.Fatalf("init cli env: %v", err)
+	}
+
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("hello"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	// With an offline or fake server, executeSend should accept --jitter without flag error
+	code := executeSend([]string{
+		"--config-dir", env.ConfigDir,
+		"--server", "wss://127.0.0.1:65530/ws",
+		"--jitter", "15ms",
+		testFile,
+	}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1 for failed dial with --jitter flag, got %d. stderr: %s", code, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "flag provided but not defined") {
+		t.Fatalf("--jitter flag was not recognized: %s", stderr.String())
+	}
+}

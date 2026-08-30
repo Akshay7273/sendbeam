@@ -18,6 +18,7 @@ export class RelayTransport {
   private outbound: Promise<void> = Promise.resolve();
   private resolveReady!: () => void;
   private rejectReady!: (err: Error) => void;
+  private jitterMaxMs = 0;
   readonly ready = new Promise<void>((resolve, reject) => {
     this.resolveReady = resolve;
     this.rejectReady = reject;
@@ -27,6 +28,10 @@ export class RelayTransport {
     // A direct path may remain healthy after signaling disappears; suppress an unhandled
     // readiness rejection while preserving it for a later attempted relay switch.
     this.ready.catch(() => {});
+  }
+
+  setJitter(ms: number): void {
+    this.jitterMaxMs = Math.max(0, ms);
   }
 
   open(): void {
@@ -86,6 +91,15 @@ export class RelayTransport {
       await this.waitForCredit(frame.byteLength);
       if (this.closed) throw new Error('relay closed');
       this.credit -= frame.byteLength;
+      if (this.jitterMaxMs > 0) {
+        const randBuf = new Uint32Array(1);
+        crypto.getRandomValues(randBuf);
+        const delay = (randBuf[0] ?? 0) % (this.jitterMaxMs + 1);
+        if (delay > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+        if (this.closed) throw new Error('relay closed');
+      }
       this.signaling.sendBinary(frame);
     });
     this.outbound = task.catch(() => {});
