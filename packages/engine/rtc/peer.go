@@ -148,7 +148,7 @@ func NewPeer(opts PeerOptions) (*Peer, error) {
 		// Observe a transient disconnect promptly and bound the failed state so recovery (or
 		// fallback) is decided within a controlled window rather than Pion's long defaults.
 		s := webrtc.SettingEngine{}
-		s.SetICETimeouts(10*time.Second, 30*time.Second, 2*time.Second)
+		s.SetICETimeouts(3*time.Second, 8*time.Second, 2*time.Second)
 		api := webrtc.NewAPI(webrtc.WithSettingEngine(s))
 		newPC = api.NewPeerConnection
 	}
