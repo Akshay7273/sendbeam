@@ -38,6 +38,19 @@ The SendBeam Desktop application packages the Go transfer engine with native pla
 | **Linux** (amd64)     | Debian Package | `sendbeam-desktop_0.0.0~dev+git.<shortsha>_amd64.deb` | `sendbeam-desktop_<ver>_amd64.deb`     | Debian/Ubuntu `.deb` with `.desktop` menu entry and icons     |
 | **Linux** (amd64)     | AppImage       | `SendBeam-linux-amd64.AppImage`                       | `SendBeam-linux-amd64.AppImage`        | Portable Linux executable with embedded runtime               |
 
+### 3. Package Manager Distributions (Zero Cost)
+
+SendBeam publishes validated manifests and formulas for popular package managers, pulling directly from official GitHub release tarballs and zips pinned to cryptographic SHA-256 checksums:
+
+| Package Manager          | Platform                                             | Source Repository / Path                          | Installation UX                                | Verification Method                                        |
+| :----------------------- | :--------------------------------------------------- | :------------------------------------------------ | :--------------------------------------------- | :--------------------------------------------------------- |
+| **Homebrew**             | macOS (`arm64`, `x86_64`), Linux (`arm64`, `x86_64`) | `Formula/sendbeam.rb` / `packaging/homebrew/`     | `brew install sendbeam/sendbeam/sendbeam`      | Release tarball SHA-256 in Ruby formula                    |
+| **Scoop**                | Windows (`x64`, `arm64`)                             | `bucket/sendbeam.json` / `packaging/scoop/`       | `scoop install sendbeam`                       | SHA-256 in manifest + autoupdate regex on `SHA256SUMS.txt` |
+| **WinGet**               | Windows (`x64`, `arm64`)                             | `packaging/winget/manifests/s/SendBeam/SendBeam/` | `winget install SendBeam.SendBeam`             | SHA-256 in YAML installer manifest                         |
+| **AUR** (`sendbeam-bin`) | Arch Linux (`x86_64`, `aarch64`)                     | `packaging/aur/PKGBUILD`, `.SRCINFO`              | `yay -S sendbeam-bin` / `paru -S sendbeam-bin` | Release tarball SHA-256 in PKGBUILD                        |
+
+Manifest generation and strict verification are automated via `scripts/generate-package-manifests.go` as part of the release pipeline, guaranteeing zero external hosting cost and strict checksum parity.
+
 > [!NOTE]
 > Pull request and branch builds generate unsigned validation packages stored as GitHub Actions workflow artifacts (retained for 14 days in `.github/workflows/distribution.yml`). Pushing a release tag (`vX.Y.Z` or `vX.Y.Z-rcN`) triggers `.github/workflows/release.yml`, which compiles all native distributions, generates canonical `SHA256SUMS.txt`, creates in-toto provenance & SPDX 2.3 SBOM attestations, and stages a **Draft GitHub Release** for maintainer review and publication.
 

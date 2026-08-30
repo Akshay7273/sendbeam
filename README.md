@@ -76,7 +76,23 @@ The web application works in any evergreen browser:
 
 Send and receive from terminals, servers, and scripts.
 
-Install with the project's task runner, or build from source:
+### Package Managers
+
+```bash
+# macOS & Linux (Homebrew)
+brew install sendbeam/sendbeam/sendbeam
+
+# Arch Linux (AUR)
+yay -S sendbeam-bin
+
+# Windows (WinGet)
+winget install SendBeam.SendBeam
+
+# Windows (Scoop)
+scoop bucket add sendbeam https://github.com/Akshay7273/sendbeam && scoop install sendbeam
+```
+
+### Install from Source or Task Runner
 
 ```bash
 just install-cli                      # installs sendbeam into ~/.local/bin

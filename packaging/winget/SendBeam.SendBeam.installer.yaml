@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+
+PackageIdentifier: SendBeam.SendBeam
+PackageVersion: 1.6.0
+MinimumOSVersion: 10.0.0.0
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: sendbeam.exe
+    PortableCommandAlias: sendbeam
+ReleaseDate: 2026-08-28
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/Akshay7273/sendbeam/releases/download/v1.6.0/sendbeam-cli-windows-amd64.zip
+    InstallerSha256: 131BF36C8DE225B94637664666A651D87C2533C5DA0D8F717A3799B6C17B9FF7
+  - Architecture: arm64
+    InstallerUrl: https://github.com/Akshay7273/sendbeam/releases/download/v1.6.0/sendbeam-cli-windows-arm64.zip
+    InstallerSha256: ECB570614D3C6F50A42D8F47C66F255F47E748E99BCED1E0C76E99BAFD0806C8
+ManifestType: installer
+ManifestVersion: 1.6.0

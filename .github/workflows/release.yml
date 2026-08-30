@@ -639,6 +639,15 @@ jobs:
             --out updates
           cp updates/* release-bundle/
 
+      - name: Generate Package Manager Manifests (Homebrew, Scoop, WinGet, AUR)
+        run: |
+          go run ./scripts/generate-package-manifests.go \
+            --version "${{ steps.meta.outputs.version }}" \
+            --tag "${{ inputs.tag || github.ref_name }}" \
+            --sums release-bundle/SHA256SUMS.txt \
+            --out-dir packaging \
+            --sync-root=true
+
       - name: Generate release notes
         run: |
           TAG_VAL="${{ inputs.tag || github.ref_name }}"
@@ -754,6 +763,19 @@ jobs:
             test -f bundle/stable.json.minisig
             go run ./scripts/minisign.go verify -m bundle/stable.json -p minisign.pub -x bundle/stable.json.minisig
           fi
+
+      - name: Test package manager generator test suite
+        run: bash ./scripts/generate-package-manifests_test.sh
+
+      - name: Validate Package Manager Manifests
+        run: |
+          go run ./scripts/generate-package-manifests.go \
+            --version "${{ steps.meta.outputs.version }}" \
+            --tag "${{ inputs.tag || github.ref_name }}" \
+            --sums bundle/SHA256SUMS.txt \
+            --out-dir packaging \
+            --sync-root=true \
+            --validate
 
       - name: Unpack and smoke test Linux CLI binary
         working-directory: bundle

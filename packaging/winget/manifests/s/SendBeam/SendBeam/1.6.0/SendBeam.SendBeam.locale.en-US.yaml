@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
+PackageIdentifier: SendBeam.SendBeam
+PackageVersion: 1.6.0
+PackageLocale: en-US
+Publisher: Akshay
+PublisherUrl: https://github.com/Akshay7273
+PublisherSupportUrl: https://github.com/Akshay7273/sendbeam/issues
+PackageName: SendBeam
+PackageUrl: https://omnitrix.space
+License: MIT
+LicenseUrl: https://github.com/Akshay7273/sendbeam/blob/main/LICENSE
+ShortDescription: Secure, direct, peer-to-peer file transfer in your browser and terminal
+Description: SendBeam is an open-source, peer-to-peer file transfer tool with end-to-end encryption, QR code pairing, trusted mesh pairing, and wire privacy.
+Tags:
+  - p2p
+  - file-transfer
+  - webrtc
+  - encryption
+  - cli
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
