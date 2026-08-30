@@ -8,6 +8,9 @@ on:
       - 'apps/desktop/**'
       - 'packages/**'
       - 'scripts/**'
+      - 'packaging/**'
+      - 'Formula/**'
+      - 'bucket/**'
       - '.github/workflows/distribution.yml'
   workflow_dispatch:
 
@@ -611,3 +614,29 @@ jobs:
           test -f sendbeam-desktop.spdx.json
           python3 -c "import json; d = json.load(open('sendbeam-cli.spdx.json')); assert d['spdxVersion'] == 'SPDX-2.3'; assert len(d['packages']) > 1"
           python3 -c "import json; d = json.load(open('sendbeam-desktop.spdx.json')); assert d['spdxVersion'] == 'SPDX-2.3'; assert len(d['packages']) > 1"
+
+      - name: Determine version metadata
+        id: meta
+        run: bash ./scripts/version-metadata.sh --github-output
+
+      - name: Test package manager generator test suite
+        run: bash ./scripts/generate-package-manifests_test.sh
+
+      - name: Test package manager manifests generation for bundle
+        run: |
+          go run ./scripts/generate-package-manifests.go \
+            --version "${{ steps.meta.outputs.version }}" \
+            --tag "v${{ steps.meta.outputs.version }}" \
+            --sums bundle/SHA256SUMS.txt \
+            --out-dir pr-packaging \
+            --sync-root=false
+
+      - name: Validate generated PR package manager manifests
+        run: |
+          go run ./scripts/generate-package-manifests.go \
+            --version "${{ steps.meta.outputs.version }}" \
+            --tag "v${{ steps.meta.outputs.version }}" \
+            --sums bundle/SHA256SUMS.txt \
+            --out-dir pr-packaging \
+            --sync-root=false \
+            --validate

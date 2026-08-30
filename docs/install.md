@@ -4,7 +4,68 @@ This guide details how to install and run the official SendBeam CLI and Desktop 
 
 ---
 
-## 1. Linux Installation
+## 1. Package Managers (Recommended for CLI)
+
+SendBeam CLI is available across popular native package managers with zero external hosting cost and automated verification against the signed release manifest:
+
+### A. Homebrew (macOS & Linux)
+
+Install the `sendbeam` CLI formula on macOS (Apple Silicon `arm64` and Intel `x86_64`) or Linux:
+
+```bash
+# Tap the SendBeam repository and install
+brew tap sendbeam/sendbeam https://github.com/Akshay7273/sendbeam
+brew install sendbeam
+
+# Or in a single command
+brew install sendbeam/sendbeam/sendbeam
+
+# Upgrade to latest release
+brew upgrade sendbeam
+```
+
+### B. Scoop (Windows)
+
+Install `sendbeam` CLI on Windows using the official Scoop bucket:
+
+```powershell
+# Add the SendBeam bucket
+scoop bucket add sendbeam https://github.com/Akshay7273/sendbeam
+
+# Install sendbeam
+scoop install sendbeam
+
+# Upgrade
+scoop update sendbeam
+```
+
+### C. WinGet (Windows)
+
+Install `sendbeam` CLI via the Windows Package Manager:
+
+```powershell
+# Install SendBeam portable CLI
+winget install --id SendBeam.SendBeam
+
+# Upgrade
+winget upgrade --id SendBeam.SendBeam
+```
+
+### D. Arch Linux (AUR)
+
+Install the pre-compiled binary package `sendbeam-bin` from the Arch User Repository:
+
+```bash
+# Using yay
+yay -S sendbeam-bin
+
+# Using paru
+paru -S sendbeam-bin
+```
+
+---
+
+## 2. Linux Installation
 
 SendBeam offers multiple packaging formats for Linux: Debian packages (`.deb`), portable AppImages, and standalone CLI archives.
 
@@ -51,7 +112,7 @@ sendbeam version
 
 ---
 
-## 2. macOS Installation
+## 3. macOS Installation
 
 SendBeam is distributed as a Universal Mach-O binary bundle (`arm64` Apple Silicon + `x86_64` Intel) in both DMG and ZIP formats.
 
@@ -95,7 +156,7 @@ sendbeam version
 
 ---
 
-## 3. Windows Installation
+## 4. Windows Installation
 
 SendBeam provides an NSIS executable installer, a standalone portable ZIP, and a CLI executable for Windows.
 
@@ -134,7 +195,7 @@ sendbeam version
 
 ---
 
-## 4. Cryptographic Checksum & Signature Verification
+## 5. Cryptographic Checksum & Signature Verification
 
 All release packages and archives are cryptographically signed and hashed in `SHA256SUMS.txt`:
 
@@ -167,7 +228,7 @@ For full supply chain details and SBOM verification, refer to [docs/supply-chain
 
 ---
 
-## 5. Quickstart: Your First Transfer
+## 6. Quickstart: Your First Transfer
 
 ### Web App
 
