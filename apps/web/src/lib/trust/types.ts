@@ -28,7 +28,8 @@ export interface IncomingTransferRequest {
   files: Array<{ name: string; size: number }>;
 }
 
-export type BroadcastDeviceStatus = 'pending' | 'connecting' | 'sending' | 'ok' | 'offline' | 'refused' | 'failed';
+export type BroadcastDeviceStatus =
+  'pending' | 'connecting' | 'sending' | 'ok' | 'offline' | 'refused' | 'failed';
 
 export interface BroadcastDeviceState {
   deviceId: string;
