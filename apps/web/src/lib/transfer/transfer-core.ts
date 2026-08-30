@@ -241,6 +241,7 @@ export function runTransferCore(port: Port, deps: TransferCoreDeps): Promise<voi
             await persistSenderRecord(store, msg, manifest);
           },
           onStateChange: (state) => post({ kind: 'state', state }),
+          ...(msg.padding !== undefined ? { padding: msg.padding } : {}),
           ...(msg.blockSize !== undefined ? { blockSize: msg.blockSize } : {}),
           ...(msg.frameSize !== undefined ? { frameSize: msg.frameSize } : {}),
           ...(msg.window !== undefined ? { window: msg.window } : {}),
@@ -325,6 +326,7 @@ export function runTransferCore(port: Port, deps: TransferCoreDeps): Promise<voi
           recvCounterStart: recvCounter,
           createDigest: deps.createDigest,
           destination,
+          ...(_msg.padding !== undefined ? { padding: _msg.padding } : {}),
           onResume: (reused) => {
             reusedBaseline = reused;
             // Surface the verified checkpoint immediately — before the first new block.

@@ -24,6 +24,9 @@ type Caps struct {
 	SinkHints []string `json:"sinkHints"`
 }
 
+// FeaturePadding is the capability string announced for wire traffic padding.
+const FeaturePadding = wire.PaddingCapability
+
 // DefaultCaps returns the capabilities a CLI peer announces by default.
 func DefaultCaps() Caps {
 	return Caps{
@@ -33,6 +36,18 @@ func DefaultCaps() Caps {
 		Features:  []string{"folders", "relay"},
 		SinkHints: []string{"direct-file"},
 	}
+}
+
+// WithPadding returns a clone of c with the padding feature included.
+func (c Caps) WithPadding() Caps {
+	for _, f := range c.Features {
+		if f == FeaturePadding {
+			return c
+		}
+	}
+	out := c
+	out.Features = append(append([]string(nil), c.Features...), FeaturePadding)
+	return out
 }
 
 // capsHeader is the fixed frame header for the caps frame: version, Caps type, all

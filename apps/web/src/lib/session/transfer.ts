@@ -11,6 +11,7 @@
  */
 
 import {
+  FEATURE_PADDING,
   decodeResumeSecretEnvelope,
   deriveResumeRoot,
   type RendezvousResult,
@@ -108,6 +109,13 @@ export interface SendOptions {
   iceServers?: RTCIceServer[];
 }
 
+function isPaddingNegotiated(rendezvous: RendezvousResult): boolean {
+  return (
+    rendezvous.localCaps.features.includes(FEATURE_PADDING) &&
+    rendezvous.remoteCaps.features.includes(FEATURE_PADDING)
+  );
+}
+
 /** Start sending an ordered file/folder selection over the adopted rendezvous socket. */
 export function runSend(
   rendezvous: RendezvousResult,
@@ -121,6 +129,7 @@ export function runSend(
     start: async () => ({
       kind: 'start-send',
       files: opts.files,
+      ...(isPaddingNegotiated(rendezvous) ? { padding: true } : {}),
       ...(opts.transferId !== undefined ? { transferId: opts.transferId } : {}),
       ...(opts.reattachment !== undefined ? { reattachment: opts.reattachment } : {}),
       ...(opts.resumeAttempt !== undefined
@@ -147,6 +156,7 @@ export function runReceive(
     start: async () => ({
       kind: 'start-recv',
       destination,
+      ...(isPaddingNegotiated(rendezvous) ? { padding: true } : {}),
       ...(opts.resumeAttempt !== undefined
         ? { resumeAttempt: await hostResumeAttempt(opts.resumeAttempt) }
         : {}),

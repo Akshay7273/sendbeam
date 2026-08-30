@@ -66,10 +66,9 @@ type ReceiverOptions struct {
 	OnStateChange func(TransferState)
 	OnManifestSet func(manifest Manifest) error
 	OnManifest    func(file FileEntry) error
-	// Resume restores a reloaded receiver's progress. When the arriving manifest carries a matching
-	// TransferID, each file restarts at its HaveBlocks high-water mark and the sender is asked to
-	// stream only the missing blocks. Nil (or a TransferID mismatch) means a fresh receive.
-	Resume *ReceiverResume
+	// Padding enables power-of-two traffic padding on all outbound control frames (V17-PR03).
+	Padding bool
+	Resume  *ReceiverResume
 }
 
 // Receiver drives one file receive. Handle calls must remain ordered.
@@ -810,8 +809,13 @@ func (r *Receiver) sendControl(msg ControlMsg) error {
 	}
 	r.sendMu.Lock()
 	defer r.sendMu.Unlock()
-	frame, err := Seal(r.o.SendDir, r.sendCounter,
-		FrameHeaderInput{Version: FrameVersion, Type: msg.FrameType()}, payload)
+	header := FrameHeaderInput{Version: FrameVersion, Type: msg.FrameType()}
+	var frame []byte
+	if r.o.Padding {
+		frame, err = SealPadded(r.o.SendDir, r.sendCounter, header, payload)
+	} else {
+		frame, err = Seal(r.o.SendDir, r.sendCounter, header, payload)
+	}
 	if err != nil {
 		return err
 	}

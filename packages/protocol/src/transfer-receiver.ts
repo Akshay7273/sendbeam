@@ -7,7 +7,13 @@
  * without being written or hashed twice. Any AEAD or block-hash failure aborts immediately.
  */
 
-import { FrameReplayError, openSequenced, seal, type FrameHeaderInput } from './aead.js';
+import {
+  FrameReplayError,
+  openSequenced,
+  seal,
+  sealPadded,
+  type FrameHeaderInput,
+} from './aead.js';
 import type { DirectionalKey } from './keyschedule.js';
 import { FrameType, type ControlOp, type FileEntry, type Manifest } from './transfer.js';
 import { DEFAULT_INFLIGHT_BLOCKS, FRAME_VERSION } from './constants.js';
@@ -98,6 +104,8 @@ export interface TransferReceiverOptions {
    * stream only the missing blocks. Absent (or a `transferId` mismatch) means a fresh receive.
    */
   resume?: ReceiverResumeState;
+  /** Enables traffic padding to fixed power-of-two buckets (V17-PR03). */
+  padding?: boolean;
 }
 
 export class TransferReceiver {
@@ -742,7 +750,9 @@ export class TransferReceiver {
   /** Serialize sealing so UI controls and acknowledgements cannot reuse a nonce. */
   private sendFrame(header: FrameHeaderInput, payload: Uint8Array): Promise<void> {
     const task = this.outbound.then(async () => {
-      const frame = await seal(this.o.sendDir, this.sendCounter++, header, payload);
+      const frame = this.o.padding
+        ? await sealPadded(this.o.sendDir, this.sendCounter++, header, payload)
+        : await seal(this.o.sendDir, this.sendCounter++, header, payload);
       await this.o.send(frame);
     });
     this.outbound = task.catch(() => {});

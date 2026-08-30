@@ -95,10 +95,12 @@ func usage(w *os.File) {
 	_, _ = fmt.Fprintln(w, "  --words N                number of words in the invite code (0 = default)")
 	_, _ = fmt.Fprintln(w, "  --to DEVICE              send directly to trusted device name, ID, or fingerprint (repeatable)")
 	_, _ = fmt.Fprintln(w, "  --concurrency N          max concurrent transfers for multi-device broadcast (default 4)")
+	_, _ = fmt.Fprintln(w, "  --private                enable negotiated traffic padding for wire privacy")
 	_, _ = fmt.Fprintln(w, "  --json                   output structured JSON result")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, s.dim("Receive flags:"))
 	_, _ = fmt.Fprintln(w, "  --out DIR                directory to write the received file into (default .)")
+	_, _ = fmt.Fprintln(w, "  --private                enable negotiated traffic padding for wire privacy")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, s.dim("Transfers flags:"))
 	_, _ = fmt.Fprintln(w, "  --out DIR                directory whose .sendbeam durable store to manage (default .)")
@@ -110,6 +112,7 @@ func runReceive(args []string) int {
 	insecure := fs.Bool("insecure-skip-verify", false, "skip TLS verification (self-signed dev certs only)")
 	outDir := fs.String("out", ".", "directory to write the received file into")
 	relayOnly := fs.Bool("relay-only", false, "force the encrypted WebSocket relay")
+	privateMode := fs.Bool("private", false, "enable negotiated traffic padding for wire privacy")
 	var iceServer iceServerList
 	fs.Var(&iceServer, "ice-server", "STUN server URL for direct-path candidates (repeatable; default stun:stun.l.google.com:19302)")
 	positionals := parseArgs(fs, args)
@@ -154,6 +157,7 @@ func runReceive(args []string) int {
 		},
 		DestDir:     *outDir,
 		ForceRelay:  *relayOnly,
+		Private:     *privateMode,
 		ICEServers:  ice,
 		OnTransport: transportPrinter,
 		OnManifestSet: func(manifest wire.Manifest) {

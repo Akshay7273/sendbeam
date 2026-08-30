@@ -143,9 +143,9 @@ The server enforces a strict **Zero-PII Observability Guarantee**:
 - **Can see:** the room number, socket metadata, SDP/ICE needed to route, and — on the
   relay path only — ciphertext byte counts and timing.
 
-## Accepted limitations (v1)
+## Accepted limitations
 
-- **File sizes and timing are observable.** There is no traffic padding in v1.
+- **Traffic padding scope (v1.7 / ADR 0009):** When negotiated via the `padding` capability (or `--private` flag), all frame ciphertexts are quantized into discrete power-of-two buckets ($256, 512, \dots, 65535$ bytes) with authenticated zero-padding, preventing fine-grained fingerprinting of manifest and control frames. However, in unpadded mode (or when communicating with legacy v1.6 peers), exact payload lengths remain visible on the wire. Furthermore, coarse metadata (such as overall transfer duration, total frame counts, and network timing) remains observable to an eavesdropper regardless of padding.
 - **Whoever holds the code can impersonate a peer** until first-pair or room reaping. The
   human fingerprint check does not close this — a code holder can complete the handshake
   and produce the matching fingerprint — so the real mitigations are careful code

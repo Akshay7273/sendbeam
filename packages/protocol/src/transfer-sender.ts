@@ -7,7 +7,13 @@
  * are resealed with fresh AEAD counters; integrity failures remain terminal.
  */
 
-import { FrameReplayError, openSequenced, seal, type FrameHeaderInput } from './aead.js';
+import {
+  FrameReplayError,
+  openSequenced,
+  seal,
+  sealPadded,
+  type FrameHeaderInput,
+} from './aead.js';
 import type { DirectionalKey } from './keyschedule.js';
 import {
   FrameType,
@@ -21,6 +27,7 @@ import {
   DEFAULT_BLOCK_BYTES,
   DEFAULT_FRAME_BYTES,
   DEFAULT_INFLIGHT_BLOCKS,
+  FRAME_FLAG_LAST_IN_BLOCK,
   FRAME_VERSION,
 } from './constants.js';
 import { sha256 } from './webcrypto.js';
@@ -30,9 +37,6 @@ import { reChunk } from './transfer-chunker.js';
 import { decodeControl, encodeControl } from './transfer-messages.js';
 import { validateManifest } from './safe-path.js';
 import { completionDigest } from './transfer-set.js';
-
-/** Header flag: this frame is the last of its block. */
-export const FRAME_FLAG_LAST_IN_BLOCK = 0x01;
 
 export type TransferRunState = 'running' | 'paused' | 'canceled';
 
@@ -95,6 +99,8 @@ export interface TransferSenderOptions {
    */
   onManifest?(manifest: Manifest): void | Promise<void>;
   onStateChange?(state: TransferRunState): void;
+  /** Enables traffic padding to fixed power-of-two buckets (V17-PR03). */
+  padding?: boolean;
 }
 
 interface InflightBlock {
@@ -642,7 +648,9 @@ export class TransferSender {
   /** Serialize sealing so external controls can never race the data path for a nonce. */
   private sendFrame(header: FrameHeaderInput, payload: Uint8Array): Promise<void> {
     const task = this.outbound.then(async () => {
-      const frame = await seal(this.o.sendDir, this.sendCounter++, header, payload);
+      const frame = this.o.padding
+        ? await sealPadded(this.o.sendDir, this.sendCounter++, header, payload)
+        : await seal(this.o.sendDir, this.sendCounter++, header, payload);
       await this.o.send(frame);
     });
     this.outbound = task.catch(() => {});

@@ -11,16 +11,16 @@ import (
 )
 
 type PresenceTestVector struct {
-	Name            string   `json:"name"`
-	KPairHex        string   `json:"k_pair_hex"`
-	Timestamp       string   `json:"timestamp"`
-	EpochIndex      int64    `json:"epoch_index"`
-	RendezvousHandle string  `json:"rendezvous_handle"`
-	SkewHandles     []string `json:"skew_handles"`
-	PresenceNonceHex string  `json:"presence_nonce_hex"`
-	PresenceProofHex string  `json:"presence_proof_hex"`
-	BeaconNonceHex  string   `json:"beacon_nonce_hex"`
-	BeaconTagHex    string   `json:"beacon_tag_hex"`
+	Name             string   `json:"name"`
+	KPairHex         string   `json:"k_pair_hex"`
+	Timestamp        string   `json:"timestamp"`
+	EpochIndex       int64    `json:"epoch_index"`
+	RendezvousHandle string   `json:"rendezvous_handle"`
+	SkewHandles      []string `json:"skew_handles"`
+	PresenceNonceHex string   `json:"presence_nonce_hex"`
+	PresenceProofHex string   `json:"presence_proof_hex"`
+	BeaconNonceHex   string   `json:"beacon_nonce_hex"`
+	BeaconTagHex     string   `json:"beacon_tag_hex"`
 }
 
 func TestPresenceAndLanBeaconVectors(t *testing.T) {

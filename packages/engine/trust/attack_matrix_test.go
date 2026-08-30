@@ -380,4 +380,3 @@ func TestAttackMatrix_Engine(t *testing.T) {
 		}
 	})
 }
-

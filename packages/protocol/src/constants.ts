@@ -21,6 +21,16 @@ export const CODE_SEPARATOR = '-';
 export const FRAME_COUNTER_BYTES = 8;
 export const FRAME_HEADER_BYTES = 16;
 
+/** FrameHeader flags (the flags byte). */
+export const FRAME_FLAG_LAST_IN_BLOCK = 0x01;
+export const FRAME_FLAG_PADDED = 0x02;
+export const FLAG_PADDED = 0x02;
+
+/** Padding parameters (V17-PR03). */
+export const FEATURE_PADDING = 'padding';
+export const MIN_PAD_BUCKET_BYTES = 256;
+export const MAX_PAD_BUCKET_BYTES = 65535;
+
 /** Frame-header format version (the header's first byte). Bumped only if the header layout changes. */
 export const FRAME_VERSION = 1;
 

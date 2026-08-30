@@ -274,4 +274,3 @@ func (wailsPicker) PickDestination() (string, error) {
 	})
 	return dlg.PromptForSingleSelection()
 }
-

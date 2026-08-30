@@ -11,7 +11,7 @@ import (
 
 // Revocation-related constants and domain separation (V17-PR01).
 const (
-	DomainRevocationRecord = "sendbeam/2 revocation-record:"
+	DomainRevocationRecord     = "sendbeam/2 revocation-record:"
 	MaxRevocationTimestampSkew = 5 * time.Minute
 )
 
