@@ -280,6 +280,9 @@ func TestPeerRecoveryCallbacks(t *testing.T) {
 	if _, err := offerer.Channel(ctx); err != nil {
 		t.Fatalf("offerer channel: %v", err)
 	}
+	if _, err := joiner.Channel(ctx); err != nil {
+		t.Fatalf("joiner channel: %v", err)
+	}
 
 	// Entering recovery reports recovering=true and arms the bounded timer.
 	offerer.enterRecover()
@@ -352,6 +355,13 @@ func TestPeerRepeatedRecoveryCyclesKeepChannelAlive(t *testing.T) {
 		}
 		// Enter and clear the recovery window (the transient disconnect it models).
 		offerer.enterRecover()
+		// Wait briefly for the offer/answer exchange to settle to stable state.
+		for j := 0; j < 50; j++ {
+			if offerer.pc.SignalingState() == webrtc.SignalingStateStable {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		offerer.exitRecover()
 		// The channel must still carry bytes after the cycle.
 		if err := joinConn.Send(payload); err != nil {
@@ -422,6 +432,9 @@ func TestPeerTeardownDuringRecoveryIsClean(t *testing.T) {
 	defer cancel()
 	if _, err := offerer.Channel(ctx); err != nil {
 		t.Fatalf("offerer channel: %v", err)
+	}
+	if _, err := joiner.Channel(ctx); err != nil {
+		t.Fatalf("joiner channel: %v", err)
 	}
 
 	offerer.enterRecover()
@@ -533,6 +546,9 @@ func TestPeerOnICEStatePublishesTransitions(t *testing.T) {
 	defer cancel()
 	if _, err := offerer.Channel(ctx); err != nil {
 		t.Fatalf("offerer channel: %v", err)
+	}
+	if _, err := joiner.Channel(ctx); err != nil {
+		t.Fatalf("joiner channel: %v", err)
 	}
 
 	if !fired.Load() {

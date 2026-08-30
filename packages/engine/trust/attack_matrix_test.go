@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,4 +211,173 @@ func TestAttackMatrix_Engine(t *testing.T) {
 			t.Fatalf("trust store was polluted, expected 1 device, got %d", len(devsAfter))
 		}
 	})
+
+	// Vector 5: Reject forged revocation record
+	t.Run("Vector 5: Reject forged revocation record from attacker", func(t *testing.T) {
+		recAlice := &wire.TrustRecord{
+			DeviceID:          idA.DeviceID,
+			PublicKey:         idA.PublicKeyHex(),
+			LocalLabel:        "Alice",
+			PairCredentialRef: "cred-a",
+			Capabilities:      []string{wire.CapTransferV1},
+			FirstSeenAt:       time.Now().UTC(),
+			LastSeenAt:        time.Now().UTC(),
+			Revoked:           false,
+			Policy:            wire.DefaultTrustPolicy(),
+		}
+		recBob := &wire.TrustRecord{
+			DeviceID:          idB.DeviceID,
+			PublicKey:         idB.PublicKeyHex(),
+			LocalLabel:        "Bob",
+			PairCredentialRef: "cred-b",
+			Capabilities:      []string{wire.CapTransferV1},
+			FirstSeenAt:       time.Now().UTC(),
+			LastSeenAt:        time.Now().UTC(),
+			Revoked:           false,
+			Policy:            wire.DefaultTrustPolicy(),
+		}
+
+		syncStore := NewMemoryTrustStore()
+		_ = syncStore.AddOrUpdateDevice(ctx, recAlice)
+		_ = syncStore.AddOrUpdateDevice(ctx, recBob)
+
+		// Attacker tries to forge a revocation of Bob claiming to be Alice
+		forgedSig := make([]byte, 64)
+		for i := range forgedSig {
+			forgedSig[i] = 0xba
+		}
+		forgedRec := wire.RevocationRecord{
+			RevokerDeviceID: idA.DeviceID,
+			RevokedDeviceID: idB.DeviceID,
+			Seq:             1,
+			Timestamp:       time.Now().UTC().Format(time.RFC3339),
+			Signature:       hex.EncodeToString(forgedSig),
+		}
+
+		mockIDMgr := NewMemoryIdentityManager(idA)
+		coord := NewTrustedSessionCoordinator(mockIDMgr, syncStore, NewMemorySecretResolver())
+		coord.processIncomingRevocations(ctx, []wire.RevocationRecord{forgedRec}, idA.DeviceID)
+
+		// Bob MUST remain trusted because the signature was forged
+		if !syncStore.IsTrusted(ctx, idB.DeviceID) {
+			t.Fatal("expected Bob to remain trusted after forged revocation attempt")
+		}
+	})
+
+	// Vector 6: Reject sequence rollback and replay revocation records
+	t.Run("Vector 6: Reject sequence rollback and replayed revocation records", func(t *testing.T) {
+		syncStore := NewMemoryTrustStore()
+		recBob := &wire.TrustRecord{
+			DeviceID:          idB.DeviceID,
+			PublicKey:         idB.PublicKeyHex(),
+			LocalLabel:        "Bob",
+			PairCredentialRef: "cred-b",
+			Capabilities:      []string{wire.CapTransferV1},
+			FirstSeenAt:       time.Now().UTC(),
+			LastSeenAt:        time.Now().UTC(),
+			Revoked:           true,
+			RevokedBy:         idA.DeviceID,
+			RevocationSeq:     5,
+			RevocationSig:     "dummy-sig",
+			Policy:            wire.DefaultTrustPolicy(),
+		}
+		_ = syncStore.AddOrUpdateDevice(ctx, recBob)
+
+		// Attempt to apply older seq (seq = 3)
+		oldRec, err := wire.SignRevocation(idA, idB.DeviceID, 3, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = syncStore.RevokeDeviceWithRecord(ctx, oldRec)
+		if !errors.Is(err, wire.ErrRevocationSeqRollback) {
+			t.Fatalf("expected ErrRevocationSeqRollback, got: %v", err)
+		}
+
+		// Attempt to replay same seq (seq = 5)
+		sameRec, err := wire.SignRevocation(idA, idB.DeviceID, 5, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = syncStore.RevokeDeviceWithRecord(ctx, sameRec)
+		if !errors.Is(err, wire.ErrRevocationSeqRollback) {
+			t.Fatalf("expected ErrRevocationSeqRollback on same seq replay, got: %v", err)
+		}
+	})
+
+	// Vector 7: Reject revocation records from an already-revoked device
+	t.Run("Vector 7: Reject revocation records submitted by revoked device", func(t *testing.T) {
+		syncStore := NewMemoryTrustStore()
+		recAlice := &wire.TrustRecord{
+			DeviceID:          idA.DeviceID,
+			PublicKey:         idA.PublicKeyHex(),
+			LocalLabel:        "Alice",
+			PairCredentialRef: "cred-a",
+			Capabilities:      []string{wire.CapTransferV1},
+			FirstSeenAt:       time.Now().UTC(),
+			LastSeenAt:        time.Now().UTC(),
+			Revoked:           true, // Alice is REVOKED
+			Policy:            wire.DefaultTrustPolicy(),
+		}
+		recBob := &wire.TrustRecord{
+			DeviceID:          idB.DeviceID,
+			PublicKey:         idB.PublicKeyHex(),
+			LocalLabel:        "Bob",
+			PairCredentialRef: "cred-b",
+			Capabilities:      []string{wire.CapTransferV1},
+			FirstSeenAt:       time.Now().UTC(),
+			LastSeenAt:        time.Now().UTC(),
+			Revoked:           false,
+			Policy:            wire.DefaultTrustPolicy(),
+		}
+		_ = syncStore.AddOrUpdateDevice(ctx, recAlice)
+		_ = syncStore.AddOrUpdateDevice(ctx, recBob)
+
+		// Revoked Alice tries to submit a validly-signed revocation of Bob
+		aliceRevRec, err := wire.SignRevocation(idA, idB.DeviceID, 1, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		mockIDMgr := NewMemoryIdentityManager(idB)
+		coord := NewTrustedSessionCoordinator(mockIDMgr, syncStore, NewMemorySecretResolver())
+		coord.processIncomingRevocations(ctx, []wire.RevocationRecord{*aliceRevRec}, idA.DeviceID)
+
+		// Bob MUST remain trusted because Alice is already revoked
+		if !syncStore.IsTrusted(ctx, idB.DeviceID) {
+			t.Fatal("expected Bob to remain trusted when revocation came from revoked peer")
+		}
+	})
+
+	// Vector 8: Reject revocation records from unknown/unpaired revoker
+	t.Run("Vector 8: Reject revocation records from unknown revoker", func(t *testing.T) {
+		syncStore := NewMemoryTrustStore()
+		recBob := &wire.TrustRecord{
+			DeviceID:          idB.DeviceID,
+			PublicKey:         idB.PublicKeyHex(),
+			LocalLabel:        "Bob",
+			PairCredentialRef: "cred-b",
+			Capabilities:      []string{wire.CapTransferV1},
+			FirstSeenAt:       time.Now().UTC(),
+			LastSeenAt:        time.Now().UTC(),
+			Revoked:           false,
+			Policy:            wire.DefaultTrustPolicy(),
+		}
+		_ = syncStore.AddOrUpdateDevice(ctx, recBob)
+
+		// Unknown Attacker creates a validly-signed revocation of Bob
+		attackerRevRec, err := wire.SignRevocation(idAttacker, idB.DeviceID, 1, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		mockIDMgr := NewMemoryIdentityManager(idB)
+		coord := NewTrustedSessionCoordinator(mockIDMgr, syncStore, NewMemorySecretResolver())
+		coord.processIncomingRevocations(ctx, []wire.RevocationRecord{*attackerRevRec}, idAttacker.DeviceID)
+
+		// Bob MUST remain trusted because Attacker is not in trust store
+		if !syncStore.IsTrusted(ctx, idB.DeviceID) {
+			t.Fatal("expected Bob to remain trusted when revocation came from unknown peer")
+		}
+	})
 }
+

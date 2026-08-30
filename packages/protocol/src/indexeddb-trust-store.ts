@@ -12,6 +12,7 @@ import {
   type TrustStore,
   validateTrustRecord,
 } from './trust-store.js';
+import { type RevocationRecord, validateRevocationRecord } from './revocation.js';
 
 export const TRUST_DB_NAME = 'sendbeam-trust';
 export const TRUST_DEVICES_STORE = 'trusted_devices';
@@ -113,6 +114,43 @@ export class IndexedDBTrustStore implements TrustStore {
     });
   }
 
+  async revokeDeviceWithRecord(record: RevocationRecord): Promise<void> {
+    validateRevocationRecord(record);
+    const db = await this.getDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([TRUST_DEVICES_STORE], 'readwrite');
+      const store = tx.objectStore(TRUST_DEVICES_STORE);
+      const req = store.get(record.revoked_device_id);
+      req.onsuccess = () => {
+        const rec = req.result as TrustRecord | undefined;
+        if (!rec) {
+          // If the revoked device is not directly in our local store, do not fail
+          resolve();
+          return;
+        }
+        if (rec.revoked && rec.revokedBy === record.revoker_device_id) {
+          if (rec.revocationSeq && record.seq <= rec.revocationSeq) {
+            tx.abort();
+            reject(new Error('revocation sequence number rollback'));
+            return;
+          }
+        }
+        rec.revoked = true;
+        rec.revokedAt = record.timestamp;
+        rec.revokedBy = record.revoker_device_id;
+        rec.revocationSeq = record.seq;
+        rec.revocationSig = record.signature;
+        store.put(rec);
+      };
+      req.onerror = () => {
+        tx.abort();
+        reject(req.error ?? new Error(`revokeDeviceWithRecord read failed`));
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error(`revokeDeviceWithRecord failed`));
+    });
+  }
+
   async unpairDevice(deviceId: string): Promise<void> {
     const db = await this.getDb();
     return new Promise((resolve, reject) => {
@@ -126,6 +164,23 @@ export class IndexedDBTrustStore implements TrustStore {
   async isTrusted(deviceId: string): Promise<boolean> {
     const dev = await this.getDevice(deviceId);
     return dev !== null && !dev.revoked;
+  }
+
+  async listRevocations(): Promise<RevocationRecord[]> {
+    const devices = await this.listDevices();
+    const list: RevocationRecord[] = [];
+    for (const rec of devices) {
+      if (rec.revoked && rec.revokedBy && rec.revocationSeq && rec.revocationSig && rec.revokedAt) {
+        list.push({
+          revoker_device_id: rec.revokedBy,
+          revoked_device_id: rec.deviceId,
+          seq: rec.revocationSeq,
+          timestamp: rec.revokedAt,
+          signature: rec.revocationSig,
+        });
+      }
+    }
+    return list;
   }
 
   async updateLastSeen(deviceId: string, seenAt?: string): Promise<void> {

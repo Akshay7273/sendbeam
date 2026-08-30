@@ -9,11 +9,13 @@ export interface TrustedDeviceUI {
   publicKey: string;
   status: DevicePresenceStatus;
   revoked: boolean;
+  revokedBy?: string | undefined;
+  revocationSeq?: number | undefined;
   lastSeenAt: string;
   firstSeenAt: string;
   capabilities: string[];
   policy: TrustPolicy;
-  directEndpoint?: string;
+  directEndpoint?: string | undefined;
 }
 
 export interface IncomingTransferRequest {

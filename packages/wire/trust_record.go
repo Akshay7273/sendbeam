@@ -67,6 +67,9 @@ type TrustRecord struct {
 	LastSeenAt        time.Time   `json:"last_seen_at"`
 	Revoked           bool        `json:"revoked"`
 	RevokedAt         *time.Time  `json:"revoked_at,omitempty"`
+	RevokedBy         string      `json:"revoked_by,omitempty"` // DeviceID of the revoker who signed the revocation record (empty if revoked locally)
+	RevocationSeq     uint64      `json:"revocation_seq,omitempty"`
+	RevocationSig     string      `json:"revocation_sig,omitempty"`
 	Policy            TrustPolicy `json:"policy"`
 }
 

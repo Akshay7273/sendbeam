@@ -91,6 +91,7 @@ type Peer struct {
 	// the peer settles.
 	telemetry telemetry
 
+	sigMu       sync.Mutex
 	mu          sync.Mutex
 	settled     bool
 	closed      bool
@@ -147,7 +148,7 @@ func NewPeer(opts PeerOptions) (*Peer, error) {
 		// Observe a transient disconnect promptly and bound the failed state so recovery (or
 		// fallback) is decided within a controlled window rather than Pion's long defaults.
 		s := webrtc.SettingEngine{}
-		s.SetICETimeouts(3*time.Second, 8*time.Second, 2*time.Second)
+		s.SetICETimeouts(10*time.Second, 30*time.Second, 2*time.Second)
 		api := webrtc.NewAPI(webrtc.WithSettingEngine(s))
 		newPC = api.NewPeerConnection
 	}
@@ -297,6 +298,15 @@ func (p *Peer) Close() error {
 // --- internal ---------------------------------------------------------------
 
 func (p *Peer) sendOffer() {
+	p.sigMu.Lock()
+	defer p.sigMu.Unlock()
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Unlock()
+
 	offer, err := p.pc.CreateOffer(nil)
 	if err != nil {
 		p.fail(fmt.Errorf("rtc: create offer: %w", err))
@@ -315,12 +325,21 @@ func (p *Peer) sendOffer() {
 // type is implied by our role, exactly as the browser does), ICE is added once the remote
 // description is set and buffered until then.
 func (p *Peer) handle(msg rendezvous.Message) error {
+	p.sigMu.Lock()
+	defer p.sigMu.Unlock()
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil
+	}
+	p.mu.Unlock()
+
 	switch msg.Type {
 	case string(wire.SignalSDP):
 		if p.role == wire.RoleOfferer {
-			return p.applyRemoteDescription(webrtc.SDPTypeAnswer, msg.Sdp)
+			return p.applyRemoteDescriptionLocked(webrtc.SDPTypeAnswer, msg.Sdp)
 		}
-		if err := p.applyRemoteDescription(webrtc.SDPTypeOffer, msg.Sdp); err != nil {
+		if err := p.applyRemoteDescriptionLocked(webrtc.SDPTypeOffer, msg.Sdp); err != nil {
 			return err
 		}
 		answer, err := p.pc.CreateAnswer(nil)
@@ -336,13 +355,13 @@ func (p *Peer) handle(msg rendezvous.Message) error {
 		if err := json.Unmarshal([]byte(msg.Cand), &cand); err != nil {
 			return fmt.Errorf("rtc: parse ice candidate: %w", err)
 		}
-		return p.addICE(cand)
+		return p.addICELocked(cand)
 	default:
 		return fmt.Errorf("rtc: unexpected signaling type %q", msg.Type)
 	}
 }
 
-func (p *Peer) applyRemoteDescription(typ webrtc.SDPType, sdp string) error {
+func (p *Peer) applyRemoteDescriptionLocked(typ webrtc.SDPType, sdp string) error {
 	if err := p.pc.SetRemoteDescription(webrtc.SessionDescription{Type: typ, SDP: sdp}); err != nil {
 		return fmt.Errorf("rtc: set remote description: %w", err)
 	}
@@ -359,9 +378,9 @@ func (p *Peer) applyRemoteDescription(typ webrtc.SDPType, sdp string) error {
 	return nil
 }
 
-// addICE adds a candidate now if the remote description is set, else buffers it. Remote ICE can
+// addICELocked adds a candidate now if the remote description is set, else buffers it. Remote ICE can
 // arrive before the description (network reorder, or a peer trickling early).
-func (p *Peer) addICE(cand webrtc.ICECandidateInit) error {
+func (p *Peer) addICELocked(cand webrtc.ICECandidateInit) error {
 	p.mu.Lock()
 	if !p.remoteReady {
 		p.pendingICE = append(p.pendingICE, cand)
@@ -456,6 +475,19 @@ func (p *Peer) enterRecover() {
 // over signaling so the partner answers and both sides re-establish the ICE transport while the
 // existing data channel (and therefore the transfer progress) stays alive.
 func (p *Peer) restartOffer() error {
+	p.sigMu.Lock()
+	defer p.sigMu.Unlock()
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil
+	}
+	p.mu.Unlock()
+
+	if p.pc.SignalingState() != webrtc.SignalingStateStable {
+		return errors.New("rtc: cannot restart offer in unstable signaling state")
+	}
+
 	offer, err := p.pc.CreateOffer(&webrtc.OfferOptions{ICERestart: true})
 	if err != nil {
 		return fmt.Errorf("rtc: create restart offer: %w", err)

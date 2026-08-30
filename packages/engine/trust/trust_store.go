@@ -28,10 +28,12 @@ type Store interface {
 	ListDevices(ctx context.Context) ([]*wire.TrustRecord, error)
 	AddOrUpdateDevice(ctx context.Context, record *wire.TrustRecord) error
 	RevokeDevice(ctx context.Context, deviceID string) error
+	RevokeDeviceWithRecord(ctx context.Context, record *wire.RevocationRecord) error
 	UnpairDevice(ctx context.Context, deviceID string) error
 	IsTrusted(ctx context.Context, deviceID string) bool
 	UpdateLastSeen(ctx context.Context, deviceID string, seenAt time.Time) error
 	UpdatePolicy(ctx context.Context, deviceID string, policy wire.TrustPolicy) error
+	ListRevocations(ctx context.Context) ([]*wire.RevocationRecord, error)
 }
 
 // MemoryTrustStore is an in-memory thread-safe implementation of Store.
@@ -84,7 +86,7 @@ func (m *MemoryTrustStore) AddOrUpdateDevice(_ context.Context, record *wire.Tru
 	return nil
 }
 
-// RevokeDevice marks a trusted device as revoked.
+// RevokeDevice marks a trusted device as revoked locally.
 func (m *MemoryTrustStore) RevokeDevice(_ context.Context, deviceID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -95,7 +97,54 @@ func (m *MemoryTrustStore) RevokeDevice(_ context.Context, deviceID string) erro
 	rec.Revoked = true
 	now := time.Now().UTC()
 	rec.RevokedAt = &now
+	rec.RevokedBy = ""
+	rec.RevocationSeq = 0
+	rec.RevocationSig = ""
 	return nil
+}
+
+// RevokeDeviceWithRecord marks a trusted device as revoked using a signed mesh RevocationRecord.
+func (m *MemoryTrustStore) RevokeDeviceWithRecord(_ context.Context, record *wire.RevocationRecord) error {
+	if err := record.Validate(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.devices[record.RevokedDeviceID]
+	if !ok {
+		return nil
+	}
+	if rec.Revoked && rec.RevokedBy == record.RevokerDeviceID {
+		if rec.RevocationSeq > 0 && record.Seq <= rec.RevocationSeq {
+			return wire.ErrRevocationSeqRollback
+		}
+	}
+	ts, _ := time.Parse(time.RFC3339, record.Timestamp)
+	rec.Revoked = true
+	rec.RevokedAt = &ts
+	rec.RevokedBy = record.RevokerDeviceID
+	rec.RevocationSeq = record.Seq
+	rec.RevocationSig = record.Signature
+	return nil
+}
+
+// ListRevocations returns all signed revocation records known to the store.
+func (m *MemoryTrustStore) ListRevocations(_ context.Context) ([]*wire.RevocationRecord, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []*wire.RevocationRecord
+	for _, rec := range m.devices {
+		if rec.Revoked && rec.RevokedBy != "" && rec.RevocationSeq > 0 && rec.RevocationSig != "" && rec.RevokedAt != nil {
+			out = append(out, &wire.RevocationRecord{
+				RevokerDeviceID: rec.RevokedBy,
+				RevokedDeviceID: rec.DeviceID,
+				Seq:             rec.RevocationSeq,
+				Timestamp:       rec.RevokedAt.UTC().Format(time.RFC3339),
+				Signature:       rec.RevocationSig,
+			})
+		}
+	}
+	return out, nil
 }
 
 // UnpairDevice removes a device from the trust store.
@@ -295,7 +344,7 @@ func (f *FileTrustStore) AddOrUpdateDevice(_ context.Context, record *wire.Trust
 	return f.saveLocked()
 }
 
-// RevokeDevice marks a device as revoked in the file store.
+// RevokeDevice marks a device as revoked locally in the file store.
 func (f *FileTrustStore) RevokeDevice(_ context.Context, deviceID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -306,7 +355,54 @@ func (f *FileTrustStore) RevokeDevice(_ context.Context, deviceID string) error 
 	rec.Revoked = true
 	now := time.Now().UTC()
 	rec.RevokedAt = &now
+	rec.RevokedBy = ""
+	rec.RevocationSeq = 0
+	rec.RevocationSig = ""
 	return f.saveLocked()
+}
+
+// RevokeDeviceWithRecord marks a device as revoked using a signed mesh RevocationRecord in the file store.
+func (f *FileTrustStore) RevokeDeviceWithRecord(_ context.Context, record *wire.RevocationRecord) error {
+	if err := record.Validate(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rec, ok := f.devices[record.RevokedDeviceID]
+	if !ok {
+		return nil
+	}
+	if rec.Revoked && rec.RevokedBy == record.RevokerDeviceID {
+		if rec.RevocationSeq > 0 && record.Seq <= rec.RevocationSeq {
+			return wire.ErrRevocationSeqRollback
+		}
+	}
+	ts, _ := time.Parse(time.RFC3339, record.Timestamp)
+	rec.Revoked = true
+	rec.RevokedAt = &ts
+	rec.RevokedBy = record.RevokerDeviceID
+	rec.RevocationSeq = record.Seq
+	rec.RevocationSig = record.Signature
+	return f.saveLocked()
+}
+
+// ListRevocations returns all signed revocation records known to the file store.
+func (f *FileTrustStore) ListRevocations(_ context.Context) ([]*wire.RevocationRecord, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	var out []*wire.RevocationRecord
+	for _, rec := range f.devices {
+		if rec.Revoked && rec.RevokedBy != "" && rec.RevocationSeq > 0 && rec.RevocationSig != "" && rec.RevokedAt != nil {
+			out = append(out, &wire.RevocationRecord{
+				RevokerDeviceID: rec.RevokedBy,
+				RevokedDeviceID: rec.DeviceID,
+				Seq:             rec.RevocationSeq,
+				Timestamp:       rec.RevokedAt.UTC().Format(time.RFC3339),
+				Signature:       rec.RevocationSig,
+			})
+		}
+	}
+	return out, nil
 }
 
 // UnpairDevice removes a device from the file store.

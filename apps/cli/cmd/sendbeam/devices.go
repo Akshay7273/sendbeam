@@ -22,6 +22,9 @@ type DeviceJSONView struct {
 	Status            string           `json:"status"` // "active" or "revoked"
 	Revoked           bool             `json:"revoked"`
 	RevokedAt         *string          `json:"revoked_at,omitempty"`
+	RevokedBy         string           `json:"revoked_by,omitempty"`
+	RevocationSeq     uint64           `json:"revocation_seq,omitempty"`
+	RevocationSig     string           `json:"revocation_sig,omitempty"`
 	Capabilities      []string         `json:"capabilities"`
 	FirstSeenAt       string           `json:"first_seen_at"`
 	LastSeenAt        string           `json:"last_seen_at"`
@@ -78,6 +81,9 @@ func executeDevices(args []string, stdout, stderr io.Writer) int {
 				Status:            status,
 				Revoked:           dev.Revoked,
 				RevokedAt:         revAtStr,
+				RevokedBy:         dev.RevokedBy,
+				RevocationSeq:     dev.RevocationSeq,
+				RevocationSig:     dev.RevocationSig,
 				Capabilities:      dev.Capabilities,
 				FirstSeenAt:       dev.FirstSeenAt.UTC().Format(time.RFC3339),
 				LastSeenAt:        dev.LastSeenAt.UTC().Format(time.RFC3339),
@@ -103,7 +109,12 @@ func executeDevices(args []string, stdout, stderr io.Writer) int {
 	for _, dev := range devices {
 		status := "active"
 		if dev.Revoked {
-			status = "revoked"
+			if dev.RevokedBy != "" {
+				revByPrefix := dev.RevokedBy[:min(14, len(dev.RevokedBy))]
+				status = fmt.Sprintf("revoked (via %s...)", revByPrefix)
+			} else {
+				status = "revoked (local)"
+			}
 		}
 		autoAccept := "no"
 		if dev.Policy.AutoAccept {
