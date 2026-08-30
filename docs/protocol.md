@@ -228,7 +228,7 @@ parameters (`CapsPayload`):
 version    protocol version string ("sendbeam/1")
 maxFrame   maximum frame payload the sender will use (default 16 KiB, max 64 KiB)
 blockSize  logical block size — the unit of ack/retry/resume (default 1 MiB)
-features   negotiated features: folders | resume | relay | archive
+features   negotiated features: folders | resume | relay | archive | resume-auth-v1 | padding
 sinkHints  receiver sink availability: direct-file | opfs | archive
 ```
 
@@ -377,3 +377,28 @@ SendBeam v1.5 introduces `sendbeam/2` for persistent trusted devices. For comple
 3. **Privacy-Preserving Presence & LAN Discovery**:
    - **Remote Presence**: 15-minute epoch-rotated blind handles (`HMAC(k_pair, "sendbeam/2 rendezvous-handle:" || epoch)`).
    - **Blinded LAN Discovery**: UDP Multicast `224.0.0.251:5354` carrying 16-byte blinded beacon tags derived from current epoch subkeys.
+
+4. **Opportunistic Mesh Revocation Sync (v1.7 / ADR 0008)**:
+   - `revocation_sync`: Initiator or responder piggybacks signed `RevocationRecord` entries over authenticated sessions.
+   - Wire layout: `(revoker_device_id, revoked_device_id, monotonic_seq, timestamp, ed25519_signature)`.
+   - Domain challenge: `"sendbeam/2 revocation-sync:" || revoker_id || revoked_id || seq_be || timestamp_be`.
+
+---
+
+## Negotiated Wire Traffic Padding (v1.7 / ADR 0009)
+
+When both peers negotiate the `padding` feature during `caps` exchange (or when the sender passes `--private`), all frame payloads on both the direct WebRTC DataChannel and the WebSocket relay path are quantized into discrete power-of-two bucket sizes:
+
+$$S \in \{256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65535\}$$
+
+### Padded Plaintext Format
+
+Inside the AEAD envelope, the plaintext is formatted as:
+
+```
+[ 2 bytes: u16be(ActualPayloadLength) ] || [ ActualPayloadBytes ] || [ ZeroPaddingBytes ]
+```
+
+- **Header AAD Invariant:** The 16-byte frame header remains verbatim as AEAD Associated Data; its `len` field matches the total padded ciphertext length ($S + 16$ bytes AEAD tag).
+- **Integrity Validation:** Upon decryption, the receiver validates that `ActualPayloadLength <= BucketSize - 2` and verifies all padding bytes are strictly `0x00`. Any malformed length or non-zero padding byte fails closed (`ErrInvalidFramePadding`).
+- **Interop Fallback:** If either peer lacks the `padding` capability, transfers automatically proceed unpadded without protocol failure.

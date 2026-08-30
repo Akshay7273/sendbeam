@@ -211,6 +211,17 @@ The hardened signaling and relay server (`sendbeamd`) runs standalone or behind 
 | **Caddy**               | `X-Forwarded-For`                      | Configured proxy CIDR / Docker subnet              |      ✓ (`reverse_proxy`)       | `/healthz`, `/readyz`, `/metrics` |
 | **Traefik**             | `X-Forwarded-For`                      | Configured forwardedHeaders trustedIPs             |               ✓                | `/healthz`, `/readyz`, `/metrics` |
 
+## Mesh Maturity & Wire Privacy Interoperability (v1.7)
+
+SendBeam v1.7 introduces traffic padding, opportunistic mesh revocation sync, and multi-device broadcast transfers:
+
+| Feature / Interoperability         |          v1.7 Peer ↔ v1.7 Peer          | v1.7 Peer ↔ Legacy v1.6 Peer | Behavior & Safety Guarantee                                                                             |
+| :--------------------------------- | :-------------------------------------: | :--------------------------: | :------------------------------------------------------------------------------------------------------ |
+| **Traffic Padding (`padding`)**    | Padded (Quantized Buckets $256..65535$) |      Unpadded Fallback       | Negotiated via `caps.features`. If peer lacks support, transfers fall back cleanly to unpadded frames.  |
+| **Revocation Sync (`sendbeam/2`)** |           Opportunistic Sync            |       Ignored by v1.6        | Signed revocation records are piggybacked over trusted sessions. Ignored by peers without the feature.  |
+| **Broadcast Send (`@dev1 @dev2`)** |           Concurrent Fan-Out            |     Independent Session      | Each target establishes an independent `sendbeam/2` session. Single peer failure does not abort others. |
+| **Package Manager Distribution**   |      Homebrew, Scoop, WinGet, AUR       |    GitHub Releases Direct    | Manifests verify against signed `SHA256SUMS.txt` at zero hosting cost.                                  |
+
 ## Interpretation
 
 - **Restrictive networks engage the relay without a blind fixed wait**: there is no fixed
