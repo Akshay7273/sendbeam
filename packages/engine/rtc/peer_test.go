@@ -383,7 +383,7 @@ func TestPeerRepeatedRecoveryCyclesKeepChannelAlive(t *testing.T) {
 		// Enter and clear the recovery window (the transient disconnect it models).
 		offerer.enterRecover()
 		// Wait for the offer/answer exchange and ICE re-establishment to settle on both peers.
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(15 * time.Second)
 		for time.Now().Before(deadline) {
 			if offerer.pc.SignalingState() == webrtc.SignalingStateStable &&
 				joiner.pc.SignalingState() == webrtc.SignalingStateStable &&

@@ -5,26 +5,26 @@
 class Sendbeam < Formula
   desc "Secure, direct, peer-to-peer file transfer in your browser and terminal"
   homepage "https://omnitrix.space"
-  version "1.6.0"
+  version "1.7.0"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/Akshay7273/sendbeam/releases/download/v1.6.0/sendbeam-cli-darwin-arm64.tar.gz"
-      sha256 "149f2ddbd70a1dcaab92667e5cc1aa3d9688416e502cb1041c5b79926999c8b5"
+      url "https://github.com/Akshay7273/sendbeam/releases/download/v1.7.0/sendbeam-cli-darwin-arm64.tar.gz"
+      sha256 "cc778a6aa8445129710bf83cb1557840c16453a4339e383c7af2551f00a923f1"
     else
-      url "https://github.com/Akshay7273/sendbeam/releases/download/v1.6.0/sendbeam-cli-darwin-amd64.tar.gz"
-      sha256 "27ea31590cce12a2580b2938ecda0586bc9427be64c46b5cf5cbd67775150eb7"
+      url "https://github.com/Akshay7273/sendbeam/releases/download/v1.7.0/sendbeam-cli-darwin-amd64.tar.gz"
+      sha256 "52af7be301b9d2a927ea42799619a538bfaaf581385ef7512444d81fef5fcfde"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/Akshay7273/sendbeam/releases/download/v1.6.0/sendbeam-cli-linux-arm64.tar.gz"
-      sha256 "3e50f298dd62c2af1eac1bd552e79a2f8a676e7f0205fa9791399fe74a11827f"
+      url "https://github.com/Akshay7273/sendbeam/releases/download/v1.7.0/sendbeam-cli-linux-arm64.tar.gz"
+      sha256 "002c09880bde45ca6a845c6f17bf459df253f534e976ef573b802b0e26db6898"
     else
-      url "https://github.com/Akshay7273/sendbeam/releases/download/v1.6.0/sendbeam-cli-linux-amd64.tar.gz"
-      sha256 "b2886f6c894cb5de53bb78823ed49761d0ef06532d8f1a390349ecb056c9f6ad"
+      url "https://github.com/Akshay7273/sendbeam/releases/download/v1.7.0/sendbeam-cli-linux-amd64.tar.gz"
+      sha256 "02581557d250eb15268c018633d9ac9b8cadb7d99440986a8ff4daa63d036385"
     end
   end
 
