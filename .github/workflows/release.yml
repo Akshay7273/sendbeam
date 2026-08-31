@@ -684,9 +684,15 @@ jobs:
           EOF
 
           # If release doc exists for this milestone, include excerpt
-          if [ -f "docs/RELEASE-${TAG_VAL%%.*}.md" ]; then
+          if [ -f "docs/RELEASE-${TAG_VAL%.*}.md" ]; then
             echo "" >> release-notes.md
-            head -n 30 "docs/RELEASE-${TAG_VAL%%.*}.md" >> release-notes.md || true
+            head -n 30 "docs/RELEASE-${TAG_VAL%.*}.md" >> release-notes.md || true
+          elif [ -f "docs/RELEASE-${TAG_VAL}.md" ]; then
+            echo "" >> release-notes.md
+            head -n 30 "docs/RELEASE-${TAG_VAL}.md" >> release-notes.md || true
+          elif [ -f "docs/RELEASE-v1.7.md" ]; then
+            echo "" >> release-notes.md
+            head -n 30 "docs/RELEASE-v1.7.md" >> release-notes.md || true
           elif [ -f "docs/RELEASE-v1.6.md" ]; then
             echo "" >> release-notes.md
             head -n 30 "docs/RELEASE-v1.6.md" >> release-notes.md || true
@@ -769,6 +775,13 @@ jobs:
 
       - name: Validate Package Manager Manifests
         run: |
+          go run ./scripts/generate-package-manifests.go \
+            --version "${{ steps.meta.outputs.version }}" \
+            --tag "${{ inputs.tag || github.ref_name }}" \
+            --sums bundle/SHA256SUMS.txt \
+            --out-dir packaging \
+            --sync-root=true
+
           go run ./scripts/generate-package-manifests.go \
             --version "${{ steps.meta.outputs.version }}" \
             --tag "${{ inputs.tag || github.ref_name }}" \
