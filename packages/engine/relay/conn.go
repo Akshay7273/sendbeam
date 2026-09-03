@@ -61,7 +61,7 @@ func (c *Conn) Open() error {
 		c.mu.Unlock()
 		return errClosed
 	}
-	if c.opened {
+	if c.ready {
 		c.mu.Unlock()
 		return nil
 	}

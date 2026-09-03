@@ -100,6 +100,7 @@ type Peer struct {
 	mu          sync.Mutex
 	settled     bool
 	closed      bool
+	conn        *DataConn
 	remoteReady bool
 	pendingICE  []webrtc.ICECandidateInit
 
@@ -311,11 +312,15 @@ func (p *Peer) Close() error {
 		p.recoverTimer.Stop()
 		p.recoverTimer = nil
 	}
+	conn := p.conn
 	p.mu.Unlock()
 	p.closeOnce.Do(func() {
 		close(p.closedCh)
 		p.sdpOnce.Do(func() { close(p.sdpSent) })
 	})
+	if conn != nil {
+		_ = conn.Close()
+	}
 	return p.pc.Close()
 }
 
@@ -430,6 +435,14 @@ func (p *Peer) addICELocked(cand webrtc.ICECandidateInit) error {
 // on a channel error.
 func (p *Peer) wireChannel(dc *webrtc.DataChannel) {
 	conn := newDataConn(dc)
+	p.mu.Lock()
+	p.conn = conn
+	if p.closed {
+		p.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
+	p.mu.Unlock()
 	dc.OnOpen(func() {
 		p.mu.Lock()
 		if p.settled {

@@ -294,7 +294,12 @@ func (d *driver) run(ctx context.Context) (*Outcome, error) {
 			go func() {
 				select {
 				case <-d.spec.breakDirect:
-					_ = peer.Close()
+					if peer != nil {
+						_ = peer.Close()
+					}
+					if adaptive != nil {
+						adaptive.requestRelay()
+					}
 				case <-ctx.Done():
 				}
 			}()
@@ -780,6 +785,7 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 		BlockSize:        negotiate(res.LocalCaps.BlockSize, res.RemoteCaps.BlockSize, wire.DefaultBlockBytes),
 		FrameSize:        negotiate(res.LocalCaps.MaxFrame, res.RemoteCaps.MaxFrame, wire.DefaultFrameBytes),
 		Padding:          paddingNegotiated,
+		DoneTimeout:      60 * time.Second,
 		// Advertise a stable random id in the manifest so a receiver that crashes mid-file
 		// can journal its verified progress and resume it (V13-PR02); the wire layer mints
 		// and validates it without any protocol change. A restart (V13-PR04) reuses the
