@@ -154,11 +154,18 @@ test('visibility change / backgrounding interrupts transfer to deterministic pau
 
   // Simulate mobile tab backgrounding / screen lock on receiver
   await receiver.evaluate(() => {
-    Object.defineProperty(document, 'visibilityState', {
-      value: 'hidden',
-      writable: true,
-      configurable: true,
-    });
+    try {
+      Object.defineProperty(Document.prototype, 'visibilityState', {
+        get: () => 'hidden',
+        configurable: true,
+      });
+    } catch {
+      Object.defineProperty(document, 'visibilityState', {
+        value: 'hidden',
+        writable: true,
+        configurable: true,
+      });
+    }
     document.dispatchEvent(new Event('visibilitychange'));
   });
 
@@ -168,11 +175,18 @@ test('visibility change / backgrounding interrupts transfer to deterministic pau
 
   // Return to foreground and resume
   await receiver.evaluate(() => {
-    Object.defineProperty(document, 'visibilityState', {
-      value: 'visible',
-      writable: true,
-      configurable: true,
-    });
+    try {
+      Object.defineProperty(Document.prototype, 'visibilityState', {
+        get: () => 'visible',
+        configurable: true,
+      });
+    } catch {
+      Object.defineProperty(document, 'visibilityState', {
+        value: 'visible',
+        writable: true,
+        configurable: true,
+      });
+    }
     document.dispatchEvent(new Event('visibilitychange'));
   });
   await resumeBtn.click();
