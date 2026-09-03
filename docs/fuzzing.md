@@ -178,3 +178,55 @@ The repository provides [`scripts/oss-fuzz-build.sh`](../scripts/oss-fuzz-build.
    python infra/helper.py run_fuzzer sendbeam fuzz_padding_codec
    ```
 4. Submit PR to `google/oss-fuzz`. Once merged, Google ClusterFuzz continuously fuzzes SendBeam on dedicated CPU clusters with automated bug filing.
+
+---
+
+## 9. Cross-Language Differential Parity Testing (Go ↔ TypeScript)
+
+While point-in-time test vectors (`testdata/*-vectors.json`) assert agreed-upon baseline cases, differential testing verifies that SendBeam's dual implementations (Go `packages/wire` and TypeScript `packages/protocol`) behave identically across an infinite range of pseudo-random, edge, and boundary inputs.
+
+```mermaid
+flowchart LR
+    A[Go Generator scripts/diffgen] -->|diffgen-go.jsonl| B[TS Consumer vitest differential.test.ts]
+    B -->|diffgen-ts.jsonl| C[Go Consumer go test differential_test.go]
+    C -->|Verified Byte Equality| D[CI Green Gate]
+```
+
+### Tested Codec Surfaces
+
+The differential harness exercises all shared wire codecs across 8 distinct categories:
+
+1. **Binary Frame Headers (16 bytes):** Big-endian layout, version, type, flags, file index, block index, frame offset, and payload length limits.
+2. **Padding Codec:** Power-of-2 bucket sizing, 2-byte length prefixes, non-zero padding byte rejection, and lossless round-trip recovery.
+3. **Control Messages:** JSON envelopes (`Manifest`, `Ack`, `Nack`, `Control`, `Complete`, `Done`, `Fail`, `ResumeState`) with identical key sequences and Unicode/HTML character preserving.
+4. **Revocation Statements:** Canonical binary challenge building (`DomainRevocationRecord || revoker || revoked || seq || timestamp`), Ed25519 signatures, and structural validity.
+5. **SPAKE2+ Pairing Ceremony:** Request/response challenge building, lexicographically-sorted HKDF credential derivation (`k_pair`, `cred_ref`), and mutual HMAC confirmation tags.
+6. **Trusted-Session Authentication:** Canonical capability hashing (`hashCapabilities`), sorted capability intersection (`intersectCapabilities`), session challenges, and confirmation tags.
+7. **Invite Codes & Normalization:** Alphanumeric casing, punctuation collapsing, rune mapping (`normalizeCode`), and parsing (`parseCode`).
+8. **Safe Manifest Paths:** Directory traversal containment (`..`), root and absolute path rejection, Windows drive letter and reserved device name sanitization.
+
+### Running Differential Testing Locally
+
+Run the complete cross-language differential suite in both directions:
+
+```bash
+# Run with default 1,000 cases per codec
+just differential
+
+# Or with custom case count and seed
+just differential count=5000 seed=42
+```
+
+Or invoke the runner script directly:
+
+```bash
+./scripts/run_differential.sh [count] [seed]
+```
+
+### Determinism & Crash Reproduction
+
+Every test case emitted by the generators carries its pseudo-random `seed` and unique `case_id` (e.g. `fh_edge_0`, `pad_boundary_3`, `ta_42`). If a failure or divergence occurs:
+
+1. The harness logs the failing `case_id`, `category`, and `seed`.
+2. Developers can re-run with the exact same seed to reproduce the failure deterministically.
+3. Any genuine divergence discovered is resolved, with the offending vector promoted to the permanent static vectors under `packages/wire/testdata/`.

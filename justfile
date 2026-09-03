@@ -75,3 +75,8 @@ fuzz-smoke:
 # Run Go native continuous fuzzing (configurable duration and target)
 fuzz time="10s" target="all":
     ./scripts/run_fuzz.sh {{time}} {{target}}
+
+# Run cross-language differential parity harness (Go <-> TS)
+differential count="1000" seed="1337":
+    ./scripts/run_differential.sh {{count}} {{seed}}
+

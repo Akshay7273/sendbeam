@@ -132,6 +132,16 @@ func UnpadPayload(padded []byte) ([]byte, error) {
 	return padded[2 : 2+unpaddedLen], nil
 }
 
+// EncodeFrameHeader encodes h into a fresh 16-byte buffer.
+func EncodeFrameHeader(h FrameHeader) []byte {
+	return encodeFrameHeader(h)
+}
+
+// DecodeFrameHeader decodes a header from the first 16 bytes of buf.
+func DecodeFrameHeader(buf []byte) (FrameHeader, error) {
+	return decodeFrameHeader(buf)
+}
+
 // encodeFrameHeader encodes h into a fresh 16-byte buffer.
 func encodeFrameHeader(h FrameHeader) []byte {
 	buf := make([]byte, frameHeaderBytes)
@@ -161,3 +171,4 @@ func decodeFrameHeader(buf []byte) (FrameHeader, error) {
 		Len:      binary.BigEndian.Uint16(buf[14:16]),
 	}, nil
 }
+

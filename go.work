@@ -6,4 +6,5 @@ use (
 	./apps/server
 	./packages/engine
 	./packages/wire
+	./scripts/diffgen
 )

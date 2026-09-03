@@ -126,3 +126,30 @@ jobs:
           name: fuzz-crash-${{ matrix.target }}
           path: ${{ matrix.module }}/testdata/fuzz/${{ matrix.target }}/
           retention-days: 14
+
+  differential-nightly:
+    name: differential-parity-10k (Go <-> TS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build protocol package
+        run: pnpm --filter @sendbeam/protocol build
+
+      - name: Run 10k Differential Pass
+        run: ./scripts/run_differential.sh 10000 1337
