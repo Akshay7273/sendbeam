@@ -319,7 +319,7 @@ func (p *Peer) Close() error {
 		p.sdpOnce.Do(func() { close(p.sdpSent) })
 	})
 	if conn != nil {
-		_ = conn.Close()
+		conn.shutdown()
 	}
 	return p.pc.Close()
 }
@@ -439,7 +439,7 @@ func (p *Peer) wireChannel(dc *webrtc.DataChannel) {
 	p.conn = conn
 	if p.closed {
 		p.mu.Unlock()
-		_ = conn.Close()
+		conn.shutdown()
 		return
 	}
 	p.mu.Unlock()

@@ -33,8 +33,6 @@ type adaptiveConn struct {
 	onTransport func(string)
 
 	sv *supervisor.Supervisor
-
-	reqOnce sync.Once
 }
 
 func newAdaptiveConn(
@@ -51,6 +49,13 @@ func newAdaptiveConn(
 		select {
 		case <-direct.Done():
 			c.requestRelay()
+		case <-c.switchDone:
+		}
+	}()
+	go func() {
+		select {
+		case <-relay.Ready():
+			c.activateRelay()
 		case <-c.switchDone:
 		}
 	}()
@@ -158,15 +163,6 @@ func (c *adaptiveConn) requestRelay() {
 		_ = c.sv.Warming(supervisor.PathRelay)
 		_ = c.sv.Ready(supervisor.PathRelay)
 	}
-	c.reqOnce.Do(func() {
-		go func() {
-			select {
-			case <-c.relay.Ready():
-				c.activateRelay()
-			case <-c.switchDone:
-			}
-		}()
-	})
 }
 
 // FallbackToRelay starts the encrypted-relay fallback in response to a failed direct recovery.

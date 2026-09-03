@@ -385,6 +385,10 @@ transferSettled:
 	// Drain the data channel before tearing down the peer: the first side to finish (the
 	// receiver, once it has sent done) must let that final frame reach the wire, or closing the
 	// PeerConnection aborts SCTP and the waiting sender never learns the transfer completed.
+	// On relay, allow the terminal Done and any post-cutover replies to deliver before closing signaling.
+	if adaptive != nil && adaptive.IsRelay() {
+		time.Sleep(250 * time.Millisecond)
+	}
 	_ = conn.Close()
 	if peer != nil {
 		_ = peer.Close()
