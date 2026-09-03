@@ -140,6 +140,13 @@ export function describeError(e: ErrorLike): string {
     case 'quota':
       return e.message || 'Storage quota exceeded. Not enough space is available on this device.';
     case 'sink_error':
+      if (
+        e.message &&
+        (e.message.toLowerCase().includes('private file system') ||
+          e.message.toLowerCase().includes('receiver failed'))
+      ) {
+        return 'Storage unavailable: Origin Private File System is restricted or unsupported in this browser mode (e.g. Private Browsing).';
+      }
       return e.message || 'Storage error while saving files to disk.';
     default:
       return e.message || 'The connection failed.';

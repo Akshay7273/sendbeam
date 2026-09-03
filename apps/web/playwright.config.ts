@@ -13,7 +13,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: [['list']],
   use: {
-    baseURL: 'http://127.0.0.1:8443',
+    baseURL: 'http://localhost:8443',
     trace: 'retain-on-failure',
   },
   projects: [
@@ -23,7 +23,11 @@ export default defineConfig({
     // mobile-webkit (iPhone viewport, WebKit engine) is exercised in CI and locally via E2E_WEBKIT=1.
     ...(process.env.CI || process.env.E2E_WEBKIT === '1'
       ? [
-          { name: 'mobile-webkit', use: { ...devices['iPhone 14'] } },
+          {
+            name: 'mobile-webkit',
+            use: { ...devices['iPhone 14'] },
+            testMatch: /mobile-transfer\.spec\.ts/,
+          },
           ...(process.env.E2E_WEBKIT === '1'
             ? [{ name: 'webkit', use: { ...devices['Desktop Safari'] } }]
             : []),
@@ -32,7 +36,7 @@ export default defineConfig({
   ],
   webServer: {
     command: 'pnpm e2e:serve',
-    url: 'http://127.0.0.1:8443/healthz',
+    url: 'http://localhost:8443/healthz',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

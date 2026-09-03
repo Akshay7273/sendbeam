@@ -1,5 +1,6 @@
 import {
   TransferError,
+  MemorySink,
   normalizeTransferPath,
   type Destination,
   type FileEntry,
@@ -25,8 +26,13 @@ import {
 import type { ReceiveDestinationSpec } from './wire.js';
 import type { Sha256DigestFactory } from './digest.js';
 
+/** Maximum in-memory receive buffer size before failing closed when OPFS is unavailable (e.g. Safari Private Browsing). */
+export const MAX_IN_MEMORY_STREAM_BYTES = 64 * 1024 * 1024;
+
 export type DestinationOutput =
-  { kind: 'opfs'; key: string; name: string; mime: string } | { kind: 'direct' };
+  | { kind: 'opfs'; key: string; name: string; mime: string }
+  | { kind: 'direct' }
+  | { kind: 'blob'; blob: Blob; name: string; mime: string };
 
 export interface BrowserDestination extends Destination {
   result(): DestinationOutput | undefined;
@@ -105,28 +111,61 @@ export function createBrowserDestination(
         if (!createDigest) {
           throw new TransferError('sink_error', 'durable receive requires a digest factory');
         }
-        const durableDestination = new DurableDestination({
-          createDigest,
-          files: durable?.files ?? durableOpfsFiles(),
-          store: durable?.store ?? indexedDbDurableStore(),
-          ...(durable?.now !== undefined ? { now: durable.now } : {}),
-          ...(durable?.renewMs !== undefined ? { renewMs: durable.renewMs } : {}),
-          ...(durable?.ensureSpace !== undefined ? { ensureSpace: durable.ensureSpace } : {}),
-        });
-        // V13-PR08: apply the pre-manifest resume-auth state to the REAL destination
-        // strictly before prepare(): the expected interrupted journal id first, then the
-        // session authorization ONLY if this session actually authenticated.
-        if (expectedResumeTransferId !== '') {
-          durableDestination.expectResumeFor(expectedResumeTransferId);
+        const canUseDurable = durable?.files !== undefined || (await isOpfsAvailable());
+        if (canUseDurable) {
+          const durableDestination = new DurableDestination({
+            createDigest,
+            files: durable?.files ?? durableOpfsFiles(),
+            store: durable?.store ?? indexedDbDurableStore(),
+            ...(durable?.now !== undefined ? { now: durable.now } : {}),
+            ...(durable?.renewMs !== undefined ? { renewMs: durable.renewMs } : {}),
+            ...(durable?.ensureSpace !== undefined ? { ensureSpace: durable.ensureSpace } : {}),
+          });
+          // V13-PR08: apply the pre-manifest resume-auth state to the REAL destination
+          // strictly before prepare(): the expected interrupted journal id first, then the
+          // session authorization ONLY if this session actually authenticated.
+          if (expectedResumeTransferId !== '') {
+            durableDestination.expectResumeFor(expectedResumeTransferId);
+          }
+          if (resumeAuthorizedThisSession) {
+            durableDestination.authorizeResume();
+          }
+          inner = durableDestination;
+        } else {
+          if (manifest.totalSize > MAX_IN_MEMORY_STREAM_BYTES) {
+            throw new TransferError(
+              'quota',
+              `File size (${manifest.totalSize} bytes) exceeds in-memory bounds (${MAX_IN_MEMORY_STREAM_BYTES} bytes) and direct disk streaming is unavailable in this browser mode (e.g. Private Browsing).`,
+            );
+          }
+          inner = new MemoryBlobDestination();
         }
-        if (resumeAuthorizedThisSession) {
-          durableDestination.authorizeResume();
-        }
-        inner = durableDestination;
       } else if (manifest.files.length === 1 && !manifest.files[0]!.name.includes('/')) {
-        inner = new OpfsFileDestination();
+        const opfsOk = await isOpfsAvailable();
+        if (opfsOk) {
+          inner = new OpfsFileDestination();
+        } else {
+          if (manifest.totalSize > MAX_IN_MEMORY_STREAM_BYTES) {
+            throw new TransferError(
+              'quota',
+              `File size (${manifest.totalSize} bytes) exceeds in-memory bounds (${MAX_IN_MEMORY_STREAM_BYTES} bytes) and direct disk streaming is unavailable in this browser mode (e.g. Private Browsing).`,
+            );
+          }
+          inner = new MemoryBlobDestination();
+        }
       } else {
-        inner = new ArchiveDestination();
+        const opfsOk = await isOpfsAvailable();
+        if (opfsOk) {
+          inner = new ArchiveDestination();
+        } else {
+          if (manifest.totalSize > MAX_IN_MEMORY_STREAM_BYTES) {
+            throw new TransferError(
+              'quota',
+              `File size (${manifest.totalSize} bytes) exceeds in-memory bounds (${MAX_IN_MEMORY_STREAM_BYTES} bytes) and direct disk streaming is unavailable in this browser mode (e.g. Private Browsing).`,
+            );
+          }
+          inner = new MemoryBlobDestination();
+        }
       }
       await inner.prepare(manifest);
     },
@@ -449,6 +488,17 @@ export async function removeOpfsOutput(key: string): Promise<void> {
   await directory.removeEntry(leaf).catch(() => {});
 }
 
+export async function isOpfsAvailable(): Promise<boolean> {
+  const storage = (navigator as Navigator & { storage?: StorageManager })?.storage;
+  if (!storage || typeof storage.getDirectory !== 'function') return false;
+  try {
+    await storage.getDirectory();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function opfsRoot(): Promise<FileSystemDirectoryHandle> {
   const storage = navigator.storage as StorageManager | undefined;
   if (!storage || typeof storage.getDirectory !== 'function') {
@@ -458,5 +508,80 @@ export async function opfsRoot(): Promise<FileSystemDirectoryHandle> {
     return await storage.getDirectory();
   } catch {
     throw new TransferError('sink_error', 'Origin Private File System is unavailable');
+  }
+}
+
+/** Fallback destination for restricted environments (e.g. Safari Private Browsing mode, Playwright WebKit). */
+export class MemoryBlobDestination implements BrowserDestination {
+  private files: FileEntry[] = [];
+  private readonly sinks = new Map<number, MemorySink>();
+  private manifest?: Manifest;
+
+  async prepare(manifest: Manifest): Promise<void> {
+    this.manifest = manifest;
+    this.files = manifest.files;
+  }
+
+  async open(file: FileEntry): Promise<Sink> {
+    const sink = new MemorySink();
+    this.sinks.set(file.idx, sink);
+    return sink;
+  }
+
+  async close(): Promise<void> {}
+
+  async abort(reason?: string): Promise<void> {
+    for (const sink of this.sinks.values()) {
+      sink.abort(reason);
+    }
+    this.sinks.clear();
+  }
+
+  result(): DestinationOutput | undefined {
+    if (!this.manifest || this.files.length === 0) return undefined;
+    if (this.files.length === 1 && !this.files[0]!.name.includes('/')) {
+      const file = this.files[0]!;
+      const bytes = this.sinks.get(file.idx)?.bytes() ?? new Uint8Array(0);
+      return {
+        kind: 'blob',
+        blob: new Blob([bytes as unknown as BlobPart], {
+          type: file.mime || 'application/octet-stream',
+        }),
+        name: file.name,
+        mime: file.mime || 'application/octet-stream',
+      };
+    }
+    const entries: ZipEntry[] = [];
+    const parts: Uint8Array[] = [];
+    let offset = 0;
+    for (const file of this.files) {
+      const name = new TextEncoder().encode(normalizeTransferPath(file.name));
+      const bytes = this.sinks.get(file.idx)?.bytes() ?? new Uint8Array(0);
+      const lHeader = localHeader(name);
+      parts.push(lHeader);
+      parts.push(bytes);
+      const crc = crc32Update(0, bytes);
+      const desc = dataDescriptor(crc, bytes.length);
+      parts.push(desc);
+      entries.push({ name, crc, size: bytes.length, offset });
+      offset += lHeader.length + bytes.length + desc.length;
+    }
+    const centralOffset = offset;
+    for (const entry of entries) {
+      const ch = centralHeader(entry);
+      parts.push(ch);
+      offset += ch.length;
+    }
+    const centralSize = offset - centralOffset;
+    parts.push(endOfCentralDirectory(entries.length, centralSize, centralOffset));
+
+    const top = this.files[0]!.name.split('/')[0]!;
+    const name = this.files.every((f) => f.name.startsWith(`${top}/`)) ? `${top}.zip` : 'sendbeam-files.zip';
+    return {
+      kind: 'blob',
+      blob: new Blob(parts as unknown as BlobPart[], { type: 'application/zip' }),
+      name,
+      mime: 'application/zip',
+    };
   }
 }

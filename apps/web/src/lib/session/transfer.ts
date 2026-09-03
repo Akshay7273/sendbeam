@@ -500,11 +500,7 @@ function run(
       try {
         const output = msg.output;
         if (output?.kind === 'opfs') {
-          // The transfer is done and the peer was already told (the done ack goes out
-          // before this `done`). Tear down the wire before the slow OPFS read so a peer
-          // disconnect can't trigger a relay fallback into a room the sender has already
-          // left — the server would refuse it and drop our socket. cleanup() below repeats
-          // this teardown; every piece is idempotent.
+          await writer?.drain();
           signaling.close();
           relay?.close();
           peer?.close();
@@ -517,7 +513,21 @@ function run(
             file,
             cleanup: () => removeOpfsOutput(output.key),
           });
+        } else if (output?.kind === 'blob') {
+          await writer?.drain();
+          signaling.close();
+          relay?.close();
+          peer?.close();
+          const file = new File([output.blob], output.name, { type: output.mime });
+          finish({
+            name: output.name,
+            size: msg.totalSize,
+            digest: msg.digest,
+            files: msg.files,
+            file,
+          });
         } else {
+          await writer?.drain();
           finish({
             name: first.name,
             size: msg.totalSize,
