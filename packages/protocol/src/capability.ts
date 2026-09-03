@@ -3,6 +3,8 @@ export interface StorageCapabilities {
   opfs: boolean;
   syncAccessHandle: boolean;
   quotaEstimate: boolean;
+  directFileSystem: boolean;
+  canStreamToDisk: boolean;
 }
 
 /** Reports whether the Screen Wake Lock API is available in this environment. */
@@ -25,6 +27,15 @@ export function isStorageQuotaSupported(): boolean {
     typeof navigator !== 'undefined' &&
     'storage' in navigator &&
     typeof (navigator as Navigator & { storage?: StorageManager }).storage?.estimate === 'function'
+  );
+}
+
+/** Reports whether the File System Access API (showSaveFilePicker) is available. */
+export function isDirectFileSystemSupported(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    'showSaveFilePicker' in window &&
+    typeof (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker === 'function'
   );
 }
 
@@ -137,11 +148,15 @@ export async function probeStorageCapabilities(customIdb?: unknown): Promise<Sto
   }
 
   const quotaEstimate = isStorageQuotaSupported();
+  const directFileSystem = isDirectFileSystemSupported();
+  const canStreamToDisk = directFileSystem || opfs;
 
   return {
     persistentTrust,
     opfs,
     syncAccessHandle,
     quotaEstimate,
+    directFileSystem,
+    canStreamToDisk,
   };
 }

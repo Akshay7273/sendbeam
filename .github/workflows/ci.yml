@@ -114,7 +114,7 @@ jobs:
         run: pnpm run build
 
   e2e:
-    name: e2e (chromium, firefox)
+    name: e2e (chromium, firefox, mobile-chrome, mobile-webkit)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -139,7 +139,7 @@ jobs:
         run: pnpm --filter @sendbeam/protocol build
 
       - name: Install Playwright browsers
-        run: pnpm --filter @sendbeam/web exec playwright install --with-deps chromium firefox
+        run: pnpm --filter @sendbeam/web exec playwright install --with-deps chromium firefox webkit
 
       - name: Run e2e
         run: pnpm --filter @sendbeam/web e2e

@@ -234,12 +234,35 @@ function run(
     rejectDone = reject;
   });
 
+  // V18-PR03: Handle mobile Safari / WebKit tab backgrounding and screen locks.
+  // WebKit throttles/suspends background execution and freezes WebRTC/WebSocket connections.
+  // When hidden, an actively running transfer pauses gracefully into a deterministic resumable
+  // state rather than stalling indefinitely.
+  const onVisibilityChange = (): void => {
+    if (settled) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      if (progress.snapshot().state === 'running') {
+        progress.setState('paused');
+        worker?.postMessage({ kind: 'control', op: 'pause' } satisfies HostToWorker);
+        wakeLock.setActive(false);
+      }
+    }
+  };
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
   const cleanup = (): void => {
     generation.bump();
     clearTimeout(cancelTimer);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
     releaseLeaseOnPageHide?.();
     releaseLeaseOnPageHide = undefined;
     wakeLock.setActive(false);
+    writer?.dispose();
+    writer = undefined;
     worker?.terminate();
     peer?.close();
     relay?.close();

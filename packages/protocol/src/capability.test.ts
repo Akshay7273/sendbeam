@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  isDirectFileSystemSupported,
   isPersistentTrustSupported,
   isStorageQuotaSupported,
   isWakeLockSupported,
@@ -92,6 +93,13 @@ describe('capability detection', () => {
     expect(caps).toHaveProperty('opfs');
     expect(caps).toHaveProperty('syncAccessHandle');
     expect(caps).toHaveProperty('quotaEstimate');
+    expect(caps).toHaveProperty('directFileSystem');
+    expect(caps).toHaveProperty('canStreamToDisk');
+  });
+
+  it('probes direct file system support cleanly', () => {
+    const supported = isDirectFileSystemSupported();
+    expect(typeof supported).toBe('boolean');
   });
 
   it('returns false cleanly when WebCrypto subtle is unavailable for persistent trust', async () => {

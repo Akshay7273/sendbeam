@@ -68,5 +68,39 @@ describe('ChannelWriter', () => {
     await writer.drain(100);
     expect(ch.bufferedAmount).toBe(0);
     expect(writer.pending).toBe(0);
+    writer.dispose();
+  });
+
+  it('recovers from missed bufferedamountlow event on WebKit via safety drain timer', async () => {
+    const ch = new FakeChannel();
+    const writer = new ChannelWriter(ch);
+    ch.bufferedAmount = 9 * 1024 * 1024;
+    writer.write(new ArrayBuffer(50));
+    expect(writer.pending).toBe(1);
+
+    // Buffer drains, but WebKit never dispatches onbufferedamountlow event
+    ch.bufferedAmount = 0;
+    expect(ch.sent).toEqual([]);
+
+    // Safety drain timer fires and drains the queue
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(ch.sent).toEqual([50]);
+    expect(writer.pending).toBe(0);
+    writer.dispose();
+  });
+
+  it('handles restricted channel without throwing when threshold setting fails', () => {
+    const ch: ChannelLike = {
+      bufferedAmount: 0,
+      get bufferedAmountLowThreshold() {
+        return 0;
+      },
+      set bufferedAmountLowThreshold(_val: number) {
+        throw new Error('NotSupportedError');
+      },
+      send: () => {},
+      onbufferedamountlow: null,
+    };
+    expect(() => new ChannelWriter(ch)).not.toThrow();
   });
 });

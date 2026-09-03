@@ -454,5 +454,9 @@ export async function opfsRoot(): Promise<FileSystemDirectoryHandle> {
   if (!storage || typeof storage.getDirectory !== 'function') {
     throw new TransferError('sink_error', 'Origin Private File System is unavailable');
   }
-  return storage.getDirectory();
+  try {
+    return await storage.getDirectory();
+  } catch {
+    throw new TransferError('sink_error', 'Origin Private File System is unavailable');
+  }
 }

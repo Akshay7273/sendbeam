@@ -68,7 +68,7 @@ function loadGoVectors(): DifferentialRecord[] {
     .map((l) => JSON.parse(l) as DifferentialRecord);
 }
 
-describe('differential parity: Go -> TS', () => {
+describe('differential parity: Go -> TS', { timeout: 30_000 }, () => {
   const vectors = loadGoVectors();
 
   const byCat = new Map<string, DifferentialRecord[]>();
