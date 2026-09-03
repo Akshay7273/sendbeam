@@ -1,0 +1,128 @@
+name: fuzz
+
+on:
+  schedule:
+    # Nightly continuous fuzzing at 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Duration to fuzz each target (e.g. 1m, 3m, 5m, 10m)'
+        required: false
+        default: '3m'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }} (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # packages/wire targets
+          - module: packages/wire
+            pkg: .
+            target: FuzzDecodeControl
+          - module: packages/wire
+            pkg: .
+            target: FuzzDecodeFrameHeader
+          - module: packages/wire
+            pkg: .
+            target: FuzzOpenSequenced
+          - module: packages/wire
+            pkg: .
+            target: FuzzValidateManifest
+          - module: packages/wire
+            pkg: .
+            target: FuzzDecodeManifestShape
+          - module: packages/wire
+            pkg: .
+            target: FuzzNormalizeTransferPath
+          - module: packages/wire
+            pkg: .
+            target: FuzzPaddingCodec
+          - module: packages/wire
+            pkg: .
+            target: FuzzRevocationRecord
+          - module: packages/wire
+            pkg: .
+            target: FuzzPairingMessage
+          - module: packages/wire
+            pkg: .
+            target: FuzzTrustedAuthMessage
+          - module: packages/wire
+            pkg: .
+            target: FuzzDecodeJournal
+          - module: packages/wire
+            pkg: .
+            target: FuzzWordsCode
+
+          # packages/engine targets
+          - module: packages/engine
+            pkg: ./rendezvous
+            target: FuzzUnmarshalMessage
+          - module: packages/engine
+            pkg: ./transfer
+            target: FuzzDurableJournalApply
+          - module: packages/engine
+            pkg: ./trust
+            target: FuzzDecodeTrustRecord
+          - module: packages/engine
+            pkg: ./trust
+            target: FuzzFileTrustStoreLoad
+          - module: packages/engine
+            pkg: ./updater
+            target: FuzzParseChannelManifest
+          - module: packages/engine
+            pkg: ./updater
+            target: FuzzParseChecksums
+
+          # apps/server targets
+          - module: apps/server
+            pkg: ./internal/signal
+            target: FuzzClientMsg
+          - module: apps/server
+            pkg: ./internal/signal
+            target: FuzzServerMessageValidation
+          - module: apps/server
+            pkg: ./internal/signal
+            target: FuzzParseTrustedProxies
+          - module: apps/server
+            pkg: ./internal/signal
+            target: FuzzClientIP
+
+    env:
+      GOWORK: off
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: Run Fuzz Target
+        run: |
+          DURATION="${{ inputs.duration || '3m' }}"
+          echo "==> Running ${{ matrix.target }} in ${{ matrix.module }} (${{ matrix.pkg }}) for $DURATION..."
+          go test -fuzz="^${{ matrix.target }}$" -fuzztime="$DURATION" -v "${{ matrix.pkg }}"
+
+      - name: Upload Crashing Inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: ${{ matrix.module }}/testdata/fuzz/${{ matrix.target }}/
+          retention-days: 14

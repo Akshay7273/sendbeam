@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"schema_version\":1,\"version\":\"v1.7.0\",\"channel\":\"stable\",\"assets\":{\"linux-amd64\":{\"name\":\"sendbeam-cli-linux-amd64.tar.gz\",\"size\":100,\"download_url\":\"https://example.com/asset\",\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}}}")

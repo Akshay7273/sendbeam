@@ -181,6 +181,9 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      - name: Fuzz smoke (corpus replay)
+        run: go test -run='^Fuzz' -v ./...
+
       - name: Build
         run: go build ./...
 

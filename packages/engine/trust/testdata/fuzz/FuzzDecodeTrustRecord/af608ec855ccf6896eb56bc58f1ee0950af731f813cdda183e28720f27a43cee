@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"device_id\":\"sb-dev-d5ba0a004e9be5e2c4537b289163b5b548ea3043aad133911ae8d18809081287\",\"public_key\":\"565c0c1dc287bdfe05c165a3d13d1e3dfafef34d217dec14d45ae3c53c1c89d9\",\"local_label\":\"Alice Laptop\",\"capabilities\":[\"transfer.v1\"],\"first_seen_at\":\"2026-08-30T12:00:00Z\",\"policy\":{\"auto_accept\":false}}")

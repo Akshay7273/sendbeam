@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"type\":12,\"transferId\":\"x\",\"files\":[{\"idx\":0,\"haveBlocks\":3}]}")

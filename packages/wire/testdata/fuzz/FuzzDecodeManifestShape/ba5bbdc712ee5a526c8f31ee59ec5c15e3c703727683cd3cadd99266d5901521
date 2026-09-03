@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"type\":2,\"files\":[{\"idx\":0,\"name\":\"zero\",\"size\":0,\"mime\":\"\",\"lastModified\":0,\"blockSize\":1,\"blocks\":0,\"fileDigest\":\"aa\"}],\"totalSize\":0}")

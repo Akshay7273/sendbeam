@@ -67,3 +67,11 @@ fmt:
     pnpm format
     for m in packages/wire packages/engine apps/server apps/cli; do ( cd "$m" && go fmt ./... ); done
     ( cd apps/desktop && go fmt ./... )
+
+# Replay all committed fuzz seed corpora (fast, smoke gate)
+fuzz-smoke:
+    ./scripts/run_fuzz.sh smoke
+
+# Run Go native continuous fuzzing (configurable duration and target)
+fuzz time="10s" target="all":
+    ./scripts/run_fuzz.sh {{time}} {{target}}
