@@ -45,6 +45,35 @@ async function joinMobileReceiver(
   await page.getByRole('button', { name: 'Receive' }).click();
 }
 
+async function downloadReceiverFile(receiver: import('@playwright/test').Page): Promise<Buffer> {
+  const downloadLink = receiver.locator('a.download');
+  await expect(downloadLink).toBeVisible({ timeout: 30_000 });
+  const href = await downloadLink.getAttribute('href');
+  if (href && href.startsWith('blob:')) {
+    const base64 = await receiver.evaluate(async (url) => {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const result = reader.result as string;
+          const comma = result.indexOf(',');
+          resolve(comma >= 0 ? result.slice(comma + 1) : result);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    }, href);
+    return Buffer.from(base64, 'base64');
+  }
+  const downloadPromise = receiver.waitForEvent('download');
+  await downloadLink.click();
+  const download = await downloadPromise;
+  const path = await download.path();
+  expect(path).not.toBeNull();
+  return readFileSync(path!);
+}
+
 test('PWA manifest and service worker are served cleanly', async ({ page }) => {
   const manifestRes = await page.goto('/manifest.webmanifest');
   expect(manifestRes?.status()).toBe(200);
@@ -96,12 +125,7 @@ test('mobile viewport send → receive round-trips file and renders QR prominent
   await expect(sender.getByText(/verified by the receiver/)).toBeVisible({ timeout: 60_000 });
   await expect(receiver.getByText(/verified\./)).toBeVisible({ timeout: 60_000 });
 
-  const downloadPromise = receiver.waitForEvent('download');
-  await receiver.locator('a.download').click();
-  const download = await downloadPromise;
-  const path = await download.path();
-  expect(path).not.toBeNull();
-  const received = readFileSync(path!);
+  const received = await downloadReceiverFile(receiver);
   expect(received.equals(BYTES)).toBe(true);
   expect(sha256(received)).toBe(DIGEST);
 });
@@ -157,12 +181,7 @@ test('visibility change / backgrounding interrupts transfer to deterministic pau
   await expect(sender.getByText(/verified by the receiver/)).toBeVisible({ timeout: 60_000 });
   await expect(receiver.getByText(/verified\./)).toBeVisible({ timeout: 60_000 });
 
-  const downloadPromise = receiver.waitForEvent('download');
-  await receiver.locator('a.download').click();
-  const download = await downloadPromise;
-  const path = await download.path();
-  expect(path).not.toBeNull();
-  const received = readFileSync(path!);
+  const received = await downloadReceiverFile(receiver);
   expect(received.equals(bgBytes)).toBe(true);
   expect(sha256(received)).toBe(bgDigest);
 });
@@ -222,12 +241,7 @@ test('large file receive stays memory-bounded and streams directly to storage', 
     expect(diskVerification.fileSize).toBe(largeBytes.length);
   }
 
-  const downloadPromise = receiver.waitForEvent('download');
-  await receiver.locator('a.download').click();
-  const download = await downloadPromise;
-  const path = await download.path();
-  expect(path).not.toBeNull();
-  const received = readFileSync(path!);
+  const received = await downloadReceiverFile(receiver);
   expect(received.equals(largeBytes)).toBe(true);
   expect(sha256(received)).toBe(largeDigest);
 });
