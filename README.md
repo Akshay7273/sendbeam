@@ -11,6 +11,8 @@
 <p align="center">
   <a href="https://github.com/Akshay7273/sendbeam/actions/workflows/ci.yml"><img src="https://github.com/Akshay7273/sendbeam/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/Akshay7273/sendbeam/actions/workflows/fuzz.yml"><img src="https://github.com/Akshay7273/sendbeam/actions/workflows/fuzz.yml/badge.svg" alt="Continuous Fuzzing" /></a>
+  <a href="https://scorecard.dev/viewer/?site=github.com/Akshay7273/sendbeam"><img src="https://api.scorecard.dev/projects/github.com/Akshay7273/sendbeam/badge" alt="OpenSSF Scorecard" /></a>
+  <a href="https://bestpractices.coreinfrastructure.org/projects/sendbeam"><img src="https://bestpractices.coreinfrastructure.org/projects/sendbeam/badge" alt="OpenSSF Best Practices" /></a>
   <a href="https://github.com/Akshay7273/sendbeam/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
   <a href="https://github.com/Akshay7273/sendbeam/pkgs/container/sendbeam"><img src="https://img.shields.io/badge/image-ghcr.io%2Fakshay7273%2Fsendbeam-blue.svg" alt="Container image" /></a>
   <a href="https://omnitrix.space"><img src="https://img.shields.io/badge/live%20demo-omnitrix.space-8b7cf6.svg" alt="Live demo" /></a>
@@ -228,6 +230,10 @@ Full analysis, accepted limitations, and the trust boundary are in the
 complemented by nightly scheduled fuzzing CI jobs. Cryptographic test vectors are published in
 [docs/test-vectors/](docs/test-vectors/), and dependency audits run in CI.
 
+SendBeam enforces coordinated vulnerability disclosure, weekly Dependabot automated updates,
+and an OpenSSF Scorecard supply-chain audit. For reporting guidelines and SLA response
+commitments, see [SECURITY.md](SECURITY.md).
+
 > [!NOTE]
 > SendBeam is stable open-source software. It has not had an independent
 > security audit; review the [threat model](docs/threat-model.md) before using it
@@ -235,6 +241,7 @@ complemented by nightly scheduled fuzzing CI jobs. Cryptographic test vectors ar
 
 ## Documentation
 
+- [Security Policy](SECURITY.md) — coordinated disclosure, response SLAs, supported versions
 - [Installation & Quickstart](docs/install.md) — installation instructions for Linux, macOS, and Windows
 - [Compatibility matrix](docs/compat-matrix.md) — Browser ↔ CLI ↔ Desktop cross-client matrix, NAT topologies, networks
 - [Continuous Fuzzing](docs/fuzzing.md) — fuzz targets, seed corpora policy, crash reproduction, OSS-Fuzz integration
