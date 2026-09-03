@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,11 @@ import (
 // 2. Revoked / purged credentials immediate settlement
 // 3. Auto-accept directory traversal containment & policy checks
 // 4. One-time transfer isolation (zero store pollution)
+// 5. Reject forged revocation record from attacker
+// 6. Reject sequence rollback and replayed revocation records
+// 7. Reject revocation records submitted by revoked device
+// 8. Reject revocation records from unknown revoker
+// 16. Revocation race condition and active session termination
 func TestAttackMatrix_Engine(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryTrustStore()
@@ -377,6 +383,113 @@ func TestAttackMatrix_Engine(t *testing.T) {
 		// Bob MUST remain trusted because Attacker is not in trust store
 		if !syncStore.IsTrusted(ctx, idB.DeviceID) {
 			t.Fatal("expected Bob to remain trusted when revocation came from unknown peer")
+		}
+	})
+
+	// Vector 16: Revocation Race Condition & Active Session Termination
+	t.Run("Vector 16: Revocation race condition and active session termination", func(t *testing.T) {
+		raceStore := NewMemoryTrustStore()
+		recAlice := &wire.TrustRecord{
+			DeviceID:          idA.DeviceID,
+			PublicKey:         idA.PublicKeyHex(),
+			LocalLabel:        "Alice",
+			PairCredentialRef: "cred-a",
+			Capabilities:      []string{wire.CapTransferV1},
+			FirstSeenAt:       time.Now().UTC(),
+			LastSeenAt:        time.Now().UTC(),
+			Revoked:           false,
+			Policy:            wire.DefaultTrustPolicy(),
+		}
+		recBob := &wire.TrustRecord{
+			DeviceID:          idB.DeviceID,
+			PublicKey:         idB.PublicKeyHex(),
+			LocalLabel:        "Bob",
+			PairCredentialRef: "cred-b",
+			Capabilities:      []string{wire.CapTransferV1},
+			FirstSeenAt:       time.Now().UTC(),
+			LastSeenAt:        time.Now().UTC(),
+			Revoked:           false,
+			Policy:            wire.DefaultTrustPolicy(),
+		}
+		_ = raceStore.AddOrUpdateDevice(ctx, recAlice)
+		_ = raceStore.AddOrUpdateDevice(ctx, recBob)
+
+		resolver := NewMemorySecretResolver()
+		resolver.SetSecret(idB.DeviceID, kPair[:])
+
+		mockIDMgr := NewMemoryIdentityManager(idA)
+		coord := NewTrustedSessionCoordinator(mockIDMgr, raceStore, resolver)
+
+		// Before revocation: Bob is trusted
+		if !raceStore.IsTrusted(ctx, idB.DeviceID) {
+			t.Fatal("expected Bob to be trusted initially")
+		}
+
+		// Race test: Start concurrent goroutines continuously checking trust and attempting session initiation,
+		// while a concurrent goroutine executes processIncomingRevocations.
+		var wg sync.WaitGroup
+		stopCh := make(chan struct{})
+		trustedAfterRevocation := false
+		var mu sync.Mutex
+
+		// Revoker goroutine
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(5 * time.Millisecond) // brief delay to allow reads to start
+			revRec, err := wire.SignRevocation(idA, idB.DeviceID, 1, time.Now().UTC())
+			if err != nil {
+				t.Errorf("SignRevocation failed: %v", err)
+				return
+			}
+			coord.processIncomingRevocations(ctx, []wire.RevocationRecord{*revRec}, idA.DeviceID)
+			close(stopCh)
+		}()
+
+		// Concurrently check trust
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stopCh:
+						// After stopCh is closed, check whether IsTrusted is ever true
+						if raceStore.IsTrusted(ctx, idB.DeviceID) {
+							mu.Lock()
+							trustedAfterRevocation = true
+							mu.Unlock()
+						}
+						return
+					default:
+						// In-flight read
+						_ = raceStore.IsTrusted(ctx, idB.DeviceID)
+					}
+				}
+			}()
+		}
+
+		wg.Wait()
+
+		// Assertions post-revocation
+		if raceStore.IsTrusted(ctx, idB.DeviceID) {
+			t.Fatal("expected Bob to NOT be trusted post-revocation")
+		}
+		mu.Lock()
+		if trustedAfterRevocation {
+			mu.Unlock()
+			t.Fatal("detected window where Bob remained trusted after revocation was processed")
+		}
+		mu.Unlock()
+
+		// Attempting InitiateTrustedSession on revoked Bob MUST fail with ErrTrustedPeerRevoked
+		dummyTransport := &mockPairingTransport{}
+		_, err := coord.InitiateTrustedSession(ctx, dummyTransport, TrustedSessionConfig{
+			PeerDeviceID: idB.DeviceID,
+			Capabilities: []string{wire.CapTransferV1},
+		})
+		if !errors.Is(err, wire.ErrTrustedPeerRevoked) {
+			t.Fatalf("expected ErrTrustedPeerRevoked when initiating session to revoked peer, got: %v", err)
 		}
 	})
 }
