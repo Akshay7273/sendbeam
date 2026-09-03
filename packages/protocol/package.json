@@ -26,6 +26,6 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "@noble/curves": "^2.3.0"
+    "@noble/curves": "^2.4.0"
   }
 }
