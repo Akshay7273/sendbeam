@@ -13,7 +13,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: [['list']],
   use: {
-    baseURL: 'http://localhost:8443',
+    baseURL: 'http://127.0.0.1:8443',
     trace: 'retain-on-failure',
   },
   projects: [
@@ -36,7 +36,7 @@ export default defineConfig({
   ],
   webServer: {
     command: 'pnpm e2e:serve',
-    url: 'http://localhost:8443/healthz',
+    url: 'http://127.0.0.1:8443/healthz',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
