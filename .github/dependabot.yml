@@ -1,0 +1,100 @@
+version: 2
+updates:
+  # GitHub Actions
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '03:00'
+      timezone: 'UTC'
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+
+  # Node / pnpm workspace
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '03:30'
+      timezone: 'UTC'
+    open-pull-requests-limit: 5
+    groups:
+      devDependencies:
+        dependency-type: 'development'
+        patterns:
+          - '*'
+      dependencies:
+        dependency-type: 'production'
+        patterns:
+          - '*'
+
+  # Go modules: root / apps / packages
+  - package-ecosystem: 'gomod'
+    directory: '/packages/wire'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '04:00'
+      timezone: 'UTC'
+    open-pull-requests-limit: 3
+    groups:
+      go-wire:
+        patterns:
+          - '*'
+
+  - package-ecosystem: 'gomod'
+    directory: '/packages/engine'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '04:15'
+      timezone: 'UTC'
+    open-pull-requests-limit: 3
+    groups:
+      go-engine:
+        patterns:
+          - '*'
+
+  - package-ecosystem: 'gomod'
+    directory: '/apps/server'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '04:30'
+      timezone: 'UTC'
+    open-pull-requests-limit: 3
+    groups:
+      go-server:
+        patterns:
+          - '*'
+
+  - package-ecosystem: 'gomod'
+    directory: '/apps/cli'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '04:45'
+      timezone: 'UTC'
+    open-pull-requests-limit: 3
+    groups:
+      go-cli:
+        patterns:
+          - '*'
+
+  - package-ecosystem: 'gomod'
+    directory: '/apps/desktop'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '05:00'
+      timezone: 'UTC'
+    open-pull-requests-limit: 3
+    groups:
+      go-desktop:
+        patterns:
+          - '*'
