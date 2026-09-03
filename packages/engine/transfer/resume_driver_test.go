@@ -117,7 +117,7 @@ func runResumeLeg(ctx context.Context, t *testing.T, senderStore *SenderStore, o
 		select {
 		case r := <-recvDone:
 			recv = r
-		default:
+		case <-time.After(500 * time.Millisecond):
 			if s.err != nil {
 				legCancel()
 			}
@@ -128,7 +128,7 @@ func runResumeLeg(ctx context.Context, t *testing.T, senderStore *SenderStore, o
 		select {
 		case s := <-sendDone:
 			send = s
-		default:
+		case <-time.After(500 * time.Millisecond):
 			if r.err != nil {
 				legCancel()
 			}

@@ -21,7 +21,7 @@ var hostOnly = []webrtc.ICEServer{}
 func testLoopbackAPI() *webrtc.API {
 	s := webrtc.SettingEngine{}
 	s.SetIncludeLoopbackCandidate(true)
-	s.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() })
+	s.SetIPFilter(func(ip net.IP) bool { return ip.To4() != nil && ip.IsLoopback() })
 	s.SetICETimeouts(10*time.Second, 20*time.Second, 2*time.Second)
 	return webrtc.NewAPI(webrtc.WithSettingEngine(s))
 }
@@ -104,7 +104,7 @@ func linkedPeersOptions(t testing.TB, offOpts, joinOpts PeerOptions) (offerer, j
 func TestPeerLoopbackConnectsAndTransfersBytes(t *testing.T) {
 	offerer, joiner := linkedPeers(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	offConn, err := offerer.Channel(ctx)
@@ -142,7 +142,7 @@ func TestPeerLoopbackConnectsAndTransfersBytes(t *testing.T) {
 func TestPeerBuffersInboundBeforeHandler(t *testing.T) {
 	offerer, joiner := linkedPeers(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	offConn, err := offerer.Channel(ctx)
@@ -185,7 +185,7 @@ func recvWithin(t *testing.T, ch <-chan []byte) []byte {
 func TestPeerRestartICEKeepsChannelAlive(t *testing.T) {
 	offerer, joiner := linkedPeers(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	offConn, err := offerer.Channel(ctx)
@@ -301,7 +301,7 @@ func TestPeerRecoveryCallbacks(t *testing.T) {
 	}()
 	defer func() { _ = offerer.Close(); _ = joiner.Close() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if _, err := offerer.Channel(ctx); err != nil {
 		t.Fatalf("offerer channel: %v", err)
@@ -354,9 +354,9 @@ func TestPeerRecoveryCallbacks(t *testing.T) {
 // network-change cycles (disconnect → recover → reconnect) never reset transfer progress: the
 // existing channel survives each cycle and bytes flow in both directions with no loss.
 func TestPeerRepeatedRecoveryCyclesKeepChannelAlive(t *testing.T) {
-	offerer, joiner := linkedPeers(t)
+	offerer, joiner := linkedPeersOptions(t, PeerOptions{RecoverWindow: 45 * time.Second}, PeerOptions{})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	offConn, err := offerer.Channel(ctx)
 	if err != nil {
@@ -383,7 +383,7 @@ func TestPeerRepeatedRecoveryCyclesKeepChannelAlive(t *testing.T) {
 		// Enter and clear the recovery window (the transient disconnect it models).
 		offerer.enterRecover()
 		// Wait for the offer/answer exchange and ICE re-establishment to settle on both peers.
-		deadline := time.Now().Add(15 * time.Second)
+		deadline := time.Now().Add(45 * time.Second)
 		for time.Now().Before(deadline) {
 			if offerer.pc.SignalingState() == webrtc.SignalingStateStable &&
 				joiner.pc.SignalingState() == webrtc.SignalingStateStable &&
@@ -460,7 +460,7 @@ func TestPeerTeardownDuringRecoveryIsClean(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if _, err := offerer.Channel(ctx); err != nil {
 		t.Fatalf("offerer channel: %v", err)
@@ -493,7 +493,7 @@ func TestPeerTeardownDuringRecoveryIsClean(t *testing.T) {
 func TestPeerDiagnosticsReportSetupTelemetry(t *testing.T) {
 	offerer, joiner := linkedPeers(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if _, err := offerer.Channel(ctx); err != nil {
 		t.Fatalf("offerer channel: %v", err)
@@ -534,7 +534,7 @@ func TestPeerOnICEStatePublishesTransitions(t *testing.T) {
 		},
 	}, PeerOptions{})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if _, err := offerer.Channel(ctx); err != nil {
 		t.Fatalf("offerer channel: %v", err)

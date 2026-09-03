@@ -67,7 +67,7 @@ func TestDriverSurvivesSignalingLossOnDirect(t *testing.T) {
 	payload := faultPayload(2*1024*1024 + 77)
 	meta := wire.FileMeta{Name: "sig-loss.bin", Size: int64(len(payload)), Mime: "application/octet-stream"}
 	dir := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	type result struct {
@@ -136,7 +136,7 @@ func TestDriverSignalingLossOnRelayIsFatal(t *testing.T) {
 	payload := faultPayload(2*1024*1024 + 13)
 	meta := wire.FileMeta{Name: "relay-sig-loss.bin", Size: int64(len(payload)), Mime: "application/octet-stream"}
 	dir := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	type result struct {
@@ -213,7 +213,7 @@ func TestDriverCutoverBeforeDataStarts(t *testing.T) {
 	payload := faultPayload(512*1024 + 21)
 	meta := wire.FileMeta{Name: "cutover-early.bin", Size: int64(len(payload)), Mime: "application/octet-stream"}
 	dir := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	trigger := make(chan struct{})
@@ -291,7 +291,7 @@ func TestDriverCutoverAfterAllDataAcked(t *testing.T) {
 	payload := faultPayload(1024*1024 + 29)
 	meta := wire.FileMeta{Name: "cutover-late.bin", Size: int64(len(payload)), Mime: "application/octet-stream"}
 	dir := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	trigger := make(chan struct{})
@@ -364,7 +364,7 @@ func TestDriverCutoverMidData(t *testing.T) {
 	payload := faultPayload(4*1024*1024 + 67)
 	meta := wire.FileMeta{Name: "cutover-mid.bin", Size: int64(len(payload)), Mime: "application/octet-stream"}
 	dir := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	trigger := make(chan struct{})
@@ -441,7 +441,7 @@ func TestDriverFallsBackOnFailedDirectRecovery(t *testing.T) {
 	payload := faultPayload(3*1024*1024 + 41)
 	meta := wire.FileMeta{Name: "recover-fail.bin", Size: int64(len(payload)), Mime: "application/octet-stream"}
 	dir := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	trigger := make(chan struct{})

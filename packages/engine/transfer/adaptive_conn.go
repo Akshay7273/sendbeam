@@ -13,7 +13,7 @@ import (
 // relaySwitchTimeout bounds how long Send waits for the relay handshake to complete
 // after the direct path fails. Without it, a partner that never answers relay_open
 // would wedge the engine forever (no deadline exists anywhere else in that path).
-const relaySwitchTimeout = 30 * time.Second
+const relaySwitchTimeout = 60 * time.Second
 
 // adaptiveConn starts on an open direct channel and atomically converges onto the session relay.
 // It uses the supervisor for path state management while preserving the existing blocking-Send
