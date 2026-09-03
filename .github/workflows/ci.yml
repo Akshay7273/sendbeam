@@ -114,7 +114,7 @@ jobs:
         run: pnpm run build
 
   e2e:
-    name: e2e (chromium, firefox, mobile-chrome, mobile-webkit)
+    name: e2e (chromium, firefox)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
