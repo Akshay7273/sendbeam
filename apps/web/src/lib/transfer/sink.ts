@@ -576,7 +576,9 @@ export class MemoryBlobDestination implements BrowserDestination {
     parts.push(endOfCentralDirectory(entries.length, centralSize, centralOffset));
 
     const top = this.files[0]!.name.split('/')[0]!;
-    const name = this.files.every((f) => f.name.startsWith(`${top}/`)) ? `${top}.zip` : 'sendbeam-files.zip';
+    const name = this.files.every((f) => f.name.startsWith(`${top}/`))
+      ? `${top}.zip`
+      : 'sendbeam-files.zip';
     return {
       kind: 'blob',
       blob: new Blob(parts as unknown as BlobPart[], { type: 'application/zip' }),
