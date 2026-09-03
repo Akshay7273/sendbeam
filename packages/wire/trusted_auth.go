@@ -122,7 +122,7 @@ func IntersectCapabilities(a, b []string) []string {
 	for _, item := range a {
 		set[item] = true
 	}
-	var res []string
+	res := make([]string, 0)
 	for _, item := range b {
 		if set[item] {
 			res = append(res, item)
