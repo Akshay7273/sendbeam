@@ -402,3 +402,15 @@ Inside the AEAD envelope, the plaintext is formatted as:
 - **Header AAD Invariant:** The 16-byte frame header remains verbatim as AEAD Associated Data; its `len` field matches the total padded ciphertext length ($S + 16$ bytes AEAD tag).
 - **Integrity Validation:** Upon decryption, the receiver validates that `ActualPayloadLength <= BucketSize - 2` and verifies all padding bytes are strictly `0x00`. Any malformed length or non-zero padding byte fails closed (`ErrInvalidFramePadding`).
 - **Interop Fallback:** If either peer lacks the `padding` capability, transfers automatically proceed unpadded without protocol failure.
+
+---
+
+## v1.8 Protocol Assurance & Invariant Stability
+
+The v1.8 milestone ("Protocol Assurance & Mobile Hardening") introduces **no wire format changes, no new message types, and no frame header alterations**. The wire protocols (`sendbeam/1`, `sendbeam/2`, `sendbeam/pairing/1`) and framing specifications are 100% stable and frozen.
+
+All assurance enhancements in v1.8 operate strictly on protocol verification, validation robustness, and runtime platform defenses:
+
+1. **Continuous Fuzzing Verification:** 22 native Go fuzz targets continuously stress all wire decoders, control message parsers, and untrusted byte envelopes (`docs/fuzzing.md`).
+2. **Differential Parity Verification:** Automated Go ↔ TypeScript parity harness deterministically verifies byte-for-byte serialization and fail-closed rejection across all wire codecs.
+3. **20-Vector Adversarial Attack Matrix:** Expanded security regression matrix enforces existing fail-closed invariants across both languages without altering protocol semantics (`docs/threat-model.md`).

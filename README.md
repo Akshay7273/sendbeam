@@ -252,6 +252,7 @@ commitments, see [SECURITY.md](SECURITY.md).
 - [Supply Chain Integrity](docs/supply-chain.md) — build provenance attestations, SPDX 2.3 SBOMs, checksum manifests
 - [Updater Architecture](docs/updater.md) — self-update channels, cryptographic verification, and rollback safety
 - [Distribution](docs/distribution.md) — multi-platform packaging, artifacts, and build metadata
+- [Release Gate v1.8](docs/RELEASE-v1.8.md) — v1.8 milestone criteria, verification evidence, and release checklist
 - [Release Gate v1.7](docs/RELEASE-v1.7.md) — v1.7 milestone criteria, verification evidence, and release checklist
 - [Release Gate v1.6](docs/RELEASE-v1.6.md) — v1.6 milestone criteria, verification evidence, and release checklist
 - [Release Gate v1.5](docs/RELEASE-v1.5.md) — v1.5 milestone criteria, verification evidence, and release checklist
