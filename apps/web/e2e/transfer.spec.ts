@@ -64,7 +64,7 @@ test('send → receive round-trips the file with a verified digest', async ({ co
   });
 
   await expect(sender.getByText(/verified by the receiver/)).toBeVisible({ timeout: 60_000 });
-  await expect(receiver.getByText(/verified\./)).toBeVisible({ timeout: 60_000 });
+  await expect(receiver.getByText(/— verified/)).toBeVisible({ timeout: 60_000 });
 
   // Save through the OPFS download link and verify the bytes match sha256sum of the source.
   const downloadPromise = receiver.waitForEvent('download');

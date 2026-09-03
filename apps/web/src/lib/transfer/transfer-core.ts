@@ -381,7 +381,7 @@ export function runTransferCore(port: Port, deps: TransferCoreDeps): Promise<voi
           })),
           totalSize: result.totalSize,
           digest: result.digest,
-          ...(output?.kind === 'opfs' ? { output } : {}),
+          ...(output?.kind === 'opfs' || output?.kind === 'blob' ? { output } : {}),
         });
         resolve();
       } catch (e) {

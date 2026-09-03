@@ -186,6 +186,7 @@ function run(
   const progress = new ProgressTracker(total);
   const wakeLock = new WakeLockManager();
   let settled = false;
+  let completing = false;
   // Monotonic generation guard: every async continuation captures the generation at
   // creation and bails before mutating controller state once it is stale (ADR 0001 §5).
   const generation = new GenerationGuard();
@@ -275,13 +276,13 @@ function run(
     resolveDone(o);
   };
   const fail = (err: Error): void => {
+    if (settled || completing) return;
     diagFailures.push({
       code: 'INTERNAL',
       atMs: Math.round(performance.now() - diagStarted),
       ...(diagTransport !== undefined ? { path: diagTransport } : {}),
       message: sanitize(err instanceof Error ? err.message : String(err)),
     });
-    if (settled) return;
     settled = true;
     cleanup();
     rejectDone(err);
@@ -495,6 +496,7 @@ function run(
 
   async function completeTransfer(msg: Extract<WorkerToHost, { kind: 'done' }>): Promise<void> {
     if (!generation.isCurrent(gen)) return;
+    completing = true;
     const first = msg.files[0]!;
     if (spec.role === 'receive') {
       try {
