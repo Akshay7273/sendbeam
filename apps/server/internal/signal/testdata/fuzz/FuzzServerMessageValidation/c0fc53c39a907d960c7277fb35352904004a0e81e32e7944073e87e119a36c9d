@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"type\":\"resume\",\"room\":1,\"role\":\"offerer\"}")

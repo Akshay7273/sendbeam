@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"type\":7,\"fileIdx\":0,\"blockIdx\":1,\"reason\":\"integrity\"}")

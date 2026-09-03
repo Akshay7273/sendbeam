@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"capabilities\":[\"transfer.v1\",\"auto_accept\"],\"device_id\":\"sb-dev-d5ba0a004e9be5e2c4537b289163b5b548ea3043aad133911ae8d18809081287\",\"device_name\":\"Alice Laptop\",\"nonce\":\"b9d81bca729d78625201c17a8b9909aca3880515d53176b967207713d1d0d725\",\"protocol_version\":\"sendbeam/1\",\"public_key\":\"565c0c1dc287bdfe05c165a3d13d1e3dfafef34d217dec14d45ae3c53c1c89d9\",\"signature\":\"ba074ab41bfb3a8f8532d78c5bd9077c715049c7e0d6105244fc5f8d4eca04e0a7b25a18fbaa4fb4eac321a6699c1b6257821a345f907337bfd733b37f64140e\",\"type\":\"pairing_request\"}")

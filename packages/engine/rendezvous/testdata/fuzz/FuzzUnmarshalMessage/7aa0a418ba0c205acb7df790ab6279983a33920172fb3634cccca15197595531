@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"type\":\"relay_credit\",\"bytes\":1024}")

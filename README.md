@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/Akshay7273/sendbeam/actions/workflows/ci.yml"><img src="https://github.com/Akshay7273/sendbeam/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/Akshay7273/sendbeam/actions/workflows/fuzz.yml"><img src="https://github.com/Akshay7273/sendbeam/actions/workflows/fuzz.yml/badge.svg" alt="Continuous Fuzzing" /></a>
   <a href="https://github.com/Akshay7273/sendbeam/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
   <a href="https://github.com/Akshay7273/sendbeam/pkgs/container/sendbeam"><img src="https://img.shields.io/badge/image-ghcr.io%2Fakshay7273%2Fsendbeam-blue.svg" alt="Container image" /></a>
   <a href="https://omnitrix.space"><img src="https://img.shields.io/badge/live%20demo-omnitrix.space-8b7cf6.svg" alt="Live demo" /></a>
@@ -222,7 +223,9 @@ both the direct and the relayed path. The server can observe room numbers and ci
 metadata only; it never sees file contents, names, digests, or keys.
 
 Full analysis, accepted limitations, and the trust boundary are in the
-[threat model](docs/threat-model.md). Cryptographic test vectors are published in
+[threat model](docs/threat-model.md). Continuous machine verification runs through
+[Go native fuzzing](docs/fuzzing.md) across all codecs, parsers, and untrusted byte envelopes,
+complemented by nightly scheduled fuzzing CI jobs. Cryptographic test vectors are published in
 [docs/test-vectors/](docs/test-vectors/), and dependency audits run in CI.
 
 > [!NOTE]
@@ -234,6 +237,7 @@ Full analysis, accepted limitations, and the trust boundary are in the
 
 - [Installation & Quickstart](docs/install.md) — installation instructions for Linux, macOS, and Windows
 - [Compatibility matrix](docs/compat-matrix.md) — Browser ↔ CLI ↔ Desktop cross-client matrix, NAT topologies, networks
+- [Continuous Fuzzing](docs/fuzzing.md) — fuzz targets, seed corpora policy, crash reproduction, OSS-Fuzz integration
 - [Self-hosting server](docs/HOSTING.md) — deployment, TLS, STUN/TURN, relay limits, Prometheus metrics
 - [Self-hosting clients](docs/self-hosting-clients.md) — configuring CLI & Desktop with custom servers and OS secret stores
 - [Troubleshooting & Diagnostics](docs/troubleshooting.md) — network diagnostics, restrictive firewalls, lock resolution
@@ -259,6 +263,8 @@ just dev         # web app with HMR + Go server over https://localhost:8443
 just build       # build the web application and server binary
 just lint        # lint TypeScript, Svelte, and every Go module
 just test        # run JavaScript and Go test suites
+just fuzz-smoke  # fast fuzz seed corpus replay across all targets
+just fuzz        # active Go native continuous fuzzing (configurable duration/target)
 ```
 
 For a CLI peer against the local development server, add `--insecure-skip-verify`

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"type\":4,\"fileIdx\":0,\"blockIdx\":0,\"sha256\":\"aa\"}")
