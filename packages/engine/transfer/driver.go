@@ -385,9 +385,9 @@ transferSettled:
 	// Drain the data channel before tearing down the peer: the first side to finish (the
 	// receiver, once it has sent done) must let that final frame reach the wire, or closing the
 	// PeerConnection aborts SCTP and the waiting sender never learns the transfer completed.
-	// On relay, allow the terminal Done and any post-cutover replies to deliver before closing signaling.
-	if adaptive != nil && adaptive.IsRelay() {
-		time.Sleep(250 * time.Millisecond)
+	// Allow terminal Done and post-cutover retransmissions to deliver before closing signaling/relay.
+	if adaptive != nil {
+		time.Sleep(1 * time.Second)
 	}
 	_ = conn.Close()
 	if peer != nil {
@@ -762,11 +762,7 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 	// wait); the engine is constructed only AFTER mutual authentication, using the fresh
 	// resumed key epoch when one was derived (never the session keys for the transfer).
 	router := &engineRouter{}
-	if sv != nil {
-		sv.OnData(func(frame []byte) { router.route(preamble, frame) })
-	} else {
-		conn.OnData(func(frame []byte) { router.route(preamble, frame) })
-	}
+	conn.OnData(func(frame []byte) { router.route(preamble, frame) })
 	if preamble != nil {
 		result, err := runPreamble(ctx, preamble)
 		if err != nil {
@@ -814,6 +810,9 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 		OnResume:       d.spec.OnResumeProgress,
 		OnStateChange:  d.spec.OnStateChange,
 	})
+	if switcher, ok := conn.(interface{ SetOnSwitch(func()) }); ok {
+		switcher.SetOnSwitch(sender.TransportChanged)
+	}
 	if sv != nil {
 		sv.SetOnSwitch(sender.TransportChanged)
 	}
@@ -860,11 +859,7 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 	// being installed (the manifest, sent once the offerer's own preamble settled) are
 	// queued by the router in order.
 	router := &engineRouter{}
-	if sv != nil {
-		sv.OnData(func(frame []byte) { router.route(preamble, frame) })
-	} else {
-		conn.OnData(func(frame []byte) { router.route(preamble, frame) })
-	}
+	conn.OnData(func(frame []byte) { router.route(preamble, frame) })
 	if preamble != nil {
 		result, err := runPreamble(ctx, preamble)
 		if err != nil {
@@ -931,6 +926,9 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 			return nil
 		},
 	})
+	if switcher, ok := conn.(interface{ SetOnSwitch(func()) }); ok {
+		switcher.SetOnSwitch(receiver.TransportChanged)
+	}
 	if sv != nil {
 		sv.SetOnSwitch(receiver.TransportChanged)
 	}
