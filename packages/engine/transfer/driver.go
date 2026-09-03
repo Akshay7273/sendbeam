@@ -294,7 +294,12 @@ func (d *driver) run(ctx context.Context) (*Outcome, error) {
 			go func() {
 				select {
 				case <-d.spec.breakDirect:
-					_ = peer.Close()
+					if peer != nil {
+						_ = peer.Close()
+					}
+					if adaptive != nil {
+						adaptive.requestRelay()
+					}
 				case <-ctx.Done():
 				}
 			}()
@@ -380,6 +385,10 @@ transferSettled:
 	// Drain the data channel before tearing down the peer: the first side to finish (the
 	// receiver, once it has sent done) must let that final frame reach the wire, or closing the
 	// PeerConnection aborts SCTP and the waiting sender never learns the transfer completed.
+	// Allow terminal Done and post-cutover retransmissions to deliver before closing signaling/relay.
+	if adaptive != nil {
+		time.Sleep(1 * time.Second)
+	}
 	_ = conn.Close()
 	if peer != nil {
 		_ = peer.Close()
@@ -753,11 +762,7 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 	// wait); the engine is constructed only AFTER mutual authentication, using the fresh
 	// resumed key epoch when one was derived (never the session keys for the transfer).
 	router := &engineRouter{}
-	if sv != nil {
-		sv.OnData(func(frame []byte) { router.route(preamble, frame) })
-	} else {
-		conn.OnData(func(frame []byte) { router.route(preamble, frame) })
-	}
+	conn.OnData(func(frame []byte) { router.route(preamble, frame) })
 	if preamble != nil {
 		result, err := runPreamble(ctx, preamble)
 		if err != nil {
@@ -780,6 +785,7 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 		BlockSize:        negotiate(res.LocalCaps.BlockSize, res.RemoteCaps.BlockSize, wire.DefaultBlockBytes),
 		FrameSize:        negotiate(res.LocalCaps.MaxFrame, res.RemoteCaps.MaxFrame, wire.DefaultFrameBytes),
 		Padding:          paddingNegotiated,
+		DoneTimeout:      60 * time.Second,
 		// Advertise a stable random id in the manifest so a receiver that crashes mid-file
 		// can journal its verified progress and resume it (V13-PR02); the wire layer mints
 		// and validates it without any protocol change. A restart (V13-PR04) reuses the
@@ -804,6 +810,9 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 		OnResume:       d.spec.OnResumeProgress,
 		OnStateChange:  d.spec.OnStateChange,
 	})
+	if switcher, ok := conn.(interface{ SetOnSwitch(func()) }); ok {
+		switcher.SetOnSwitch(sender.TransportChanged)
+	}
 	if sv != nil {
 		sv.SetOnSwitch(sender.TransportChanged)
 	}
@@ -850,11 +859,7 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 	// being installed (the manifest, sent once the offerer's own preamble settled) are
 	// queued by the router in order.
 	router := &engineRouter{}
-	if sv != nil {
-		sv.OnData(func(frame []byte) { router.route(preamble, frame) })
-	} else {
-		conn.OnData(func(frame []byte) { router.route(preamble, frame) })
-	}
+	conn.OnData(func(frame []byte) { router.route(preamble, frame) })
 	if preamble != nil {
 		result, err := runPreamble(ctx, preamble)
 		if err != nil {
@@ -921,6 +926,9 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 			return nil
 		},
 	})
+	if switcher, ok := conn.(interface{ SetOnSwitch(func()) }); ok {
+		switcher.SetOnSwitch(receiver.TransportChanged)
+	}
 	if sv != nil {
 		sv.SetOnSwitch(receiver.TransportChanged)
 	}

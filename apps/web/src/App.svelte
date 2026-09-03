@@ -6,7 +6,7 @@
     RendezvousResult,
     Role,
   } from '@sendbeam/protocol';
-  import { RendezvousError } from '@sendbeam/protocol';
+  import { RendezvousError, TransferError } from '@sendbeam/protocol';
 
   import { offer, join, type RendezvousController } from './lib/session/rendezvous.js';
   import type { SignalChannel } from './lib/signaling/client.js';
@@ -364,6 +364,7 @@
 
   function asErrorLike(err: unknown): ErrorLike {
     if (err instanceof RendezvousError) return { code: err.code, message: err.message };
+    if (err instanceof TransferError) return { code: err.reason, message: err.message };
     return { code: 'unknown', message: err instanceof Error ? err.message : String(err) };
   }
 

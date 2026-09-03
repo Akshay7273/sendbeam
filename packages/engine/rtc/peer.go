@@ -92,9 +92,15 @@ type Peer struct {
 	telemetry telemetry
 
 	sigMu       sync.Mutex
+	sendMu      sync.Mutex
+	sdpSent     chan struct{}
+	sdpOnce     sync.Once
+	closedCh    chan struct{}
+	closeOnce   sync.Once
 	mu          sync.Mutex
 	settled     bool
 	closed      bool
+	conn        *DataConn
 	remoteReady bool
 	pendingICE  []webrtc.ICECandidateInit
 
@@ -164,6 +170,8 @@ func NewPeer(opts PeerOptions) (*Peer, error) {
 		send:            opts.Send,
 		connCh:          make(chan *DataConn, 1),
 		errCh:           make(chan error, 1),
+		sdpSent:         make(chan struct{}),
+		closedCh:        make(chan struct{}),
 		onICEState:      opts.OnICEState,
 		onRecovering:    opts.OnRecovering,
 		onRecoverFailed: opts.OnRecoverFailed,
@@ -193,6 +201,19 @@ func NewPeer(opts PeerOptions) (*Peer, error) {
 			p.fail(fmt.Errorf("rtc: marshal ice candidate: %w", err))
 			return
 		}
+		select {
+		case <-p.sdpSent:
+		case <-p.closedCh:
+			return
+		}
+		p.sendMu.Lock()
+		defer p.sendMu.Unlock()
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return
+		}
+		p.mu.Unlock()
 		if err := p.send(p.auth.SignICE(string(body))); err != nil {
 			p.fail(fmt.Errorf("rtc: send ice candidate: %w", err))
 		}
@@ -291,7 +312,15 @@ func (p *Peer) Close() error {
 		p.recoverTimer.Stop()
 		p.recoverTimer = nil
 	}
+	conn := p.conn
 	p.mu.Unlock()
+	p.closeOnce.Do(func() {
+		close(p.closedCh)
+		p.sdpOnce.Do(func() { close(p.sdpSent) })
+	})
+	if conn != nil {
+		conn.shutdown()
+	}
 	return p.pc.Close()
 }
 
@@ -316,7 +345,11 @@ func (p *Peer) sendOffer() {
 		p.fail(fmt.Errorf("rtc: set local offer: %w", err))
 		return
 	}
-	if err := p.send(p.auth.SignSDP(offer.SDP)); err != nil {
+	p.sendMu.Lock()
+	err = p.send(p.auth.SignSDP(offer.SDP))
+	p.sdpOnce.Do(func() { close(p.sdpSent) })
+	p.sendMu.Unlock()
+	if err != nil {
 		p.fail(fmt.Errorf("rtc: send offer: %w", err))
 	}
 }
@@ -349,7 +382,11 @@ func (p *Peer) handle(msg rendezvous.Message) error {
 		if err := p.pc.SetLocalDescription(answer); err != nil {
 			return fmt.Errorf("rtc: set local answer: %w", err)
 		}
-		return p.send(p.auth.SignSDP(answer.SDP))
+		p.sendMu.Lock()
+		err = p.send(p.auth.SignSDP(answer.SDP))
+		p.sdpOnce.Do(func() { close(p.sdpSent) })
+		p.sendMu.Unlock()
+		return err
 	case string(wire.SignalICE):
 		var cand webrtc.ICECandidateInit
 		if err := json.Unmarshal([]byte(msg.Cand), &cand); err != nil {
@@ -398,6 +435,14 @@ func (p *Peer) addICELocked(cand webrtc.ICECandidateInit) error {
 // on a channel error.
 func (p *Peer) wireChannel(dc *webrtc.DataChannel) {
 	conn := newDataConn(dc)
+	p.mu.Lock()
+	p.conn = conn
+	if p.closed {
+		p.mu.Unlock()
+		conn.shutdown()
+		return
+	}
+	p.mu.Unlock()
 	dc.OnOpen(func() {
 		p.mu.Lock()
 		if p.settled {
@@ -495,6 +540,8 @@ func (p *Peer) restartOffer() error {
 	if err := p.pc.SetLocalDescription(offer); err != nil {
 		return fmt.Errorf("rtc: set restart offer: %w", err)
 	}
+	p.sendMu.Lock()
+	defer p.sendMu.Unlock()
 	return p.send(p.auth.SignSDP(offer.SDP))
 }
 

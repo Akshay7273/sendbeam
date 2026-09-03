@@ -77,7 +77,11 @@ func New() *Supervisor {
 func (s *Supervisor) SetOnSwitch(fn OnSwitch) {
 	s.mu.Lock()
 	s.onSwitch = fn
+	call := s.epoch > 0 && s.active != nil && s.active.id == PathRelay
 	s.mu.Unlock()
+	if call && fn != nil {
+		fn()
+	}
 }
 
 // Register adds a candidate path. If the supervisor is already closed the
@@ -132,33 +136,39 @@ func (s *Supervisor) Fail(id PathID) error {
 // It returns the epoch at which this activation is valid.
 func (s *Supervisor) Activate(id PathID) (uint64, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if s.closed {
+		s.mu.Unlock()
 		return 0, ErrClosed
 	}
 	entry, ok := s.paths[id]
 	if !ok {
+		s.mu.Unlock()
 		return 0, wire.Errorf(wire.CodeConnection, "supervisor: unknown path %v", id)
 	}
 	if entry.state == StateClosed || entry.state == StateFailed {
+		s.mu.Unlock()
 		return 0, wire.Errorf(wire.CodeConnection, "supervisor: cannot activate %v path (state=%v)", id, entry.state)
 	}
 	if s.active != nil && s.active.id == id && s.active.state == StateActive {
-		return s.epoch, nil
+		epoch := s.epoch
+		s.mu.Unlock()
+		return epoch, nil
 	}
 
 	s.epoch++
 	if entry.state != StateReady && entry.state != StateActive {
+		s.mu.Unlock()
 		return 0, wire.Errorf(wire.CodeConnection, "supervisor: path %v cannot activate from state %v", id, entry.state)
 	}
 	entry.state = StateActive
 	s.active = entry
 
+	var closables []BytePath
 	for _, other := range s.paths {
 		if other.id != id && other.state != StateClosed && other.state != StateFailed {
 			other.state = StateClosed
-			_ = other.path.Close()
+			closables = append(closables, other.path)
 		}
 	}
 
@@ -166,8 +176,14 @@ func (s *Supervisor) Activate(id PathID) (uint64, error) {
 	s.broadcastSwitchLocked()
 
 	epoch := s.epoch
-	if s.onSwitch != nil {
-		s.onSwitch()
+	onSwitch := s.onSwitch
+	s.mu.Unlock()
+
+	for _, p := range closables {
+		_ = p.Close()
+	}
+	if onSwitch != nil {
+		onSwitch()
 	}
 	return epoch, nil
 }
@@ -279,7 +295,7 @@ func (s *Supervisor) promoteOnData(entry *pathEntry) (bool, bool) {
 	if s.active != nil && s.active.id == entry.id && entry.state == StateActive {
 		return true, false
 	}
-	if entry.state == StateReady {
+	if entry.state == StateReady || entry.state == StateWarming || entry.state == StateCandidate {
 		entry.state = StateActive
 		s.active = entry
 		s.epoch++

@@ -20,11 +20,17 @@ export default defineConfig({
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
     { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
     { name: 'mobile-chrome', use: { ...devices['Pixel 7'] } },
-    // WebKit support on Linux is best-effort; opt in locally with E2E_WEBKIT=1.
-    ...(process.env.E2E_WEBKIT === '1'
+    // mobile-webkit (iPhone viewport, WebKit engine) is exercised in CI and locally via E2E_WEBKIT=1.
+    ...(process.env.CI || process.env.E2E_WEBKIT === '1'
       ? [
-          { name: 'webkit', use: { ...devices['Desktop Safari'] } },
-          { name: 'mobile-safari', use: { ...devices['iPhone 14'] } },
+          {
+            name: 'mobile-webkit',
+            use: { ...devices['iPhone 14'] },
+            testMatch: /mobile-transfer\.spec\.ts/,
+          },
+          ...(process.env.E2E_WEBKIT === '1'
+            ? [{ name: 'webkit', use: { ...devices['Desktop Safari'] } }]
+            : []),
         ]
       : []),
   ],

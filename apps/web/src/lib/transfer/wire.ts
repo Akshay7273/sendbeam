@@ -155,7 +155,9 @@ export interface DoneMsg {
   files: Array<{ name: string; size: number; digest: string }>;
   totalSize: number;
   digest: string;
-  output?: { kind: 'opfs'; key: string; name: string; mime: string };
+  output?:
+    | { kind: 'opfs'; key: string; name: string; mime: string }
+    | { kind: 'blob'; blob: Blob; name: string; mime: string };
 }
 export interface ErrorMsg {
   kind: 'error';

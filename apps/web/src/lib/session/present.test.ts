@@ -88,6 +88,18 @@ describe('describeError', () => {
     expect(describeError({ code: 'confirmation_failed', message: 'x' })).toMatch(/did not match/i);
   });
 
+  it('translates quota failure cleanly', () => {
+    expect(describeError({ code: 'quota', message: 'need 100 bytes' })).toBe('need 100 bytes');
+    expect(describeError({ code: 'quota', message: '' })).toMatch(/quota exceeded/i);
+  });
+
+  it('translates sink_error failure cleanly', () => {
+    expect(describeError({ code: 'sink_error', message: 'OPFS unavailable' })).toBe(
+      'OPFS unavailable',
+    );
+    expect(describeError({ code: 'sink_error', message: '' })).toMatch(/storage error/i);
+  });
+
   it('falls back to the message for unknown codes', () => {
     expect(describeError({ code: 'weird', message: 'something specific' })).toBe(
       'something specific',

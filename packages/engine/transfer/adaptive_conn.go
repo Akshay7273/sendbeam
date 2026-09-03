@@ -13,7 +13,7 @@ import (
 // relaySwitchTimeout bounds how long Send waits for the relay handshake to complete
 // after the direct path fails. Without it, a partner that never answers relay_open
 // would wedge the engine forever (no deadline exists anywhere else in that path).
-const relaySwitchTimeout = 30 * time.Second
+const relaySwitchTimeout = 60 * time.Second
 
 // adaptiveConn starts on an open direct channel and atomically converges onto the session relay.
 // It uses the supervisor for path state management while preserving the existing blocking-Send
@@ -33,6 +33,8 @@ type adaptiveConn struct {
 	onTransport func(string)
 
 	sv *supervisor.Supervisor
+
+	actMu sync.Mutex
 }
 
 func newAdaptiveConn(
@@ -171,6 +173,9 @@ func (c *adaptiveConn) requestRelay() {
 func (c *adaptiveConn) FallbackToRelay() { c.requestRelay() }
 
 func (c *adaptiveConn) activateRelay() {
+	c.actMu.Lock()
+	defer c.actMu.Unlock()
+
 	c.mu.Lock()
 	if c.closed || c.path == "relay" || c.switchErr != nil {
 		c.mu.Unlock()
@@ -178,27 +183,38 @@ func (c *adaptiveConn) activateRelay() {
 	}
 	c.path = "relay"
 	onTransport := c.onTransport
+	c.finishSwitchLocked(nil)
 	c.mu.Unlock()
 
 	if c.sv != nil {
 		_ = c.sv.Warming(supervisor.PathRelay)
 		_ = c.sv.Ready(supervisor.PathRelay)
 		_, _ = c.sv.Activate(supervisor.PathRelay)
-	} else if c.onSwitch != nil {
-		c.onSwitch()
 	}
+	c.mu.Lock()
+	if c.onSwitch != nil && !c.hookCalled {
+		c.hookCalled = true
+		c.mu.Unlock()
+		c.onSwitch()
+	} else {
+		c.mu.Unlock()
+	}
+
 	if onTransport != nil {
 		onTransport("relay")
 	}
-	c.finishSwitch(nil)
 	go func() { _ = c.direct.Close() }()
 }
 
-func (c *adaptiveConn) finishSwitch(err error) {
+func (c *adaptiveConn) finishSwitchLocked(err error) {
 	c.switchOnce.Do(func() {
-		c.mu.Lock()
 		c.switchErr = err
-		c.mu.Unlock()
 		close(c.switchDone)
 	})
+}
+
+func (c *adaptiveConn) finishSwitch(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.finishSwitchLocked(err)
 }

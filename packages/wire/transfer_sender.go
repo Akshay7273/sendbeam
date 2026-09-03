@@ -567,6 +567,26 @@ func (s *Sender) onAck(ack *Ack) {
 
 // waitResume blocks until a valid resume_state has been applied or the sender settles.
 func (s *Sender) waitResume() error {
+	timer := time.AfterFunc(s.o.DoneTimeout, func() {
+		s.fail(NewTransferError(FailRetryExhausted,
+			"transfer: receiver did not send resume state within the deadline"))
+	})
+	defer timer.Stop()
+	retransmit := time.NewTicker(s.o.CompleteInterval)
+	defer retransmit.Stop()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-retransmit.C:
+				s.retransmitManifest()
+			}
+		}
+	}()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for !s.resumeReceived && !s.settled {
@@ -579,6 +599,17 @@ func (s *Sender) waitResume() error {
 		return errSenderSettled
 	}
 	return nil
+}
+
+func (s *Sender) retransmitManifest() {
+	s.mu.Lock()
+	if s.settled || !s.manifestSent || s.manifest == nil || s.resumeReceived {
+		s.mu.Unlock()
+		return
+	}
+	manifest := s.manifest
+	s.mu.Unlock()
+	_ = s.sendControl(manifest)
 }
 
 // onResumeState validates the receiver's resume_state against the manifest and records each

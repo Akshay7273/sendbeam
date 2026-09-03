@@ -186,6 +186,7 @@ function run(
   const progress = new ProgressTracker(total);
   const wakeLock = new WakeLockManager();
   let settled = false;
+  let completing = false;
   // Monotonic generation guard: every async continuation captures the generation at
   // creation and bails before mutating controller state once it is stale (ADR 0001 §5).
   const generation = new GenerationGuard();
@@ -234,12 +235,35 @@ function run(
     rejectDone = reject;
   });
 
+  // V18-PR03: Handle mobile Safari / WebKit tab backgrounding and screen locks.
+  // WebKit throttles/suspends background execution and freezes WebRTC/WebSocket connections.
+  // When hidden, an actively running transfer pauses gracefully into a deterministic resumable
+  // state rather than stalling indefinitely.
+  const onVisibilityChange = (): void => {
+    if (settled) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      if (progress.snapshot().state === 'running') {
+        progress.setState('paused');
+        worker?.postMessage({ kind: 'control', op: 'pause' } satisfies HostToWorker);
+        wakeLock.setActive(false);
+      }
+    }
+  };
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
   const cleanup = (): void => {
     generation.bump();
     clearTimeout(cancelTimer);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
     releaseLeaseOnPageHide?.();
     releaseLeaseOnPageHide = undefined;
     wakeLock.setActive(false);
+    writer?.dispose();
+    writer = undefined;
     worker?.terminate();
     peer?.close();
     relay?.close();
@@ -252,13 +276,13 @@ function run(
     resolveDone(o);
   };
   const fail = (err: Error): void => {
+    if (settled || completing) return;
     diagFailures.push({
       code: 'INTERNAL',
       atMs: Math.round(performance.now() - diagStarted),
       ...(diagTransport !== undefined ? { path: diagTransport } : {}),
       message: sanitize(err instanceof Error ? err.message : String(err)),
     });
-    if (settled) return;
     settled = true;
     cleanup();
     rejectDone(err);
@@ -472,16 +496,13 @@ function run(
 
   async function completeTransfer(msg: Extract<WorkerToHost, { kind: 'done' }>): Promise<void> {
     if (!generation.isCurrent(gen)) return;
+    completing = true;
     const first = msg.files[0]!;
     if (spec.role === 'receive') {
       try {
         const output = msg.output;
         if (output?.kind === 'opfs') {
-          // The transfer is done and the peer was already told (the done ack goes out
-          // before this `done`). Tear down the wire before the slow OPFS read so a peer
-          // disconnect can't trigger a relay fallback into a room the sender has already
-          // left — the server would refuse it and drop our socket. cleanup() below repeats
-          // this teardown; every piece is idempotent.
+          await writer?.drain();
           signaling.close();
           relay?.close();
           peer?.close();
@@ -494,7 +515,21 @@ function run(
             file,
             cleanup: () => removeOpfsOutput(output.key),
           });
+        } else if (output?.kind === 'blob') {
+          await writer?.drain();
+          signaling.close();
+          relay?.close();
+          peer?.close();
+          const file = new File([output.blob], output.name, { type: output.mime });
+          finish({
+            name: output.name,
+            size: msg.totalSize,
+            digest: msg.digest,
+            files: msg.files,
+            file,
+          });
         } else {
+          await writer?.drain();
           finish({
             name: first.name,
             size: msg.totalSize,
