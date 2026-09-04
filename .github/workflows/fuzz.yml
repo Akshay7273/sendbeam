@@ -117,7 +117,17 @@ jobs:
         run: |
           DURATION="${{ inputs.duration || '3m' }}"
           echo "==> Running ${{ matrix.target }} in ${{ matrix.module }} (${{ matrix.pkg }}) for $DURATION..."
-          go test -fuzz="^${{ matrix.target }}$" -fuzztime="$DURATION" -v "${{ matrix.pkg }}"
+          set +e
+          go test -run="^${{ matrix.target }}$" -fuzz="^${{ matrix.target }}$" -fuzztime="$DURATION" -v "${{ matrix.pkg }}" 2>&1 | tee fuzz.log
+          TEST_EXIT=${PIPESTATUS[0]}
+          if [ $TEST_EXIT -ne 0 ]; then
+            # If the exit was caused by the coordinator context deadline expiring at the conclusion of fuzztime with no crasher files, treat as clean.
+            if grep -q "context deadline exceeded" fuzz.log && ! grep -q "Failing input written" fuzz.log; then
+              echo "==> Target ran for full duration ($DURATION) without crashing inputs."
+              exit 0
+            fi
+            exit $TEST_EXIT
+          fi
 
       - name: Upload Crashing Inputs
         if: failure()

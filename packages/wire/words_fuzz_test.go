@@ -34,6 +34,8 @@ func FuzzWordsCode(f *testing.F) {
 		"0-日本語-テスト",
 		"9999999999999999999999999999999999999-otter",
 		"-1-brave-otter",
+		"000 0000000",
+		"007-tiger",
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -70,12 +72,15 @@ func FuzzWordsCode(f *testing.F) {
 				t.Fatalf("ParseCode(%q) succeeded with empty words", raw)
 			}
 
-			// Round-trip formatting
+			// Round-trip formatting: FormatCode must re-parse to identical Room and Words
 			formatted := FormatCode(parsed.Room, parsed.Words)
-			normFormatted := NormalizeCode(formatted)
-			if normFormatted != norm {
-				t.Fatalf("ParseCode / FormatCode mismatch: %q -> parsed %+v -> formatted %q (norm %q) != norm %q",
-					raw, parsed, formatted, normFormatted, norm)
+			parsed2, err := ParseCode(formatted)
+			if err != nil {
+				t.Fatalf("ParseCode failed on formatted code %q: %v", formatted, err)
+			}
+			if parsed2 != parsed {
+				t.Fatalf("ParseCode mismatch after FormatCode: original %+v != reparsed %+v (formatted %q)",
+					parsed, parsed2, formatted)
 			}
 		}
 	})

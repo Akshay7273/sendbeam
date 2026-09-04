@@ -62,7 +62,7 @@ for entry in "${TARGETS[@]}"; do
     continue
   fi
   echo "==> Fuzzing $mod ($pkg) :: $target for $FUZZ_TIME..."
-  (cd "$mod" && go test -fuzz="^${target}$" -fuzztime="$FUZZ_TIME" "$pkg")
+  (cd "$mod" && go test -run="^${target}$" -fuzz="^${target}$" -fuzztime="$FUZZ_TIME" "$pkg")
 done
 
 echo "==> Fuzzing run completed successfully with 0 crashes."

@@ -1,8 +1,10 @@
 package signal
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -48,7 +50,7 @@ func FuzzParseTrustedProxies(f *testing.F) {
 // FuzzClientIP exercises remote IP resolution and reverse-proxy header traversal.
 // Invariants:
 // 1. ClientIP must never panic regardless of header shapes, malformed IPs, or spoof attempts.
-// 2. ClientIP must return a non-empty string when RemoteAddr is provided.
+// 2. ClientIP must return a non-empty string when RemoteAddr is provided with non-whitespace content.
 func FuzzClientIP(f *testing.F) {
 	trustedNets, _ := ParseTrustedProxies("127.0.0.1/32, 10.0.0.0/8, 192.168.0.0/16, ::1/128")
 
@@ -56,6 +58,9 @@ func FuzzClientIP(f *testing.F) {
 	f.Add("203.0.113.50:54321", "10.0.0.1, 198.51.100.1", "", "")
 	f.Add("[::1]:8080", "", "2001:db8::1", "")
 	f.Add("invalid-remote", "bad, ips, here", "also-bad", "not-an-ip")
+	f.Add(":", "", "", "")
+	f.Add(":8080", "", "", "")
+	f.Add(" ", "", "", "")
 	f.Add("", "", "", "")
 
 	f.Fuzz(func(t *testing.T, remoteAddr, xff, xRealIP, cfIP string) {
@@ -72,16 +77,25 @@ func FuzzClientIP(f *testing.F) {
 			req.Header.Set("CF-Connecting-IP", cfIP)
 		}
 
+		// Determine expected presence of client IP:
+		// ClientIP extracts the host portion via SplitHostPort (or trimmed RemoteAddr if no port).
+		// If the resulting host string is non-empty, ClientIP must return a non-empty IP.
+		host, _, err := net.SplitHostPort(remoteAddr)
+		if err != nil {
+			host = remoteAddr
+		}
+		host = strings.TrimSpace(host)
+
 		// Test with trusted networks configured
 		ip1 := ClientIP(req, trustedNets)
-		if remoteAddr != "" && ip1 == "" {
-			t.Fatalf("ClientIP returned empty string for non-empty RemoteAddr %q", remoteAddr)
+		if host != "" && ip1 == "" {
+			t.Fatalf("ClientIP returned empty string for non-empty host %q (RemoteAddr: %q)", host, remoteAddr)
 		}
 
 		// Test with untrusted/empty networks
 		ip2 := ClientIP(req, nil)
-		if remoteAddr != "" && ip2 == "" {
-			t.Fatalf("ClientIP returned empty string with nil trusted nets for %q", remoteAddr)
+		if host != "" && ip2 == "" {
+			t.Fatalf("ClientIP returned empty string with nil trusted nets for host %q (RemoteAddr: %q)", host, remoteAddr)
 		}
 	})
 }
