@@ -358,33 +358,40 @@ resume. Same-session path recovery (direct↔relay cutover) never re-runs resume
 fresh resumed key epoch is per resumed process/session, and a path change within the same
 epoch follows the existing same-session counter/path semantics.
 
-## Trusted Device Mesh & `sendbeam/2` Protocol (v1.5)
+## Trusted Device Mesh: `sendbeam/2` and `sendbeam/3` (v1.5 / v1.9)
 
-SendBeam v1.5 introduces `sendbeam/2` for persistent trusted devices. For complete cryptographic formulas, pairing sequence diagrams, presence handle derivations, and security threat vectors, see [`docs/trust-model.md`](trust-model.md).
+SendBeam v1.5 introduced `sendbeam/2` for persistent trusted devices. SendBeam v1.9 introduces **`sendbeam/3`** (full specification in [`docs/adr/0010-trusted-session-auth.md`](adr/0010-trusted-session-auth.md)), replacing the symmetric key schedule with a forward-secret authenticated ephemeral Diffie-Hellman protocol (X25519 + HKDF-SHA256).
 
-### Summary of `sendbeam/2` Wire Messages
+For complete cryptographic formulas, pairing sequence diagrams, presence handle derivations, and security threat vectors, see [`docs/trust-model.md`](trust-model.md) and [`docs/adr/0010-trusted-session-auth.md`](adr/0010-trusted-session-auth.md).
+
+### Summary of Wire Handshakes
 
 1. **Pairing Handshake (`sendbeam/pairing/1`)**:
    - `pairing_request`: initiator sends Ed25519 identity key, device label, and SPAKE2-bound signature.
-   - `pairing_response`: responder verifies signature, computes `k_pair`, and responds with its signed public key and confirmation tag.
+   - `pairing_response`: responder verifies signature, computes $k_{pair}$, and responds with its signed public key and confirmation tag.
    - `pairing_confirm`: initiator verifies responder signature and tag, persists pair credential, and returns final confirmation tag.
 
-2. **Trusted Session Authentication (`sendbeam/2`)**:
-   - `trusted_auth_init`: Initiator sends `initiator_device_id`, timestamp, 32-byte nonce, ephemeral X25519 public key, and HMAC tag over the domain challenge.
-   - `trusted_auth_response`: Responder validates device trust, timestamp freshness (±5 min), verifies tag, generates responder ephemeral key, and returns HMAC response tag.
-   - `trusted_auth_confirm`: Initiator verifies responder tag, derives pairwise authenticated `SessionMaster`, `k_i2r`, `k_r2i`, and returns mutual confirmation tag.
+2. **Legacy Trusted Session Authentication (`sendbeam/2`, Deprecated)**:
+   - In `sendbeam/2`, session keys were derived from $k_{pair}$ and ephemeral nonces via HMAC-SHA256 without Diffie-Hellman key exchange. While mutual authentication was preserved, it did not provide forward secrecy against $k_{pair}$ compromise.
 
-> [!NOTE]
-> **Cryptographic Note (v1.8.x clarification):** In `sendbeam/2`, session keys are derived from the pairwise credential `k_pair` and ephemeral nonces via HMAC-SHA256 and HKDF-SHA256. This construction guarantees mutual peer authentication, replay protection, and transcript binding. However, because ephemeral public values are mixed via HMAC with `k_pair` rather than through an ephemeral Diffie-Hellman (ECDH) exchange, compromise of `k_pair` allows decryption of captured past traffic (i.e. it does not provide forward secrecy). A reviewed authenticated ephemeral Diffie-Hellman key exchange is scheduled for v1.9 (V19-PR01 / V19-PR02).
+3. **Forward-Secret Trusted Session Authentication (`sendbeam/3` / ADR 0010)**:
+   - `trusted_auth_init`: Initiator sends `initiator_device_id`, timestamp, 32-byte nonce $N_A$, ephemeral X25519 public key $E_A$, Ed25519 signature over $\text{Challenge}_A$, and HMAC tag using $k_{pair}$.
+   - `trusted_auth_response`: Responder validates device trust, timestamp freshness (±5 min), validates non-zero $E_A$, verifies signature and tag, generates ephemeral X25519 keypair $(e_B, E_B)$ and nonce $N_B$, and returns signed and tagged response.
+   - **Key Agreement & Extraction**: Both parties compute $SS_{ECDH} = \text{X25519}(e, E_{peer})$, zeroize private scalars, and extract $\text{PRK} = \text{HKDF-Extract}(\text{salt}=k_{pair}, \text{IKM}=SS_{ECDH})$.
+   - **Key Expansion**: Directional transfer keys ($k_{i2r}, k_{r2i}$) are expanded with the transcript binding.
+   - `trusted_auth_confirm`: Both sides exchange HMAC confirmation tags over the $\text{SessionMaster}$ and device IDs.
+   - **Downgrade Rejection**: Paired devices must use `sendbeam/3`. Any downgrade attempt to `sendbeam/2` or `sendbeam/1` aborts fail-closed (`ErrProtocolDowngradeForbidden`).
 
-3. **Privacy-Preserving Presence & LAN Discovery**:
+4. **Privacy-Preserving Presence & LAN Discovery**:
    - **Remote Presence**: 15-minute epoch-rotated blind handles (`HMAC(k_pair, "sendbeam/2 rendezvous-handle:" || epoch)`).
    - **Blinded LAN Discovery**: UDP Multicast `224.0.0.251:5354` carrying 16-byte blinded beacon tags derived from current epoch subkeys.
 
-4. **Opportunistic Mesh Revocation Sync (v1.7 / ADR 0008)**:
-   - `revocation_sync`: Initiator or responder piggybacks signed `RevocationRecord` entries over authenticated sessions.
+5. **Opportunistic Mesh Revocation Sync & Authorization Hierarchy (ADR 0008 & ADR 0010)**:
    - Wire layout: `(revoker_device_id, revoked_device_id, monotonic_seq, timestamp, ed25519_signature)`.
-   - Domain challenge: `"sendbeam/2 revocation-sync:" || revoker_id || revoked_id || seq_be || timestamp_be`.
+   - **Authorization Model (ADR 0010)**:
+     - _Self-tombstone_: Permitted for all devices (`revoker_id == revoked_id`).
+     - _Owner cluster authority_: Devices in the same owner cluster (`relationship: "cluster_member"`) may revoke other cluster members or drop external contacts.
+     - _Pairwise contacts_: Cannot emit transitive revocations targeting any third-party device; unauthorized records are rejected fail-closed (`ErrRevocationUnauthorized`).
 
 ---
 
