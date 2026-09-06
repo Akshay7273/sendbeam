@@ -4,9 +4,11 @@ package trust
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/sendbeam/wire"
@@ -57,17 +59,19 @@ type TrustedSessionResult struct {
 
 // TrustedSessionCoordinator manages mutual challenge-response authentication between paired devices.
 type TrustedSessionCoordinator struct {
-	idMgr    *IdentityManager
-	store    Store
-	resolver SecretResolver
+	idMgr       *IdentityManager
+	store       Store
+	resolver    SecretResolver
+	replayCache *wire.NonceReplayCache
 }
 
 // NewTrustedSessionCoordinator creates a new TrustedSessionCoordinator.
 func NewTrustedSessionCoordinator(idMgr *IdentityManager, store Store, resolver SecretResolver) *TrustedSessionCoordinator {
 	return &TrustedSessionCoordinator{
-		idMgr:    idMgr,
-		store:    store,
-		resolver: resolver,
+		idMgr:       idMgr,
+		store:       store,
+		resolver:    resolver,
+		replayCache: wire.NewNonceReplayCache(10 * time.Minute),
 	}
 }
 
@@ -103,8 +107,22 @@ func (c *TrustedSessionCoordinator) InitiateTrustedSession(ctx context.Context, 
 		return nil, fmt.Errorf("get local identity: %w", err)
 	}
 
-	// 1. Create and send TrustedAuthInit with mesh revocation records
+	// 1. Generate ephemeral keypair and nonce
+	privA, pubA, err := wire.GenerateX25519KeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("generate ephemeral key: %w", err)
+	}
+
+	nonceA := make([]byte, wire.TrustedAuthNonceSize)
+	if _, err := io.ReadFull(rand.Reader, nonceA); err != nil {
+		return nil, fmt.Errorf("generate nonce: %w", err)
+	}
+
 	now := time.Now().UTC()
+	if err := c.replayCache.CheckAndRecord(id.DeviceID, hex.EncodeToString(nonceA), now); err != nil {
+		return nil, err
+	}
+
 	storedRevs, _ := c.store.ListRevocations(ctx)
 	revList := make([]wire.RevocationRecord, 0, len(storedRevs))
 	for _, r := range storedRevs {
@@ -113,7 +131,7 @@ func (c *TrustedSessionCoordinator) InitiateTrustedSession(ctx context.Context, 
 		}
 	}
 
-	initMsg, err := wire.NewTrustedAuthInitWithRevocations(id, cfg.PeerDeviceID, record.PairCredentialRef, kPair, cfg.Capabilities, nil, nil, now, revList)
+	initMsg, err := wire.NewTrustedAuthInitV3(id, cfg.PeerDeviceID, record.PairCredentialRef, kPair, cfg.Capabilities, pubA, nonceA, now, revList)
 	if err != nil {
 		return nil, fmt.Errorf("create trusted auth init: %w", err)
 	}
@@ -143,25 +161,32 @@ func (c *TrustedSessionCoordinator) InitiateTrustedSession(ctx context.Context, 
 		return nil, errors.New("expected trusted auth response message")
 	}
 
-	ephemResp, nonceResp, err := wire.VerifyTrustedAuthResponse(respMsg, initMsg, kPair, peerPub, id.DeviceID)
+	ephemResp, nonceResp, err := wire.VerifyTrustedAuthResponseV3(respMsg, initMsg, kPair, peerPub, id.DeviceID)
 	if err != nil {
 		return nil, fmt.Errorf("verify trusted auth response: %w", err)
+	}
+
+	if err := c.replayCache.CheckAndRecord(cfg.PeerDeviceID, hex.EncodeToString(nonceResp), now); err != nil {
+		return nil, err
 	}
 
 	// Opportunistically process mesh revocation records piggybacked on response
 	c.processIncomingRevocations(ctx, respMsg.Revocations, cfg.PeerDeviceID)
 
-	// 3. Derive pairwise authenticated session keys
-	ephemInit, _ := hex.DecodeString(initMsg.EphemeralPub)
-	nonceInit, _ := hex.DecodeString(initMsg.Nonce)
+	// 3. Diffie-Hellman and session key derivation
+	ssECDH, err := wire.ComputeX25519SharedSecret(privA, ephemResp)
+	if err != nil {
+		return nil, fmt.Errorf("compute shared secret: %w", err)
+	}
+	defer wire.ZeroizeBytes(ssECDH)
 
-	keys, err := wire.DeriveTrustedSessionKeys(kPair, ephemInit, ephemResp, nonceInit, nonceResp, id.DeviceID, cfg.PeerDeviceID, cfg.Capabilities, respMsg.Capabilities)
+	keys, err := wire.DeriveTrustedSessionKeysV3(kPair, ssECDH, pubA, ephemResp, nonceA, nonceResp, id.DeviceID, cfg.PeerDeviceID, cfg.Capabilities, respMsg.Capabilities)
 	if err != nil {
 		return nil, fmt.Errorf("derive trusted session keys: %w", err)
 	}
 
 	// 4. Send our confirmation and verify peer's confirmation
-	confInit := wire.NewTrustedAuthConfirm(keys.SessionMaster, wire.DomainTrustedConfirmInit, id.DeviceID, true)
+	confInit := wire.NewTrustedAuthConfirmV3(keys.SessionMaster, wire.DomainTrustedConfirmInit3, id.DeviceID, true)
 	confData, err := wire.EncodeTrustedAuthMessage(confInit)
 	if err != nil {
 		return nil, fmt.Errorf("encode confirm: %w", err)
@@ -186,7 +211,7 @@ func (c *TrustedSessionCoordinator) InitiateTrustedSession(ctx context.Context, 
 		return nil, errors.New("expected trusted auth confirm message")
 	}
 
-	if err := wire.VerifyTrustedAuthConfirm(peerConf, keys.SessionMaster, wire.DomainTrustedConfirmResp, cfg.PeerDeviceID); err != nil {
+	if err := wire.VerifyTrustedAuthConfirmV3(peerConf, keys.SessionMaster, wire.DomainTrustedConfirmResp3, cfg.PeerDeviceID); err != nil {
 		return nil, fmt.Errorf("verify peer confirm: %w", err)
 	}
 
@@ -251,16 +276,38 @@ func (c *TrustedSessionCoordinator) AcceptTrustedSession(ctx context.Context, tr
 	}
 
 	now := time.Now().UTC()
-	ephemInit, nonceInit, err := wire.VerifyTrustedAuthInit(initMsg, kPair, peerPub, id.DeviceID, now)
+	ephemInit, nonceInit, err := wire.VerifyTrustedAuthInitV3(initMsg, kPair, peerPub, id.DeviceID, now)
 	if err != nil {
 		_ = c.sendRejection(ctx, transport, "rejected")
 		return nil, fmt.Errorf("verify trusted auth init: %w", err)
 	}
 
+	if err := c.replayCache.CheckAndRecord(initMsg.InitiatorDeviceID, hex.EncodeToString(nonceInit), now); err != nil {
+		_ = c.sendRejection(ctx, transport, "rejected")
+		return nil, err
+	}
+
 	// Opportunistically process mesh revocation records piggybacked on init
 	c.processIncomingRevocations(ctx, initMsg.Revocations, initMsg.InitiatorDeviceID)
 
-	// 2. Create and send TrustedAuthResponse with mesh revocation records
+	// 2. Generate responder ephemeral keypair and nonce
+	privB, pubB, err := wire.GenerateX25519KeyPair()
+	if err != nil {
+		_ = c.sendRejection(ctx, transport, "rejected")
+		return nil, fmt.Errorf("generate ephemeral key: %w", err)
+	}
+
+	nonceB := make([]byte, wire.TrustedAuthNonceSize)
+	if _, err := io.ReadFull(rand.Reader, nonceB); err != nil {
+		_ = c.sendRejection(ctx, transport, "rejected")
+		return nil, fmt.Errorf("generate nonce: %w", err)
+	}
+
+	if err := c.replayCache.CheckAndRecord(id.DeviceID, hex.EncodeToString(nonceB), now); err != nil {
+		_ = c.sendRejection(ctx, transport, "rejected")
+		return nil, err
+	}
+
 	storedRevs, _ := c.store.ListRevocations(ctx)
 	revList := make([]wire.RevocationRecord, 0, len(storedRevs))
 	for _, r := range storedRevs {
@@ -269,7 +316,7 @@ func (c *TrustedSessionCoordinator) AcceptTrustedSession(ctx context.Context, tr
 		}
 	}
 
-	respMsg, err := wire.NewTrustedAuthResponseWithRevocations(id, initMsg, kPair, capabilities, nil, nil, revList)
+	respMsg, err := wire.NewTrustedAuthResponseV3(id, initMsg, kPair, capabilities, pubB, nonceB, revList)
 	if err != nil {
 		return nil, fmt.Errorf("create trusted auth response: %w", err)
 	}
@@ -283,11 +330,14 @@ func (c *TrustedSessionCoordinator) AcceptTrustedSession(ctx context.Context, tr
 		return nil, fmt.Errorf("send trusted auth response: %w", err)
 	}
 
-	// 3. Derive pairwise authenticated session keys
-	ephemResp, _ := hex.DecodeString(respMsg.EphemeralPub)
-	nonceResp, _ := hex.DecodeString(respMsg.Nonce)
+	// 3. Diffie-Hellman and session key derivation
+	ssECDH, err := wire.ComputeX25519SharedSecret(privB, ephemInit)
+	if err != nil {
+		return nil, fmt.Errorf("compute shared secret: %w", err)
+	}
+	defer wire.ZeroizeBytes(ssECDH)
 
-	keys, err := wire.DeriveTrustedSessionKeys(kPair, ephemInit, ephemResp, nonceInit, nonceResp, initMsg.InitiatorDeviceID, id.DeviceID, initMsg.Capabilities, capabilities)
+	keys, err := wire.DeriveTrustedSessionKeysV3(kPair, ssECDH, ephemInit, pubB, nonceInit, nonceB, initMsg.InitiatorDeviceID, id.DeviceID, initMsg.Capabilities, capabilities)
 	if err != nil {
 		return nil, fmt.Errorf("derive trusted session keys: %w", err)
 	}
@@ -308,11 +358,11 @@ func (c *TrustedSessionCoordinator) AcceptTrustedSession(ctx context.Context, tr
 		return nil, errors.New("expected trusted auth confirm message")
 	}
 
-	if err := wire.VerifyTrustedAuthConfirm(peerConf, keys.SessionMaster, wire.DomainTrustedConfirmInit, initMsg.InitiatorDeviceID); err != nil {
+	if err := wire.VerifyTrustedAuthConfirmV3(peerConf, keys.SessionMaster, wire.DomainTrustedConfirmInit3, initMsg.InitiatorDeviceID); err != nil {
 		return nil, fmt.Errorf("verify peer confirm: %w", err)
 	}
 
-	confResp := wire.NewTrustedAuthConfirm(keys.SessionMaster, wire.DomainTrustedConfirmResp, id.DeviceID, true)
+	confResp := wire.NewTrustedAuthConfirmV3(keys.SessionMaster, wire.DomainTrustedConfirmResp3, id.DeviceID, true)
 	confData, err := wire.EncodeTrustedAuthMessage(confResp)
 	if err != nil {
 		return nil, fmt.Errorf("encode confirm: %w", err)
@@ -336,7 +386,7 @@ func (c *TrustedSessionCoordinator) sendRejection(ctx context.Context, transport
 	id, _ := c.idMgr.GetOrCreateIdentity()
 	resp := &wire.TrustedAuthResponse{
 		Type:              wire.MsgTrustedAuthResponse,
-		ProtocolVersion:   wire.TrustedAuthProtocolVersion,
+		ProtocolVersion:   wire.TrustedAuthProtocolVersionV3,
 		Status:            status,
 		ResponderDeviceID: id.DeviceID,
 	}
