@@ -28,3 +28,22 @@ export function registerServiceWorker(): void {
       });
   });
 }
+
+/**
+ * Notify the Service Worker that an active file transfer has started.
+ * Prevents disruptive service worker updates from evicting active transfer state.
+ */
+export function notifyTransferStart(): void {
+  if (typeof navigator !== 'undefined' && navigator.serviceWorker?.controller) {
+    navigator.serviceWorker.controller.postMessage({ type: 'TRANSFER_START' });
+  }
+}
+
+/**
+ * Notify the Service Worker that an active file transfer has settled.
+ */
+export function notifyTransferEnd(): void {
+  if (typeof navigator !== 'undefined' && navigator.serviceWorker?.controller) {
+    navigator.serviceWorker.controller.postMessage({ type: 'TRANSFER_END' });
+  }
+}

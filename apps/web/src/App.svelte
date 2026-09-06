@@ -35,6 +35,7 @@
   import DevicesModal from './lib/trust/DevicesModal.svelte';
   import IncomingTransferModal from './lib/trust/IncomingTransferModal.svelte';
   import type { TrustedDeviceUI, IncomingTransferRequest } from './lib/trust/types.js';
+  import { notifyTransferStart, notifyTransferEnd } from './lib/pwa/register.js';
 
   loadConfig();
   import {
@@ -528,6 +529,10 @@
   /** Bind a running transfer's live progress and terminal outcome to the UI. */
   function beginTransfer(ctrl: TransferController) {
     transfer = ctrl;
+    notifyTransferStart();
+    ctrl.done.finally(() => {
+      notifyTransferEnd();
+    });
     sentBytes = 0;
     totalBytes = ctrl.total() ?? 0;
     reusedBytes = 0;
