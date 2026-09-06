@@ -88,14 +88,19 @@ Paired devices are recorded in a local versioned database containing identity bi
 
 ## 4. Trust Boundaries & Revocation Semantics
 
-### 4.1 Local Revocation vs. Mesh Revocation Sync
+### 4.1 Local Revocation vs. Mesh Revocation Sync & Authorization Model (ADR 0008 & ADR 0010)
 
 SendBeam operates strictly without centralized accounts, global directories, or central CRL servers.
 
 - **Local Unpair / Revoke:** Revoking a device locally marks the trust record as revoked with `revoked: true`.
 - **Signed Revocation Records & Mesh Revocation Sync (v1.7 / ADR 0008):** When a device revokes a peer, it signs a canonical, domain-separated statement:
   $$\text{RevocationRecord} = (\text{RevokerDeviceID}, \text{RevokedDeviceID}, \text{Seq}, \text{Timestamp}, \text{Signature})$$
-  This record opportunistically propagates over existing authenticated `sendbeam/2` trusted sessions. When other paired devices in the owner's mesh connect, they verify the Ed25519 signature against their stored public key for the revoker, validate monotonic sequence ordering, and automatically mark the revoked device as distrusted (`ErrUntrustedPeer` / `ErrTrustedPeerRevoked`).
+  This record opportunistically propagates over authenticated trusted sessions. When other paired devices in the owner's mesh connect, they verify the Ed25519 signature against their stored public key for the revoker, validate monotonic sequence ordering, and automatically mark the revoked device as distrusted (`ErrUntrustedPeer` / `ErrTrustedPeerRevoked`).
+- **Authorization Hierarchy ("Who May Revoke Whom", v1.9 / ADR 0010):**
+  To prevent pairwise contacts from revoking third-party devices across an owner's mesh, revocation authority is strictly partitioned:
+  1. _Self-Tombstones:_ Any device may revoke itself (`RevokerDeviceID == RevokedDeviceID`). Every paired peer accepts validly signed self-tombstones fail-closed.
+  2. _Direct Pairwise Unpairing:_ Unpairing an external contact affects only that local pairwise relationship; external contacts have zero authority to emit transitive revocations for any third-party device (`ErrRevocationUnauthorized`).
+  3. _Owner Device Clusters:_ Transitive multi-device revocation sync is strictly confined to devices in the same authenticated owner cluster (`relationship: "cluster_member"`). An owner cluster device may revoke other cluster members or drop external contacts cluster-wide.
 - **Scope Honesty & Limitations:** Mesh revocation synchronization propagates distrust across mutual peers that connect to each other. It does not and cannot force an offline or compromised device to forget existing downloaded files or delete its local storage.
 
 ### 4.2 Display Names vs. Cryptographic Identity
@@ -184,14 +189,15 @@ sequenceDiagram
     Note over A,B: 6. Secure Transfer Epoch Established
 ```
 
-### 7.1 Pairwise Authenticated Key Schedule (sendbeam/2)
+### 7.1 Pairwise Authenticated Key Schedule (sendbeam/2 vs sendbeam/3)
 
 > [!WARNING]
-> **Forward Secrecy Limitation (v1.8.x Security Note):**
-> In the v1.5 key schedule below, `IKM` is derived via `HMAC-SHA256(k_pair, Ephem_A || Ephem_B || Nonce_A || Nonce_B)`. While this binds ephemeral nonces and mutual public parameters to authenticate both participants and prevent replay, it relies on symmetric authentication under `k_pair` without an ephemeral Diffie-Hellman (ECDH) exchange.
-> Consequently, compromise of the long-term pairwise secret `k_pair` enables retroactive decryption of recorded past session traffic (it does **not** provide forward secrecy). A reviewed authenticated ephemeral Diffie-Hellman key exchange (X25519) providing true forward secrecy is scheduled for v1.9 (V19-PR01 / V19-PR02).
+> **Forward Secrecy Limitation in Legacy `sendbeam/2`:**
+> In the legacy v1.5 key schedule (`sendbeam/2`), `IKM` is derived via `HMAC-SHA256(k_pair, Ephem_A || Ephem_B || Nonce_A || Nonce_B)`. While this binds ephemeral nonces and mutual public parameters to authenticate both participants and prevent replay, it relies on symmetric authentication under `k_pair` without an ephemeral Diffie-Hellman (ECDH) exchange.
+> Consequently, compromise of the long-term pairwise secret `k_pair` enables retroactive decryption of recorded past session traffic (it does **not** provide forward secrecy).
 
 ```
+// Legacy sendbeam/2 key schedule (deprecated)
 IKM = HMAC-SHA256(k_pair, Ephem_A || Ephem_B || Nonce_A || Nonce_B)
 Salt = Nonce_A || Nonce_B
 Transcript = "sendbeam/2 trusted-resp:" || SHA-256(k_pair) || Ephem_A || Ephem_B || Nonce_A || Nonce_B || InitID || RespID || SHA-256(NegotiatedCaps)
@@ -201,12 +207,30 @@ k_i2r = HKDF-SHA256(SessionMaster, nil, "sendbeam/2 initiator-to-responder key",
 k_r2i = HKDF-SHA256(SessionMaster, nil, "sendbeam/2 responder-to-initiator key", 32)
 ```
 
-### 7.2 Replay & Revocation Enforcement
+### 7.2 Ephemeral Forward-Secret Key Exchange (`sendbeam/3` / ADR 0010)
+
+SendBeam v1.9 defines **`sendbeam/3`** (full specification in [`docs/adr/0010-trusted-session-auth.md`](adr/0010-trusted-session-auth.md)), replacing legacy `sendbeam/2` with a true forward-secret authenticated ephemeral Diffie-Hellman key exchange:
+
+1. **Ephemeral X25519 Agreement:** Both parties generate ephemeral Curve25519 keypairs ($(e_A, E_A)$ and $(e_B, E_B)$) and exchange them signed by their long-term Ed25519 identity keys and authenticated under $k_{pair}$.
+2. **Shared Secret:**
+   $$SS_{ECDH} = \text{X25519}(e_A, E_B) = \text{X25519}(e_B, E_A)$$
+   Ephemeral scalars ($e_A, e_B$) are zeroized in memory immediately after computation.
+3. **Hybrid Extraction:**
+   $$\text{PRK} = \text{HKDF-Extract}(\text{salt} = k_{pair}, \text{IKM} = SS_{ECDH})$$
+4. **Transcript & Expansion:**
+   $$T = \text{"sendbeam/3 transcript:"} \parallel \text{SHA256}(k_{pair}) \parallel E_A \parallel E_B \parallel N_A \parallel N_B \parallel \text{InitID} \parallel \text{RespID} \parallel H_{caps}$$
+   $$\text{SessionMaster} = \text{HKDF-Expand}(\text{PRK}, \text{"sendbeam/3 session-master:"} \parallel T, 32)$$
+   $$k_{i2r} = \text{HKDF-Expand}(\text{SessionMaster}, \text{"sendbeam/3 initiator-to-responder key"}, 32)$$
+   $$k_{r2i} = \text{HKDF-Expand}(\text{SessionMaster}, \text{"sendbeam/3 responder-to-initiator key"}, 32)$$
+5. **Mutual Confirmation:** Initiator sends $\text{HMAC}(\text{SessionMaster}, \text{"sendbeam/3 confirm-init:"} \parallel \text{InitID})$; responder sends $\text{HMAC}(\text{SessionMaster}, \text{"sendbeam/3 confirm-resp:"} \parallel \text{RespID})$.
+
+### 7.3 Replay, Revocation & Downgrade Enforcement
 
 - **Timestamp Skew Bounding:** Timestamps outside ±5 minutes are rejected immediately (`ErrTrustedTimestampSkew`).
-- **Cryptographic Binding:** The signature and MAC tag strictly bind `k_pair`, `EphemeralPub`, `Nonce`, `DeviceID`, and `NegotiatedCapabilities`.
-- **Local Revocation:** If a peer has been marked `revoked: true` in the local trust database, all connection attempts are rejected with `ErrTrustedPeerRevoked`.
-- **Protocol Boundary:** One-time pairing and transfers remain compatible via `sendbeam/1`, while trusted-device mesh operations use `sendbeam/2`.
+- **Cryptographic Binding:** The signature and MAC tag strictly bind $k_{pair}$, ephemeral public keys, nonces, device IDs, and negotiated capabilities.
+- **Local Revocation & Tombstones:** If a peer has been marked `revoked: true` or matches a persistent tombstone, connection attempts are rejected with `ErrTrustedPeerRevoked`.
+- **Downgrade Rejection:** Paired devices must negotiate `sendbeam/3`; any downgrade attempt to `sendbeam/2` or `sendbeam/1` is rejected fail-closed with `ErrProtocolDowngradeForbidden`.
+- **Protocol Boundary:** One-time pairing and room-code transfers remain compatible via `sendbeam/1`, while trusted-device handoffs require `sendbeam/3`.
 
 ---
 
@@ -269,17 +293,19 @@ Browser clients participate in persistent trusted-device mesh operations under s
 
 SendBeam v1.5 enforces formal mitigations against 9 core attack vectors across native and browser engines:
 
-| Attack Vector                    | Threat Scenario                                               | Mitigation & Security Guarantee                                                                                                  |
-| :------------------------------- | :------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------- |
-| **1. Stolen Trust DB**           | Attacker substitutes public key in victim's local database.   | `ValidateTrustRecord` and challenge verification strictly require `deriveDeviceId(pubKey) == deviceId` and authentic signatures. |
-| **2. Replay & Cloned Profile**   | Attacker replays captured `TrustedAuthInit` message.          | Replay fails due to fresh ephemeral nonces, timestamp skew bounds (±5 min), and domain-separated transcripts.                    |
-| **3. Malicious Server MITM**     | Signaling or relay server modifies ephemeral keys in transit. | Transcript signature and HMAC verification across full payload fail; connection terminates before key derivation.                |
-| **4. Presence Replay**           | Attacker replays LAN beacon tags or rendezvous handles.       | Handles and tags expire every 15-minute epoch window; historical beacons (>1 epoch old) are rejected.                            |
-| **5. Display Name Spoofing**     | Adversary assumes friendly label of a paired peer.            | Local labels are advisory only; identity is authenticated strictly by Ed25519 public key and DeviceID fingerprint.               |
-| **6. Downgrade Attack**          | MITM attempts to strip `sendbeam/2` trusted auth flags.       | Capability set is cryptographically hashed and bound into the transcript; tampering causes handshake failure.                    |
-| **7. Stale/Revoked Credentials** | Unpaired or revoked device attempts connection.               | `store.IsTrusted()` check rejects revoked peers before session establishment; secrets are purged on unpair.                      |
-| **8. Auto-Accept Escape**        | Malicious peer sends `../../etc/passwd` in auto-accept mode.  | `NormalizeTransferPath` strictly enforces safe relative paths within designated destination root.                                |
-| **9. One-Time Isolation**        | Standard one-time transfer executes between devices.          | One-time transfers never mutate trust database or persist credentials without explicit mutual pairing.                           |
-| **10. Forged Revocation Record** | Attacker claims peer revoked another device.                  | Ed25519 signature verification against stored revoker public key fails; record is rejected fail-closed.                          |
-| **11. Revocation Seq Rollback**  | Attacker replays older revocation sequence number.            | Monotonic `Seq` enforcement rejects lower or identical sequence numbers (`Seq <= StoredSeq`).                                    |
-| **12. Revoked Peer Submitting**  | Already-distrusted device attempts to submit revocations.     | Ingestion rule checks `store.IsTrusted(RevokerID)` and rejects records from distrusted devices fail-closed.                      |
+| Attack Vector                    | Threat Scenario                                                         | Mitigation & Security Guarantee                                                                                                           |
+| :------------------------------- | :---------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. Stolen Trust DB**           | Attacker substitutes public key in victim's local database.             | `ValidateTrustRecord` and challenge verification strictly require `deriveDeviceId(pubKey) == deviceId` and authentic signatures.          |
+| **2. Replay & Cloned Profile**   | Attacker replays captured `TrustedAuthInit` message.                    | Replay fails due to fresh ephemeral nonces, timestamp skew bounds (±5 min), and domain-separated transcripts.                             |
+| **3. Malicious Server MITM**     | Signaling or relay server modifies ephemeral keys in transit.           | Transcript signature and HMAC verification across full payload fail; connection terminates before key derivation.                         |
+| **4. Presence Replay**           | Attacker replays LAN beacon tags or rendezvous handles.                 | Handles and tags expire every 15-minute epoch window; historical beacons (>1 epoch old) are rejected.                                     |
+| **5. Display Name Spoofing**     | Adversary assumes friendly label of a paired peer.                      | Local labels are advisory only; identity is authenticated strictly by Ed25519 public key and DeviceID fingerprint.                        |
+| **6. Downgrade Attack**          | MITM attempts to strip `sendbeam/2` trusted auth flags.                 | Capability set is cryptographically hashed and bound into the transcript; tampering causes handshake failure.                             |
+| **7. Stale/Revoked Credentials** | Unpaired or revoked device attempts connection.                         | `store.IsTrusted()` check rejects revoked peers before session establishment; secrets are purged on unpair.                               |
+| **8. Auto-Accept Escape**        | Malicious peer sends `../../etc/passwd` in auto-accept mode.            | `NormalizeTransferPath` strictly enforces safe relative paths within designated destination root.                                         |
+| **9. One-Time Isolation**        | Standard one-time transfer executes between devices.                    | One-time transfers never mutate trust database or persist credentials without explicit mutual pairing.                                    |
+| **10. Forged Revocation Record** | Attacker claims peer revoked another device.                            | Ed25519 signature verification against stored revoker public key fails; record is rejected fail-closed.                                   |
+| **11. Revocation Seq Rollback**  | Attacker replays older revocation sequence number.                      | Monotonic `Seq` enforcement rejects lower or identical sequence numbers (`Seq <= StoredSeq`).                                             |
+| **12. Revoked Peer Submitting**  | Already-distrusted device attempts to submit revocations.               | Ingestion rule checks `store.IsTrusted(RevokerID)` and rejects records from distrusted devices fail-closed.                               |
+| **13. Unauthorized Revocation**  | External contact attempts to revoke third-party device in mesh.         | Scope authorization check rejects transitive claims from non-cluster peers fail-closed (`ErrRevocationUnauthorized`, ADR 0010).           |
+| **14. Protocol Downgrade**       | Attacker attempts to force `sendbeam/2` or `sendbeam/1` on paired peer. | Strict protocol negotiation mandates `sendbeam/3` for paired devices; downgrades fail closed (`ErrProtocolDowngradeForbidden`, ADR 0010). |
