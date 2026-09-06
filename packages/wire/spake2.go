@@ -113,14 +113,14 @@ func ComputeShare(role Role, w, secret *big.Int) ([]byte, error) {
 
 // Spake2Output is the full result of finishing the SPAKE2 exchange, all as raw bytes.
 type Spake2Output struct {
-	K          []byte // shared group element K (uncompressed SEC1); never used directly as a key
-	Transcript []byte // RFC transcript TT — input to the hash and both confirmation MACs
-	Ke         []byte // shared secret Ke = Hash(TT)[0:16] — input to the SendBeam key schedule
-	Ka         []byte // confirmation-key material Ka = Hash(TT)[16:32]
-	KcA        []byte // MAC key for the offerer's confirmation (RFC "A")
-	KcB        []byte // MAC key for the joiner's confirmation (RFC "B")
-	ConfirmA   []byte // offerer's confirmation MAC cA = HMAC(KcA, TT)
-	ConfirmB   []byte // joiner's confirmation MAC cB = HMAC(KcB, TT)
+	K          []byte `json:"-"` // shared group element K (uncompressed SEC1); never used directly as a key
+	Transcript []byte `json:"-"` // RFC transcript TT — input to the hash and both confirmation MACs
+	Ke         []byte `json:"-"` // shared secret Ke = Hash(TT)[0:16] — input to the SendBeam key schedule
+	Ka         []byte `json:"-"` // confirmation-key material Ka = Hash(TT)[16:32]
+	KcA        []byte `json:"-"` // MAC key for the offerer's confirmation (RFC "A")
+	KcB        []byte `json:"-"` // MAC key for the joiner's confirmation (RFC "B")
+	ConfirmA   []byte `json:"-"` // offerer's confirmation MAC cA = HMAC(KcA, TT)
+	ConfirmB   []byte `json:"-"` // joiner's confirmation MAC cB = HMAC(KcB, TT)
 }
 
 // Finish completes the exchange with SendBeam's identity strings.

@@ -4,15 +4,23 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/sendbeam/engine/rendezvous"
 	"github.com/sendbeam/engine/transfer"
+	"github.com/sendbeam/engine/wsclient"
 	"github.com/sendbeam/wire"
 )
 
@@ -264,5 +272,358 @@ func TestExecuteSend_JitterFlag(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "flag provided but not defined") {
 		t.Fatalf("--jitter flag was not recognized: %s", stderr.String())
+	}
+}
+
+func TestExecuteSend_JSONFailure_NoSecretsExposed(t *testing.T) {
+	tmpDir := t.TempDir()
+	env, err := InitCLIEnvironment(tmpDir)
+	if err != nil {
+		t.Fatalf("init cli env: %v", err)
+	}
+
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("hello"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := executeSend([]string{
+		"--config-dir", env.ConfigDir,
+		"--server", "ws://127.0.0.1:1/ws?secret=supersecrettoken",
+		"--json",
+		testFile,
+	}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+
+	var res transfer.BroadcastResult
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v): %s", err, stdout.String())
+	}
+
+	if res.AllOk {
+		t.Errorf("expected AllOk=false on failed send")
+	}
+
+	outStr := stdout.String()
+	forbidden := []string{
+		"supersecrettoken",
+		"127.0.0.1:1",
+		"Handshake", "handshake",
+		"Master", "master",
+		"Keys", "keys",
+		"Spake2", "spake2",
+		"Code", "code",
+		"O2J", "J2O",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(outStr, `"`+f+`"`) || (f == "supersecrettoken" && strings.Contains(outStr, f)) || (f == "127.0.0.1:1" && strings.Contains(outStr, f)) {
+			t.Errorf("JSON output contains forbidden string %q: %s", f, outStr)
+		}
+	}
+}
+
+func TestExecuteSend_JSONSuccess_NoSecretsExposed(t *testing.T) {
+	srv := httptest.NewServer(newTestBlindHub())
+	defer srv.Close()
+	wsServerURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	tmpDir := t.TempDir()
+	env, err := InitCLIEnvironment(tmpDir)
+	if err != nil {
+		t.Fatalf("init cli env: %v", err)
+	}
+
+	payload := []byte("top-secret-file-content-12345678")
+	testFile := filepath.Join(tmpDir, "payload.bin")
+	if err := os.WriteFile(testFile, payload, 0600); err != nil {
+		t.Fatal(err)
+	}
+	hasher := sha256.New()
+	hasher.Write(payload)
+	expectedDigest := hex.EncodeToString(hasher.Sum(nil))
+
+	var stdout bytes.Buffer
+	cw := newCodeCapturingWriter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	joinerErrCh := make(chan error, 1)
+	go func() {
+		select {
+		case code := <-cw.codeCh:
+			joinerClient, err := wsclient.NewReconnectingSignal(ctx, wsServerURL, wsclient.DialOptions{})
+			if err != nil {
+				joinerErrCh <- err
+				return
+			}
+			defer joinerClient.Close()
+
+			recvDir := t.TempDir()
+			_, err = transfer.Run(ctx, joinerClient, transfer.Spec{
+				Session: rendezvous.Options{
+					Role: rendezvous.RoleJoiner,
+					Code: code,
+				},
+				DestDir:    recvDir,
+				ForceRelay: true,
+			})
+			joinerErrCh <- err
+		case <-ctx.Done():
+			joinerErrCh <- ctx.Err()
+		}
+	}()
+
+	sendCode := executeSend([]string{
+		"--config-dir", env.ConfigDir,
+		"--server", wsServerURL,
+		"--relay-only",
+		"--json",
+		testFile,
+	}, &stdout, cw)
+
+	if sendCode != 0 {
+		t.Fatalf("executeSend failed with exit code %d. stdout: %s, stderr: %s", sendCode, stdout.String(), cw.String())
+	}
+
+	select {
+	case err := <-joinerErrCh:
+		if err != nil {
+			t.Fatalf("joiner error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for joiner")
+	}
+
+	var res transfer.BroadcastResult
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v): %s", err, stdout.String())
+	}
+
+	if !res.AllOk {
+		t.Fatalf("expected AllOk=true, got false: %+v", res)
+	}
+	if len(res.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(res.Results))
+	}
+	r := res.Results[0]
+	if r.Status != transfer.StatusOk {
+		t.Errorf("status = %s, want ok", r.Status)
+	}
+	if r.Digest != expectedDigest {
+		t.Errorf("digest = %s, want %s", r.Digest, expectedDigest)
+	}
+	if r.Size != int64(len(payload)) {
+		t.Errorf("size = %d, want %d", r.Size, len(payload))
+	}
+	if r.Outcome == nil {
+		t.Fatal("expected non-nil outcome")
+	}
+	if r.Outcome.Name != "payload.bin" {
+		t.Errorf("outcome name = %s, want payload.bin", r.Outcome.Name)
+	}
+	if r.Outcome.Digest != expectedDigest {
+		t.Errorf("outcome digest = %s, want %s", r.Outcome.Digest, expectedDigest)
+	}
+
+	jsonStr := stdout.String()
+	t.Logf("executeSend --json stdout:\n%s", jsonStr)
+
+	forbidden := []string{
+		"Handshake", "handshake",
+		"Master", "master",
+		"Keys", "keys",
+		"Spake2", "spake2",
+		"Code", "code",
+		"O2J", "J2O",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(jsonStr, `"`+f+`"`) {
+			t.Errorf("executeSend JSON output contains forbidden field %q", f)
+		}
+	}
+}
+
+type codeCapturingWriter struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	codeCh chan string
+	found  bool
+}
+
+func newCodeCapturingWriter() *codeCapturingWriter {
+	return &codeCapturingWriter{codeCh: make(chan string, 1)}
+}
+
+var testCodeRe = regexp.MustCompile(`\b\d+-[a-z]+(?:-[a-z]+)+\b`)
+
+func (w *codeCapturingWriter) Write(p []byte) (n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err = w.buf.Write(p)
+	if !w.found {
+		if m := testCodeRe.FindString(w.buf.String()); m != "" {
+			w.found = true
+			w.codeCh <- m
+		}
+	}
+	return n, err
+}
+
+func (w *codeCapturingWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+type testBlindHub struct {
+	mu    sync.Mutex
+	rooms map[int]*testHubRoom
+	next  int
+}
+
+type testHubRoom struct {
+	offerer, joiner *testHubPeer
+}
+
+type testHubPeer struct {
+	conn      *websocket.Conn
+	wmu       sync.Mutex
+	relayOpen bool
+}
+
+func (p *testHubPeer) send(ctx context.Context, m rendezvous.Message) {
+	data, err := rendezvous.MarshalMessage(m)
+	if err != nil {
+		return
+	}
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
+	_ = p.conn.Write(ctx, websocket.MessageText, data)
+}
+
+func (p *testHubPeer) forward(ctx context.Context, typ websocket.MessageType, data []byte) {
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
+	_ = p.conn.Write(ctx, typ, data)
+}
+
+func newTestBlindHub() *testBlindHub {
+	return &testBlindHub{rooms: make(map[int]*testHubRoom)}
+}
+
+func (h *testBlindHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.CloseNow() }()
+	ctx := r.Context()
+	self := &testHubPeer{conn: conn}
+
+	var room *testHubRoom
+	var role rendezvous.Role
+	for {
+		typ, data, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		if typ == websocket.MessageBinary {
+			h.mu.Lock()
+			var other *testHubPeer
+			if room != nil {
+				if role == rendezvous.RoleJoiner {
+					other = room.offerer
+				} else {
+					other = room.joiner
+				}
+			}
+			h.mu.Unlock()
+			if other != nil {
+				other.forward(ctx, websocket.MessageBinary, data)
+			}
+			continue
+		}
+		msg, err := rendezvous.UnmarshalMessage(data)
+		if err != nil {
+			return
+		}
+
+		switch msg.Type {
+		case "create":
+			h.mu.Lock()
+			id := h.next
+			h.next++
+			room = &testHubRoom{offerer: self}
+			h.rooms[id] = room
+			h.mu.Unlock()
+			role = rendezvous.RoleOfferer
+			self.send(ctx, rendezvous.Message{Type: "created", Room: &id})
+
+		case "join":
+			if msg.Room == nil {
+				return
+			}
+			h.mu.Lock()
+			room = h.rooms[*msg.Room]
+			h.mu.Unlock()
+			if room == nil {
+				return
+			}
+			room.joiner = self
+			role = rendezvous.RoleJoiner
+			self.send(ctx, rendezvous.Message{Type: "peer-joined", Role: string(rendezvous.RoleJoiner)})
+			room.offerer.send(ctx, rendezvous.Message{Type: "peer-joined", Role: string(rendezvous.RoleOfferer)})
+
+		case rendezvous.TypeRelayOpen:
+			h.mu.Lock()
+			self.relayOpen = true
+			var other *testHubPeer
+			if role == rendezvous.RoleJoiner {
+				other = room.offerer
+			} else {
+				other = room.joiner
+			}
+			ready := other != nil && other.relayOpen
+			h.mu.Unlock()
+			if ready {
+				self.send(ctx, rendezvous.Message{Type: rendezvous.TypeRelayReady})
+				other.send(ctx, rendezvous.Message{Type: rendezvous.TypeRelayReady})
+			} else if other != nil {
+				other.send(ctx, rendezvous.Message{Type: rendezvous.TypeRelayRequired})
+			}
+
+		case rendezvous.TypeRelayCredit:
+			h.mu.Lock()
+			var other *testHubPeer
+			if role == rendezvous.RoleJoiner {
+				other = room.offerer
+			} else {
+				other = room.joiner
+			}
+			h.mu.Unlock()
+			if other != nil {
+				other.send(ctx, rendezvous.Message{Type: rendezvous.TypeCredit, Bytes: msg.Bytes})
+			}
+
+		default:
+			h.mu.Lock()
+			var other *testHubPeer
+			if room != nil {
+				if role == rendezvous.RoleJoiner {
+					other = room.offerer
+				} else {
+					other = room.joiner
+				}
+			}
+			h.mu.Unlock()
+			if other != nil {
+				other.forward(ctx, typ, data)
+			}
+		}
 	}
 }

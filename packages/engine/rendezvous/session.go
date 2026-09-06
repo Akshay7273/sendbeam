@@ -59,16 +59,16 @@ const (
 // counters are 1: the transfer must continue from here without resetting, or it would
 // reuse an AES-GCM nonce.
 type Result struct {
-	Role        Role
-	Room        int
-	Code        string // the full normalized invite code (<room>-<words>); the SPAKE2 password
-	Master      []byte
-	Keys        wire.TransferKeys
-	Spake2      *wire.Spake2Output // retained for the SDP/ICE MAC keys (KcA/KcB)
-	LocalCaps   Caps
-	RemoteCaps  Caps
-	SendCounter uint64
-	RecvCounter uint64
+	Role        Role               `json:"role"`
+	Room        int                `json:"room"`
+	Code        string             `json:"-"` // the full normalized invite code (<room>-<words>); the SPAKE2 password
+	Master      []byte             `json:"-"`
+	Keys        wire.TransferKeys  `json:"-"`
+	Spake2      *wire.Spake2Output `json:"-"` // retained for the SDP/ICE MAC keys (KcA/KcB)
+	LocalCaps   Caps               `json:"local_caps,omitempty"`
+	RemoteCaps  Caps               `json:"remote_caps,omitempty"`
+	SendCounter uint64             `json:"-"`
+	RecvCounter uint64             `json:"-"`
 }
 
 // Options configures a session. Exactly one role is built per session; Code is required for
