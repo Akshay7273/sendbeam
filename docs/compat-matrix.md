@@ -98,10 +98,11 @@ SendBeam is fully installable as a Progressive Web App (PWA) on mobile (Android 
 - **Strict Online-Only Transfer Semantics:** The service worker precaches the app shell and local assets while strictly never caching WebSockets (`/ws`), WebRTC signaling, or live transfer data.
 - **Mobile Responsive UX:** Prominent QR code pairing on small viewports, auto-populated code joining via `?code=` query parameters, touch-optimized minimum 44px tap targets, and native `navigator.share` integration.
 - **Screen Wake Lock & Visibility Lifecycle:** Keeps screen awake during active mobile transfers where supported. On iOS Safari (where Wake Lock is not exposed), tab backgrounding or screen locks suspend WebKit execution; SendBeam's visibility-change handler transitions the transfer to a deterministic paused state with a prominent Resume action, preventing indefinite socket stalls.
-- **Memory-Bounded OPFS Streaming:** Because neither mobile Safari nor Android Chrome exposes `showSaveFilePicker`, SendBeam streams blocks directly to the Origin Private File System (OPFS) without accumulating chunks in JS heap memory, preventing mobile browser jetsam OOM crashes.
+- **Memory-Bounded OPFS Streaming:** Because neither mobile Safari nor Android Chrome exposes `showSaveFilePicker`, SendBeam streams blocks directly to the Origin Private File System (OPFS) without accumulating chunks in JS heap memory, preventing mobile browser jetsam OOM crashes. Note: A small mobile round-trip with a conditional OPFS assertion in CI demonstrates the streaming path, but is not an unbounded peak-memory proof across all physical devices under system memory pressure.
+- **ZIP Archive Limits:** The ZIP fallback utilizes 32-bit archive fields (ZIP32) and is capped at 4 GiB. Streaming ZIP64 with arbitrary file count/size boundaries is scheduled for v2.0 (V20-PR05).
 - **Private Browsing Safeguards:** In Safari Private Browsing mode where OPFS or IndexedDB is restricted, SendBeam probes storage capabilities before transfer and fails closed with actionable diagnostic guidance rather than silently failing mid-transfer.
 - **WebKit DataChannel Backpressure Guard:** Protects against WebKit SCTP buffer stalls with dual event-listener registration and adaptive safety drain timers when `bufferedamountlow` events are coalesced or dropped.
-- **CI Test Coverage:** Tested in CI via Playwright mobile device profiles: `mobile-chrome` (Pixel 7) and `mobile-webkit` (iPhone 14 / WebKit engine).
+- **CI Test Coverage vs Physical Hardware:** Tested in CI via Playwright mobile device emulation profiles: `mobile-chrome` (Pixel 7 emulation) and `mobile-webkit` (iPhone 14 emulation on Linux WebKit engine). WebKit emulation demonstrates browser engine correctness, but is not physical iOS device hardware testing.
 
 ## Cross-Client Interoperability Matrix (Browser ↔ CLI ↔ Desktop)
 
@@ -187,6 +188,10 @@ SendBeam v1.5 adds mutual cryptographic pairing, persistent trust management, re
 
 All 9 cross-client pairs (Browser ↔ CLI ↔ Desktop) interoperate seamlessly across both ephemeral one-time (`sendbeam/1`) and persistent trusted (`sendbeam/2`) sessions.
 
+> [!NOTE]
+> **Cryptographic Properties & Limits (`sendbeam/2`):**
+> `sendbeam/2` trusted sessions establish mutual peer authentication, replay protection, and domain-separated directional keys derived from the pairwise credential `k_pair` and ephemeral nonces. Because derivation mixes ephemeral public parameters via HMAC with `k_pair` rather than computing an ephemeral Diffie-Hellman exchange, `sendbeam/2` in v1.5–v1.8 does **not** provide forward secrecy against compromise of `k_pair`. A redesigned, reviewed authenticated ephemeral Diffie-Hellman key exchange is scheduled for v1.9 (V19-PR01 / V19-PR02).
+
 ## Distribution, Packaging & Self-Update Matrix (v1.6)
 
 SendBeam publishes cryptographically signed binaries, installers, and update channel manifests for all major desktop and server operating systems:
@@ -224,6 +229,10 @@ SendBeam v1.7 introduces traffic padding, opportunistic mesh revocation sync, an
 | **Revocation Sync (`sendbeam/2`)** |           Opportunistic Sync            |       Ignored by v1.6        | Signed revocation records are piggybacked over trusted sessions. Ignored by peers without the feature.  |
 | **Broadcast Send (`@dev1 @dev2`)** |           Concurrent Fan-Out            |     Independent Session      | Each target establishes an independent `sendbeam/2` session. Single peer failure does not abort others. |
 | **Package Manager Distribution**   |      Homebrew, Scoop, WinGet, AUR       |    GitHub Releases Direct    | Manifests verify against signed `SHA256SUMS.txt` at zero hosting cost.                                  |
+
+> [!NOTE]
+> **Negotiated Padding vs Host Enforcement Policy:**
+> Wire traffic padding is negotiated via `caps.features` and engaged only when both peers support and announce `padding`. When a sender enables `--private`, it requests padding but does not reject unpadded peers in v1.8. Strict host-level policy (refusing transfers when private mode is requested against an unpadded peer or when frames are unpadded) is scheduled for v1.9 (V19-PR11).
 
 ## Interpretation
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   isDirectFileSystemSupported,
+  isPaddingNegotiated,
   isPersistentTrustSupported,
   isStorageQuotaSupported,
   isWakeLockSupported,
@@ -117,5 +118,12 @@ describe('capability detection', () => {
         configurable: true,
       });
     }
+  });
+
+  it('correctly reports mutual padding capability negotiation', () => {
+    expect(isPaddingNegotiated(['transfer.v1', 'padding'], ['transfer.v1', 'padding'])).toBe(true);
+    expect(isPaddingNegotiated(['transfer.v1'], ['transfer.v1', 'padding'])).toBe(false);
+    expect(isPaddingNegotiated(['transfer.v1', 'padding'], ['transfer.v1'])).toBe(false);
+    expect(isPaddingNegotiated([], [])).toBe(false);
   });
 });

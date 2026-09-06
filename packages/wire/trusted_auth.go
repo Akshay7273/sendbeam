@@ -98,7 +98,7 @@ type TrustedAuthConfirm struct {
 	AuthTag string `json:"auth_tag,omitempty"`
 }
 
-// TrustedSessionKeys contains forward-secret directional session keys and negotiated features.
+// TrustedSessionKeys contains directional session keys and negotiated features for sendbeam/2.
 type TrustedSessionKeys struct {
 	SessionMaster           []byte
 	InitiatorToResponderKey []byte
@@ -180,7 +180,9 @@ func VerifyTrustedMACTag(kPair []byte, domain string, challenge []byte, tagHex s
 	return subtle.ConstantTimeCompare(tagBytes, expectedBytes) == 1
 }
 
-// DeriveTrustedSessionKeys derives forward-secret directional traffic keys from ephemeral material and k_pair.
+// DeriveTrustedSessionKeys derives pairwise authenticated directional traffic keys from ephemeral material and k_pair.
+// Note: This derivation provides mutual authentication and replay resistance, but does not provide forward secrecy
+// against compromise of k_pair. An ephemeral Diffie-Hellman authenticated key exchange is scheduled for v1.9.
 func DeriveTrustedSessionKeys(kPair, ephemPubInit, ephemPubResp, nonceInit, nonceResp []byte, initID, respID string, capsInit, capsResp []string) (*TrustedSessionKeys, error) {
 	if len(kPair) == 0 {
 		return nil, errors.New("k_pair required")

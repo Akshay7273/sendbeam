@@ -115,7 +115,7 @@ describe('Trusted session cross-language vector validation (sendbeam/2)', () => 
       expect(bytesToHex(verifiedResp.ephemeralPub)).toBe(vec.resp_ephem_pub_hex);
       expect(bytesToHex(verifiedResp.nonce)).toBe(vec.resp_nonce_hex);
 
-      // Derive forward-secret session keys on both sides
+      // Derive pairwise authenticated session keys on both sides
       const keysAlice = await deriveTrustedSessionKeys(
         kPair,
         initEphem,
