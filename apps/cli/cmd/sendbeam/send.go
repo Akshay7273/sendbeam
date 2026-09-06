@@ -109,8 +109,8 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 	session := rendezvous.Options{
 		Role:      rendezvous.RoleOfferer,
 		WordCount: words,
-		OnCode:    codePrinterTo(server, stderr),
-		OnPhase:   phasePrinterTo(rendezvous.RoleOfferer, stderr),
+		OnCode:    codePrinter(server, stderr),
+		OnPhase:   phasePrinter(rendezvous.RoleOfferer, stderr),
 	}
 	var resumeCtx *transfer.ResumeContext
 	if reused {
@@ -160,7 +160,7 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client, err := dialTo(ctx, server, insecure, stderr)
+	client, err := dial(ctx, server, insecure, stderr)
 	if err != nil {
 		if jsonOutput {
 			status, errMsg := transfer.ClassifyBroadcastError(err)
@@ -339,7 +339,7 @@ func runBroadcastSend(filePaths []string, toDevices []string, server string, ins
 	targets := make([]transfer.BroadcastTarget, len(resolved))
 	for i, r := range resolved {
 		var sig transfer.Signal
-		client, err := dial(ctx, server, insecure)
+		client, err := dial(ctx, server, insecure, stderr)
 		if err != nil {
 			sig = &offlineSignal{err: fmt.Errorf("peer offline: %w", err)}
 		} else {

@@ -65,12 +65,7 @@ func (o *Outcome) ToPublicOutcome() *PublicOutcome {
 	if len(o.Files) > 0 {
 		po.Files = make([]PublicFileOutcome, len(o.Files))
 		for i, f := range o.Files {
-			po.Files[i] = PublicFileOutcome{
-				Name:   f.Name,
-				Size:   f.Size,
-				Digest: f.Digest,
-				Path:   f.Path,
-			}
+			po.Files[i] = PublicFileOutcome(f)
 		}
 	}
 	return po

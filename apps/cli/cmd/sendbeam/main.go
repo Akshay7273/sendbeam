@@ -142,7 +142,7 @@ func runReceive(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client, err := dial(ctx, *server, *insecure)
+	client, err := dial(ctx, *server, *insecure, os.Stderr)
 	if err != nil {
 		s := newStyle(os.Stderr)
 		fmt.Fprintf(os.Stderr, "\n%s\n", s.cross("Failed: "+handshakeError(err)))
@@ -157,7 +157,7 @@ func runReceive(args []string) int {
 		Session: rendezvous.Options{
 			Role:    rendezvous.RoleJoiner,
 			Code:    code,
-			OnPhase: phasePrinter(rendezvous.RoleJoiner),
+			OnPhase: phasePrinter(rendezvous.RoleJoiner, os.Stderr),
 		},
 		DestDir:     *outDir,
 		ForceRelay:  *relayOnly,
@@ -209,11 +209,7 @@ func runReceive(args []string) int {
 // dial opens the signaling socket, reporting the server it is contacting. It returns a
 // reconnecting signal so a post-establishment socket drop can re-attach to the room when the
 // transfer is healthy; the driver adopts it for the whole exchange and closes it when done.
-func dial(ctx context.Context, server string, insecure bool) (*wsclient.ReconnectingSignal, error) {
-	return dialTo(ctx, server, insecure, os.Stderr)
-}
-
-func dialTo(ctx context.Context, server string, insecure bool, w io.Writer) (*wsclient.ReconnectingSignal, error) {
+func dial(ctx context.Context, server string, insecure bool, w io.Writer) (*wsclient.ReconnectingSignal, error) {
 	s := newStyleFromWriter(w)
 	_, _ = fmt.Fprintln(w, s.dim("Connecting to "+server+" …"))
 	return wsclient.NewReconnectingSignal(ctx, server, wsclient.DialOptions{InsecureSkipVerify: insecure})
@@ -238,11 +234,7 @@ func parseArgs(fs *flag.FlagSet, args []string) []string {
 
 // codePrinter shows the invite code and the matching web-app link once the room is
 // allocated, so the sender can hand either to the recipient.
-func codePrinter(server string) func(string) {
-	return codePrinterTo(server, os.Stderr)
-}
-
-func codePrinterTo(server string, w io.Writer) func(string) {
+func codePrinter(server string, w io.Writer) func(string) {
 	s := newStyleFromWriter(w)
 	return func(code string) {
 		_, _ = fmt.Fprintln(w)
@@ -258,11 +250,7 @@ func codePrinterTo(server string, w io.Writer) func(string) {
 // phasePrinter surfaces the two transitions worth a human's attention — waiting for the
 // peer (offerer only) and the start of the key handshake — and stays quiet for the rest so
 // the output reads as progress, not a state-machine trace.
-func phasePrinter(role rendezvous.Role) func(rendezvous.Phase) {
-	return phasePrinterTo(role, os.Stderr)
-}
-
-func phasePrinterTo(role rendezvous.Role, w io.Writer) func(rendezvous.Phase) {
+func phasePrinter(role rendezvous.Role, w io.Writer) func(rendezvous.Phase) {
 	s := newStyleFromWriter(w)
 	return func(p rendezvous.Phase) {
 		switch p {

@@ -324,7 +324,7 @@ func transfersResume(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client, err := dial(ctx, *server, *insecure)
+	client, err := dial(ctx, *server, *insecure, os.Stderr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n%s\n", s.cross("Failed: "+handshakeError(err)))
 		return 1
@@ -346,7 +346,7 @@ func transfersResume(args []string) int {
 			Role:      rendezvous.RoleJoiner,
 			Code:      normalizeCodeArg(*code),
 			LocalCaps: &caps,
-			OnPhase:   phasePrinter(rendezvous.RoleJoiner),
+			OnPhase:   phasePrinter(rendezvous.RoleJoiner, os.Stderr),
 		},
 		DestDir:    *outDir,
 		ForceRelay: *relayOnly,
