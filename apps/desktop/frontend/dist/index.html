@@ -511,6 +511,24 @@
       const call = (fqn, ...args) => wails.Call.ByName(fqn, ...args);
       const $ = (id) => document.getElementById(id);
 
+      // Safe literal-text DOM rendering helpers: ensure untrusted strings (paths, errors,
+      // identities, update details) never enter the HTML parser.
+      function setStatusMessage(el, cls, text, extraText) {
+        if (!el) return;
+        el.replaceChildren();
+        if (cls) {
+          const span = document.createElement("span");
+          span.className = cls;
+          span.textContent = text;
+          el.appendChild(span);
+        } else {
+          el.appendChild(document.createTextNode(text));
+        }
+        if (extraText) {
+          el.appendChild(document.createTextNode(extraText));
+        }
+      }
+
       const state = {
         mode: "send",
         selected: [],
@@ -548,7 +566,7 @@
       // SEND
       function renderSelection() {
         const list = $("send-list");
-        list.innerHTML = "";
+        list.replaceChildren();
         for (const p of state.selected) {
           const li = document.createElement("li");
           li.textContent = p.path;
@@ -642,16 +660,22 @@
       wireControls("send");
       wireControls("recv");
 
-      function chips(ev) {
-        const out = [];
-        if (ev.phase) out.push('<span class="chip">' + ev.phase.replace(/-/g, " ") + "</span>");
-        if (ev.transport) out.push('<span class="chip relay">' + ev.transport + "</span>");
-        if (ev.fingerprint) out.push('<span class="chip auth">fingerprint ' + ev.fingerprint + "</span>");
-        if (ev.paused) out.push('<span class="chip err">paused</span>');
-        if (ev.canceled) out.push('<span class="chip err">canceled</span>');
-        if (ev.failed) out.push('<span class="chip err">failed</span>');
-        if (ev.state) out.push('<span class="chip live">' + ev.state + "</span>");
-        return out.join("");
+      function renderChips(container, ev) {
+        if (!container) return;
+        container.replaceChildren();
+        const add = (cls, text) => {
+          const span = document.createElement("span");
+          span.className = cls;
+          span.textContent = text;
+          container.appendChild(span);
+        };
+        if (ev.phase) add("chip", String(ev.phase).replace(/-/g, " "));
+        if (ev.transport) add("chip relay", String(ev.transport));
+        if (ev.fingerprint) add("chip auth", "fingerprint " + ev.fingerprint);
+        if (ev.paused) add("chip err", "paused");
+        if (ev.canceled) add("chip err", "canceled");
+        if (ev.failed) add("chip err", "failed");
+        if (ev.state) add("chip live", String(ev.state));
       }
 
       function renderTransfer(ev, prefix) {
@@ -659,7 +683,7 @@
         const id = state[p].id;
         if (ev.id !== id) return;
 
-        $(p + "-chips").innerHTML = chips(ev);
+        renderChips($(p + "-chips"), ev);
         $(p + "-bar").style.width = Math.max(0, Math.min(100, ev.percent || 0)) + "%";
         $(p + "-percent").textContent = (ev.percent || 0) + "% · " + humanBytes(ev.doneBytes || 0) + " / " + humanBytes(ev.totalBytes || 0);
 
@@ -681,15 +705,19 @@
 
         const status = p === "recv" ? $("recv-status-line") : $("send-status");
         if (ev.kind === "done") {
-          status.innerHTML = '<span class="ok">✓ Verified transfer complete.</span>' +
-            (ev.outPath ? " Saved to " + ev.outPath + "." : "");
+          setStatusMessage(
+            status,
+            "ok",
+            "✓ Verified transfer complete.",
+            ev.outPath ? " Saved to " + ev.outPath + "." : null
+          );
           $(p + "-pause").disabled = $(p + "-resume").disabled = $(p + "-cancel").disabled = true;
           if (p === "recv" && (ev.outPath || ev.outDir)) {
             state.recv.outPath = ev.outPath || ev.outDir;
             $("recv-reveal").classList.remove("hidden");
           }
         } else if (ev.kind === "error") {
-          status.innerHTML = '<span class="err">✗ ' + (ev.error || "transfer failed") + "</span>";
+          setStatusMessage(status, "err", "✗ " + (ev.error || "transfer failed"));
         } else if (ev.kind === "connect") {
           status.textContent = "Secure channel established — transferring…";
         } else if (ev.phase === "waiting") {
@@ -706,7 +734,11 @@
           $("invite-card").classList.remove("hidden");
           $("invite-code").textContent = ev.code;
           $("invite-link").textContent = ev.link || "";
-          $("invite-qr").src = ev.qr || "";
+          if (ev.qr && typeof ev.qr === "string" && (ev.qr.startsWith("data:image/") || ev.qr.startsWith("http://") || ev.qr.startsWith("https://"))) {
+            $("invite-qr").src = ev.qr;
+          } else {
+            $("invite-qr").src = "";
+          }
           $("invite-status").textContent = "Share the code or link — the receiver can also scan the QR.";
         }
       });
@@ -732,7 +764,7 @@
         try {
           const items = await call(SV.Transfer + ".ListInterrupted", "");
           const tbody = $("durable-tbody");
-          tbody.innerHTML = "";
+          tbody.replaceChildren();
           if (!items || items.length === 0) {
             $("durable-empty").classList.remove("hidden");
             $("durable-empty").textContent = "No interrupted transfers found.";
@@ -743,17 +775,51 @@
           $("durable-table").classList.remove("hidden");
           for (const item of items) {
             const tr = document.createElement("tr");
-            tr.innerHTML = `
-              <td><span class="chip">${item.role}</span></td>
-              <td class="mono">${item.transferId.slice(0, 8)}…</td>
-              <td>${item.files}</td>
-              <td>${humanBytes(item.committedBytes)} / ${humanBytes(item.totalBytes)}</td>
-              <td>${item.status}</td>
-              <td>
-                <button class="ghost" data-action="inspect" data-id="${item.transferId}">Inspect</button>
-                <button class="ghost danger" data-action="discard" data-id="${item.transferId}">Discard</button>
-              </td>
-            `;
+
+            const tdRole = document.createElement("td");
+            const chipRole = document.createElement("span");
+            chipRole.className = "chip";
+            chipRole.textContent = item.role || "";
+            tdRole.appendChild(chipRole);
+            tr.appendChild(tdRole);
+
+            const tdId = document.createElement("td");
+            tdId.className = "mono";
+            const tid = String(item.transferId || "");
+            tdId.textContent = tid.length > 8 ? tid.slice(0, 8) + "…" : tid;
+            tr.appendChild(tdId);
+
+            const tdFiles = document.createElement("td");
+            tdFiles.textContent = String(item.files ?? "");
+            tr.appendChild(tdFiles);
+
+            const tdProgress = document.createElement("td");
+            tdProgress.textContent =
+              humanBytes(item.committedBytes || 0) + " / " + humanBytes(item.totalBytes || 0);
+            tr.appendChild(tdProgress);
+
+            const tdStatus = document.createElement("td");
+            tdStatus.textContent = String(item.status || "");
+            tr.appendChild(tdStatus);
+
+            const tdActions = document.createElement("td");
+            const btnInspect = document.createElement("button");
+            btnInspect.className = "ghost";
+            btnInspect.dataset.action = "inspect";
+            btnInspect.dataset.id = String(item.transferId || "");
+            btnInspect.textContent = "Inspect";
+
+            const btnDiscard = document.createElement("button");
+            btnDiscard.className = "ghost danger";
+            btnDiscard.dataset.action = "discard";
+            btnDiscard.dataset.id = String(item.transferId || "");
+            btnDiscard.textContent = "Discard";
+
+            tdActions.appendChild(btnInspect);
+            tdActions.appendChild(document.createTextNode(" "));
+            tdActions.appendChild(btnDiscard);
+            tr.appendChild(tdActions);
+
             tbody.appendChild(tr);
           }
         } catch (err) {
@@ -825,9 +891,9 @@
         };
         try {
           await call(SV.Transfer + ".SaveConfig", cfg);
-          $("settings-status").innerHTML = '<span class="ok">✓ Settings saved successfully.</span>';
+          setStatusMessage($("settings-status"), "ok", "✓ Settings saved successfully.");
         } catch (err) {
-          $("settings-status").innerHTML = '<span class="err">✗ ' + err + '</span>';
+          setStatusMessage($("settings-status"), "err", "✗ " + err);
         }
       });
 
@@ -859,9 +925,9 @@
         }
 
         if (st.state === "available") {
-          statusLabel.innerHTML = '<span class="ok">✓ Version ' + st.latestVersion + ' available</span>';
+          setStatusMessage(statusLabel, "ok", "✓ Version " + (st.latestVersion || "") + " available");
           if (!updateDismissed) {
-            bannerText.textContent = "SendBeam Desktop " + st.latestVersion + " is available!";
+            bannerText.textContent = "SendBeam Desktop " + (st.latestVersion || "") + " is available!";
             banner.classList.remove("hidden");
           }
           if (st.releaseNotes) {
@@ -877,14 +943,18 @@
           installBtn.disabled = true;
           installBtn.textContent = "Downloading…";
         } else if (st.state === "ready_to_restart") {
-          statusLabel.innerHTML = '<span class="ok">✓ Update installed! Restart to apply.</span>';
+          setStatusMessage(statusLabel, "ok", "✓ Update installed! Restart to apply.");
           bannerText.textContent = "Update ready! Restart SendBeam to apply.";
           $("update-banner-apply").textContent = "Restart now";
           banner.classList.remove("hidden");
           installBtn.disabled = true;
           installBtn.textContent = "Restart required";
         } else if (st.state === "managed_by_pkg_manager") {
-          statusLabel.innerHTML = '<span style="color:var(--text-muted);">' + (st.message || "Managed by package manager.") + '</span>';
+          statusLabel.replaceChildren();
+          const mutedSpan = document.createElement("span");
+          mutedSpan.style.color = "var(--text-muted)";
+          mutedSpan.textContent = st.message || "Managed by package manager.";
+          statusLabel.appendChild(mutedSpan);
           banner.classList.add("hidden");
           details.classList.add("hidden");
         } else if (st.state === "up_to_date") {
@@ -892,7 +962,7 @@
           banner.classList.add("hidden");
           details.classList.add("hidden");
         } else if (st.state === "error") {
-          statusLabel.innerHTML = '<span class="err">✗ ' + (st.error || "Update check failed") + '</span>';
+          setStatusMessage(statusLabel, "err", "✗ " + (st.error || "Update check failed"));
           details.classList.add("hidden");
         }
       }
@@ -907,7 +977,7 @@
           const st = await call(SV.Update + ".CheckUpdate", ch);
           renderUpdateStatus(st);
         } catch (e) {
-          $("update-status-label").innerHTML = '<span class="err">✗ ' + e + '</span>';
+          setStatusMessage($("update-status-label"), "err", "✗ " + e);
         }
       });
 
@@ -927,7 +997,7 @@
           const st = await call(SV.Update + ".ApplyUpdate");
           renderUpdateStatus(st);
         } catch (e) {
-          $("update-status-label").innerHTML = '<span class="err">✗ ' + e + '</span>';
+          setStatusMessage($("update-status-label"), "err", "✗ " + e);
         }
       }
 
