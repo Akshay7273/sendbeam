@@ -1,5 +1,5 @@
 /**
- * Trusted-session authentication messages, forward-secret session key derivation,
+ * Trusted-session authentication messages, pairwise authenticated session key derivation,
  * and mutual challenge verification for paired SendBeam devices (V15-PR03).
  *
  * Matches Go `packages/wire/trusted_auth.go` byte-for-byte.
@@ -187,7 +187,8 @@ export async function verifyTrustedMACTag(
 }
 
 /**
- * Derive forward-secret directional session keys from ephemeral material and k_pair.
+ * Derive pairwise authenticated directional session keys from ephemeral material and k_pair.
+ * Note: Provides mutual authentication and replay resistance, but not forward secrecy against k_pair compromise.
  */
 export async function deriveTrustedSessionKeys(
   kPair: Uint8Array,

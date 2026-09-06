@@ -58,6 +58,7 @@ import {
   signRevocation,
   verifyRevocation,
   signDeviceMessage,
+  isPaddingNegotiated,
   FEATURE_PADDING,
   FRAME_FLAG_PADDED,
   FRAME_VERSION,
@@ -438,19 +439,20 @@ describe('SendBeam v1.8 Attack-Matrix & Adversarial Security Campaign', () => {
 
   // Vector 14: Bucket-downgrade coercion & private session requirement
   it('Vector 14: Rejects bucket downgrade coercion and unpadded frames in private sessions', async () => {
+    const localCaps = ['transfer.v1', FEATURE_PADDING];
     const privatePeerCaps = ['transfer.v1', FEATURE_PADDING];
     const publicPeerCaps = ['transfer.v1'];
 
-    const hasPadding = (caps: string[]) => caps.includes(FEATURE_PADDING);
-    expect(hasPadding(privatePeerCaps)).toBe(true);
-    expect(hasPadding(publicPeerCaps)).toBe(false);
+    expect(isPaddingNegotiated(localCaps, privatePeerCaps)).toBe(true);
+    expect(isPaddingNegotiated(localCaps, publicPeerCaps)).toBe(false);
 
     // Attacker strips FEATURE_PADDING from offered capabilities
     const strippedCaps = privatePeerCaps.filter((c) => c !== FEATURE_PADDING);
+    expect(isPaddingNegotiated(localCaps, strippedCaps)).toBe(false);
 
-    // Session enforcing private mode fails closed if FEATURE_PADDING was stripped
+    // Session enforcing private mode fails closed if FEATURE_PADDING was not negotiated
     const enforcePrivateSession = (peerCaps: string[]) => {
-      if (!hasPadding(peerCaps)) {
+      if (!isPaddingNegotiated(localCaps, peerCaps)) {
         throw new Error(
           `downgrade rejected: peer does not negotiate ${FEATURE_PADDING} capability`,
         );

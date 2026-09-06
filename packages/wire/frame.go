@@ -32,6 +32,12 @@ const (
 	MaxPadBucketSize = 65535
 )
 
+// NegotiatePadding reports whether both peers advertised the padding capability.
+// Wire traffic padding is negotiated; if either peer lacks the capability, padding is not engaged.
+func NegotiatePadding(localFeatures, remoteFeatures []string) bool {
+	return containsFeature(localFeatures, PaddingCapability) && containsFeature(remoteFeatures, PaddingCapability)
+}
+
 // FrameHeader is the 16-byte frame header. Its encoded bytes are the
 // AES-GCM additional authenticated data, so the codec must be exact and stable.
 //

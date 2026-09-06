@@ -108,3 +108,16 @@ The standard SendBeam distribution artifact set is produced and cryptographicall
 - [x] V18-PR04 — Attack matrix expansion: 12 → 20+ vectors merged (`3eaf8a4`)
 - [x] V18-PR05 — Security posture: disclosure policy, scorecard, pinned actions merged (`73f5f42`)
 - [x] V18-PR06 — Release gate: RELEASE-v1.8.md + docs sweep + version metadata
+
+---
+
+## 6. Post-v1.8.0 Safety Patch Addendum (v1.8.1)
+
+Following the v1.8.0 release, critical security hardening and capability honesty corrections were implemented across the v1.8.x safety patch line (V18H-PR01 through V18H-PR04):
+
+- **V18H-PR01 (PR #176, `e6d144d`):** Secret-free public JSON and diagnostics. Internal handshake secrets, master keys, and traffic credentials stripped from CLI JSON output and error logs.
+- **V18H-PR02 (PR #177, `de52250`):** Literal-text desktop rendering. Replaced all `innerHTML` assignments in desktop Wails shell with safe DOM text node APIs to prevent HTML injection.
+- **V18H-PR03 (PR #178, `1597f46`):** Allowlisted PWA caching. Scoped SW cache pruning to `sendbeam-shell-*`, restricted cache interception strictly to owned static shell assets, and coordinated background updates with active transfers.
+- **V18H-PR04:** Honest capability matrix and patch release gate. Documented cryptographic and architectural trust boundaries (forward secrecy limitation of v1.5 key schedule, network IP metadata visibility on signaling server, and traffic padding negotiation requirements).
+
+See [`docs/RELEASE-v1.8.1.md`](RELEASE-v1.8.1.md) for full patch verification evidence, release criteria, and security clarifications.

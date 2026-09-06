@@ -372,7 +372,10 @@ SendBeam v1.5 introduces `sendbeam/2` for persistent trusted devices. For comple
 2. **Trusted Session Authentication (`sendbeam/2`)**:
    - `trusted_auth_init`: Initiator sends `initiator_device_id`, timestamp, 32-byte nonce, ephemeral X25519 public key, and HMAC tag over the domain challenge.
    - `trusted_auth_response`: Responder validates device trust, timestamp freshness (±5 min), verifies tag, generates responder ephemeral key, and returns HMAC response tag.
-   - `trusted_auth_confirm`: Initiator verifies responder tag, derives forward-secret `SessionMaster`, `k_i2r`, `k_r2i`, and returns mutual confirmation tag.
+   - `trusted_auth_confirm`: Initiator verifies responder tag, derives pairwise authenticated `SessionMaster`, `k_i2r`, `k_r2i`, and returns mutual confirmation tag.
+
+> [!NOTE]
+> **Cryptographic Note (v1.8.x clarification):** In `sendbeam/2`, session keys are derived from the pairwise credential `k_pair` and ephemeral nonces via HMAC-SHA256 and HKDF-SHA256. This construction guarantees mutual peer authentication, replay protection, and transcript binding. However, because ephemeral public values are mixed via HMAC with `k_pair` rather than through an ephemeral Diffie-Hellman (ECDH) exchange, compromise of `k_pair` allows decryption of captured past traffic (i.e. it does not provide forward secrecy). A reviewed authenticated ephemeral Diffie-Hellman key exchange is scheduled for v1.9 (V19-PR01 / V19-PR02).
 
 3. **Privacy-Preserving Presence & LAN Discovery**:
    - **Remote Presence**: 15-minute epoch-rotated blind handles (`HMAC(k_pair, "sendbeam/2 rendezvous-handle:" || epoch)`).
@@ -401,7 +404,7 @@ Inside the AEAD envelope, the plaintext is formatted as:
 
 - **Header AAD Invariant:** The 16-byte frame header remains verbatim as AEAD Associated Data; its `len` field matches the total padded ciphertext length ($S + 16$ bytes AEAD tag).
 - **Integrity Validation:** Upon decryption, the receiver validates that `ActualPayloadLength <= BucketSize - 2` and verifies all padding bytes are strictly `0x00`. Any malformed length or non-zero padding byte fails closed (`ErrInvalidFramePadding`).
-- **Interop Fallback:** If either peer lacks the `padding` capability, transfers automatically proceed unpadded without protocol failure.
+- **Interop Fallback:** If either peer lacks the `padding` capability, transfers automatically proceed unpadded without protocol failure. In v1.8, `--private` requests padding on the wire, but does not refuse unpadded peers unless enforced by future policy. A strict client-side require-padding policy (rejecting transfers if padding is unnegotiated or stripped) is scheduled for v1.9 (V19-PR11).
 
 ---
 

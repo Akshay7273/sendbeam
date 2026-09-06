@@ -137,3 +137,19 @@ func TestSealPaddedAndOpen(t *testing.T) {
 		t.Errorf("got plaintext %q, want %q", opened.Plaintext, payload)
 	}
 }
+
+func TestNegotiatePadding(t *testing.T) {
+	if !NegotiatePadding([]string{"transfer.v1", PaddingCapability}, []string{"transfer.v1", PaddingCapability}) {
+		t.Error("expected NegotiatePadding to return true when both peers advertise padding")
+	}
+	if NegotiatePadding([]string{"transfer.v1"}, []string{"transfer.v1", PaddingCapability}) {
+		t.Error("expected NegotiatePadding to return false when local peer lacks padding")
+	}
+	if NegotiatePadding([]string{"transfer.v1", PaddingCapability}, []string{"transfer.v1"}) {
+		t.Error("expected NegotiatePadding to return false when remote peer lacks padding")
+	}
+	if NegotiatePadding(nil, nil) {
+		t.Error("expected NegotiatePadding to return false for nil capability lists")
+	}
+}
+

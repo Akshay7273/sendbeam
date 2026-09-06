@@ -178,13 +178,18 @@ sequenceDiagram
     Note over B: 3. Generate Ephem_B, Nonce_B<br/>Sign Challenge_B with Ed25519<br/>Compute MAC_B using k_pair
     B->>A: TrustedAuthResponse (Status, RespID, Ephem_B, Nonce_B, Caps_B, Sig_B, MAC_B)
     Note over A: 4. Verify Sig_B & MAC_B
-    Note over A,B: 5. Derive Forward-Secret Session Keys (k_i2r, k_r2i)
+    Note over A,B: 5. Derive Pairwise Authenticated Session Keys (k_i2r, k_r2i)
     A->>B: TrustedAuthConfirm (Status: ready, AuthTag: HMAC(Master, InitID))
     B->>A: TrustedAuthConfirm (Status: ready, AuthTag: HMAC(Master, RespID))
     Note over A,B: 6. Secure Transfer Epoch Established
 ```
 
-### 7.1 Forward-Secret Key Schedule
+### 7.1 Pairwise Authenticated Key Schedule (sendbeam/2)
+
+> [!WARNING]
+> **Forward Secrecy Limitation (v1.8.x Security Note):**
+> In the v1.5 key schedule below, `IKM` is derived via `HMAC-SHA256(k_pair, Ephem_A || Ephem_B || Nonce_A || Nonce_B)`. While this binds ephemeral nonces and mutual public parameters to authenticate both participants and prevent replay, it relies on symmetric authentication under `k_pair` without an ephemeral Diffie-Hellman (ECDH) exchange.
+> Consequently, compromise of the long-term pairwise secret `k_pair` enables retroactive decryption of recorded past session traffic (it does **not** provide forward secrecy). A reviewed authenticated ephemeral Diffie-Hellman key exchange (X25519) providing true forward secrecy is scheduled for v1.9 (V19-PR01 / V19-PR02).
 
 ```
 IKM = HMAC-SHA256(k_pair, Ephem_A || Ephem_B || Nonce_A || Nonce_B)
@@ -219,7 +224,7 @@ To discover peers over the signaling server without creating a global directory 
   handle = HMAC-SHA256(k_pair, "sendbeam/2 rendezvous-handle:" || epochIndex)
   ```
 - **Clock Drift Tolerance:** Clients compute candidate handles for `[epochIndex-1, epochIndex, epochIndex+1]` to tolerate clock skew.
-- **Server Privacy:** The signaling server matches connections solely on exact handle equality. The server cannot determine which devices share a handle or link different epoch handles together.
+- **Server Privacy & Limits:** The signaling server matches connections solely on exact handle equality. The server cannot determine which devices share a handle or link different epoch handles together from the handle alone. However, opaque handles do **not** provide network-level anonymity: the signaling server and network observers still observe client IP addresses, TCP/WebSocket connection metadata, and message timing.
 
 ### 8.2 Blinded LAN Discovery Beacons
 

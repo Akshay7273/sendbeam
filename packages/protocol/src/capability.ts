@@ -1,3 +1,5 @@
+import { FEATURE_PADDING } from './constants.js';
+
 export interface StorageCapabilities {
   persistentTrust: boolean;
   opfs: boolean;
@@ -159,4 +161,16 @@ export async function probeStorageCapabilities(customIdb?: unknown): Promise<Sto
     directFileSystem,
     canStreamToDisk,
   };
+}
+
+/**
+ * Reports whether wire traffic padding is negotiated between local and remote advertised features.
+ * In v1.8, wire padding is negotiated opportunistically. Both peers must advertise 'padding'
+ * for padded frame buckets to be transmitted.
+ */
+export function isPaddingNegotiated(
+  localFeatures: readonly string[],
+  remoteFeatures: readonly string[],
+): boolean {
+  return localFeatures.includes(FEATURE_PADDING) && remoteFeatures.includes(FEATURE_PADDING);
 }

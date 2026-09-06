@@ -212,3 +212,26 @@ and server are security-reviewed and the JS/Go dependencies audited.
 | **18** | **Relay Frame Corruption / Reorder**          | Relay server flips ciphertext bits, delays/reorders sequenced frames, or truncates payload.         | AES-GCM AEAD envelope integrity fails on corruption; monotonic counter window rejects reordered frames.               | `wire/attack_matrix_test.go`                                  | `protocol/src/attack-matrix.test.ts` (Vector 18)               |
 | **19** | **Durable Journal Tampering**                 | Corrupt transfer journal JSON, truncate write, alter manifest fingerprint, or falsify blocks.       | `DecodeJournal` validates JSON, schema version, checksum, fingerprint match, and committed block bounds.              | `wire/attack_matrix_test.go`                                  | `protocol/src/attack-matrix.test.ts` (Vector 19)               |
 | **20** | **Pairing Confirmation Misuse**               | Replay SPAKE2+ confirmation tag across sessions, substitute peer ID, or forge tag.                  | HMAC-SHA256 over `DomainPairingConfirm` and peer device ID; verified before any trust store write.                    | `wire/attack_matrix_test.go`                                  | `protocol/src/attack-matrix.test.ts` (Vector 20)               |
+
+---
+
+## Dated Security Clarifications & Trust Boundaries (v1.8.x Addendum)
+
+The following dated clarifications document exact security and privacy boundaries in the v1.8 release line:
+
+1. **Trusted Session Key Schedule (`sendbeam/2`)**:
+   - In v1.5–v1.8, session traffic keys are derived using `k_pair` (the pairwise shared secret established during pairing) and ephemeral nonces via HMAC-SHA256 and HKDF-SHA256.
+   - **Boundary:** This construction establishes mutual peer authentication, freshness, and replay resistance. However, because ephemeral parameters are authenticated under `k_pair` without an ephemeral Diffie-Hellman exchange, compromise of `k_pair` permits retroactive decryption of past session recordings (it does **not** provide forward secrecy).
+   - **Roadmap:** A reviewed, versioned authenticated ephemeral Diffie-Hellman key exchange (X25519) providing true forward secrecy is scheduled for v1.9 (V19-PR01 / V19-PR02).
+
+2. **Network Metadata & Presence Privacy**:
+   - 15-minute epoch-rotated rendezvous handles prevent passive third parties and the signaling server from indexing or enumerating a global device directory from handle strings alone.
+   - **Boundary:** Opaque handles do **not** provide transport anonymity. The signaling server and upstream network observers observe TCP/WebSocket connection metadata, source IP addresses, and message timing.
+
+3. **Wire Traffic Padding Policy**:
+   - In v1.8, wire traffic padding is an opportunistic negotiated capability (`caps.features`). `--private` advertises padding support to the remote peer, but does not abort transfers if the remote peer lacks padding support.
+   - **Boundary:** Attack Vector 14 demonstrates the policy invariant via test helpers; full production-path policy enforcement (failing closed when `--private` is requested against an unpadded peer) is scheduled for v1.9 (V19-PR11).
+
+4. **Storage & Archive Boundaries**:
+   - In-browser ZIP archive fallback utilizes standard 32-bit archive structures (ZIP32) with a strict 4 GiB size ceiling. Streaming ZIP64 is scheduled for v2.0 (V20-PR05).
+   - Origin Private File System (OPFS) streaming operates under browser-enforced memory pressure limits; testing in CI via Linux WebKit emulation demonstrates browser engine correctness, but does not substitute for physical iOS hardware profiling.

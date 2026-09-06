@@ -151,7 +151,7 @@ func (c *TrustedSessionCoordinator) InitiateTrustedSession(ctx context.Context, 
 	// Opportunistically process mesh revocation records piggybacked on response
 	c.processIncomingRevocations(ctx, respMsg.Revocations, cfg.PeerDeviceID)
 
-	// 3. Derive forward-secret session keys
+	// 3. Derive pairwise authenticated session keys
 	ephemInit, _ := hex.DecodeString(initMsg.EphemeralPub)
 	nonceInit, _ := hex.DecodeString(initMsg.Nonce)
 
@@ -283,7 +283,7 @@ func (c *TrustedSessionCoordinator) AcceptTrustedSession(ctx context.Context, tr
 		return nil, fmt.Errorf("send trusted auth response: %w", err)
 	}
 
-	// 3. Derive forward-secret session keys
+	// 3. Derive pairwise authenticated session keys
 	ephemResp, _ := hex.DecodeString(respMsg.EphemeralPub)
 	nonceResp, _ := hex.DecodeString(respMsg.Nonce)
 
