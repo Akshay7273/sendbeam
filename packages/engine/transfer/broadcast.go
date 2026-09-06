@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sendbeam/engine/diagnostics"
 	"github.com/sendbeam/wire"
 )
 
@@ -33,6 +34,43 @@ type BroadcastTarget struct {
 	Spec   Spec   // Transfer specification for this target
 }
 
+// PublicOutcome is an allowlisted, secret-free summary of a completed transfer for public JSON serialization.
+type PublicOutcome struct {
+	Name   string              `json:"name"`
+	Size   int64               `json:"size"`
+	Digest string              `json:"digest"`
+	Path   string              `json:"path,omitempty"`
+	Files  []PublicFileOutcome `json:"files,omitempty"`
+}
+
+// PublicFileOutcome is an allowlisted, secret-free file summary for public JSON serialization.
+type PublicFileOutcome struct {
+	Name   string `json:"name"`
+	Size   int64  `json:"size"`
+	Digest string `json:"digest,omitempty"`
+	Path   string `json:"path,omitempty"`
+}
+
+// ToPublicOutcome converts an internal engine Outcome into an allowlisted PublicOutcome.
+func (o *Outcome) ToPublicOutcome() *PublicOutcome {
+	if o == nil {
+		return nil
+	}
+	po := &PublicOutcome{
+		Name:   o.Name,
+		Size:   o.Size,
+		Digest: o.Digest,
+		Path:   o.Path,
+	}
+	if len(o.Files) > 0 {
+		po.Files = make([]PublicFileOutcome, len(o.Files))
+		for i, f := range o.Files {
+			po.Files[i] = PublicFileOutcome(f)
+		}
+	}
+	return po
+}
+
 // TargetResult holds the result of a single target's transfer in a broadcast.
 type TargetResult struct {
 	TargetID   string          `json:"target_id"`
@@ -42,7 +80,7 @@ type TargetResult struct {
 	Size       int64           `json:"size,omitempty"`
 	DurationMs int64           `json:"duration_ms"`
 	Error      string          `json:"error,omitempty"`
-	Outcome    *Outcome        `json:"outcome,omitempty"`
+	Outcome    *PublicOutcome  `json:"outcome,omitempty"`
 }
 
 // BroadcastResult aggregates the results of all target transfers.
@@ -66,11 +104,13 @@ type BroadcastOptions struct {
 }
 
 // ClassifyBroadcastError categorizes a transfer error into a standard BroadcastStatus.
+// Any credentials, invite codes, IP addresses, or filesystem paths in the error message
+// are stripped before returning.
 func ClassifyBroadcastError(err error) (BroadcastStatus, string) {
 	if err == nil {
 		return StatusOk, ""
 	}
-	msg := err.Error()
+	msg := diagnostics.Sanitize(err.Error())
 	lower := strings.ToLower(msg)
 
 	// Explicit device/peer refusal or revocation
@@ -131,7 +171,7 @@ func RunBroadcast(ctx context.Context, targets []BroadcastTarget, opts Broadcast
 					Label:      tgt.Label,
 					Status:     StatusOffline,
 					DurationMs: dur,
-					Error:      ctx.Err().Error(),
+					Error:      diagnostics.Sanitize(ctx.Err().Error()),
 				}
 				if opts.OnTargetComplete != nil {
 					opts.OnTargetComplete(tgt.ID, results[idx])
@@ -177,7 +217,7 @@ func RunBroadcast(ctx context.Context, targets []BroadcastTarget, opts Broadcast
 					Digest:     out.Digest,
 					Size:       out.Size,
 					DurationMs: dur,
-					Outcome:    out,
+					Outcome:    out.ToPublicOutcome(),
 				}
 			} else {
 				status, errMsg := ClassifyBroadcastError(err)

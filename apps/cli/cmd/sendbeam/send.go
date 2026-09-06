@@ -109,8 +109,8 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 	session := rendezvous.Options{
 		Role:      rendezvous.RoleOfferer,
 		WordCount: words,
-		OnCode:    codePrinter(server),
-		OnPhase:   phasePrinter(rendezvous.RoleOfferer),
+		OnCode:    codePrinter(server, stderr),
+		OnPhase:   phasePrinter(rendezvous.RoleOfferer, stderr),
 	}
 	var resumeCtx *transfer.ResumeContext
 	if reused {
@@ -160,10 +160,28 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client, err := dial(ctx, server, insecure)
+	client, err := dial(ctx, server, insecure, stderr)
 	if err != nil {
-		s := newStyleFromWriter(stderr)
-		_, _ = fmt.Fprintf(stderr, "\n%s\n", s.cross("Failed: "+handshakeError(err)))
+		if jsonOutput {
+			status, errMsg := transfer.ClassifyBroadcastError(err)
+			res := transfer.BroadcastResult{
+				Results: []transfer.TargetResult{
+					{
+						TargetID:   "anonymous",
+						Label:      "anonymous",
+						Status:     status,
+						DurationMs: 0,
+						Error:      errMsg,
+					},
+				},
+				AllOk: false,
+			}
+			data, _ := json.MarshalIndent(res, "", "  ")
+			_, _ = fmt.Fprintln(stdout, string(data))
+		} else {
+			s := newStyleFromWriter(stderr)
+			_, _ = fmt.Fprintf(stderr, "\n%s\n", s.cross("Failed: "+handshakeError(err)))
+		}
 		return 1
 	}
 	defer client.Close()
@@ -244,7 +262,7 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 					Digest:     out.Digest,
 					Size:       out.Size,
 					DurationMs: dur,
-					Outcome:    out,
+					Outcome:    out.ToPublicOutcome(),
 				},
 			},
 			AllOk: true,
@@ -321,7 +339,7 @@ func runBroadcastSend(filePaths []string, toDevices []string, server string, ins
 	targets := make([]transfer.BroadcastTarget, len(resolved))
 	for i, r := range resolved {
 		var sig transfer.Signal
-		client, err := dial(ctx, server, insecure)
+		client, err := dial(ctx, server, insecure, stderr)
 		if err != nil {
 			sig = &offlineSignal{err: fmt.Errorf("peer offline: %w", err)}
 		} else {

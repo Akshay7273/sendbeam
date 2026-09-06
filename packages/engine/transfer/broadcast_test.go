@@ -3,9 +3,11 @@ package transfer
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -256,6 +258,74 @@ func TestBroadcast_EmptyTargets(t *testing.T) {
 	}
 	if len(res.Results) != 0 {
 		t.Fatalf("expected 0 results, got %d", len(res.Results))
+	}
+}
+
+func TestBroadcastResult_JSON_NoSecretsExposed(t *testing.T) {
+	payload := []byte("secret-free-test-payload")
+	meta := wire.FileMeta{Name: "secret.txt", Size: int64(len(payload)), Mime: "text/plain"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	hub := newRelay()
+	destDir := t.TempDir()
+	recvDone := make(chan struct{})
+
+	go func() {
+		defer close(recvDone)
+		_, err := Run(ctx, hub.join, Spec{
+			Session:    rendezvous.Options{Role: rendezvous.RoleJoiner, Code: "7-alpha-beta"},
+			DestDir:    destDir,
+			ICEServers: []webrtc.ICEServer{},
+		})
+		if err != nil {
+			t.Errorf("receiver failed: %v", err)
+		}
+	}()
+
+	target := BroadcastTarget{
+		ID:     "dev-test",
+		Label:  "TestDevice",
+		Signal: hub.off,
+		Spec: Spec{
+			Session:    rendezvous.Options{Role: rendezvous.RoleOfferer, Words: "alpha-beta"},
+			Source:     wire.BytesSource(payload, meta, 64*1024),
+			ICEServers: []webrtc.ICEServer{},
+		},
+	}
+
+	result := RunBroadcast(ctx, []BroadcastTarget{target}, BroadcastOptions{
+		Concurrency: 1,
+	})
+
+	<-recvDone
+
+	if !result.AllOk {
+		t.Fatalf("expected broadcast to succeed, got %+v", result)
+	}
+
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		t.Fatalf("json marshal: %v", err)
+	}
+
+	jsonStr := string(data)
+	t.Logf("BroadcastResult JSON:\n%s", jsonStr)
+
+	// Check for forbidden secret leaks
+	forbidden := []string{
+		"Handshake", "handshake",
+		"Master", "master",
+		"Keys", "keys",
+		"Spake2", "spake2",
+		"Code", "code",
+		"O2J", "J2O",
+	}
+	for _, term := range forbidden {
+		if strings.Contains(jsonStr, `"`+term+`"`) {
+			t.Errorf("JSON output contains forbidden field %q", term)
+		}
 	}
 }
 

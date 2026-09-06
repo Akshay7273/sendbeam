@@ -143,20 +143,20 @@ type ResumeResult struct {
 
 // Outcome is the result of a completed transfer.
 type Outcome struct {
-	Handshake *rendezvous.Result
-	Name      string
-	Size      int64
-	Digest    string // whole-file SHA-256 (hex); identical on both peers
-	Path      string // receiver: the written file; empty for a sender
-	Files     []FileOutcome
+	Handshake *rendezvous.Result `json:"-"`
+	Name      string             `json:"name"`
+	Size      int64              `json:"size"`
+	Digest    string             `json:"digest"`         // whole-file SHA-256 (hex); identical on both peers
+	Path      string             `json:"path,omitempty"` // receiver: the written file; empty for a sender
+	Files     []FileOutcome      `json:"files,omitempty"`
 }
 
 // FileOutcome is one source or received destination within an Outcome.
 type FileOutcome struct {
-	Name   string
-	Size   int64
-	Digest string
-	Path   string
+	Name   string `json:"name"`
+	Size   int64  `json:"size"`
+	Digest string `json:"digest,omitempty"`
+	Path   string `json:"path,omitempty"`
 }
 
 // Run performs the handshake over sig and then the file transfer, returning when the transfer

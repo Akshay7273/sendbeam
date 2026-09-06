@@ -2,14 +2,14 @@ package wire
 
 // DirectionalKey is an AEAD key plus the 4-byte salt that prefixes its GCM nonces.
 type DirectionalKey struct {
-	Key  []byte // 32 bytes (AES-256)
-	Salt []byte // 4 bytes — nonce = salt || counter_u64_be
+	Key  []byte `json:"-"` // 32 bytes (AES-256)
+	Salt []byte `json:"-"` // 4 bytes — nonce = salt || counter_u64_be
 }
 
 // TransferKeys are both directional keys derived from one handshake.
 type TransferKeys struct {
-	O2J DirectionalKey // offerer → joiner
-	J2O DirectionalKey // joiner → offerer
+	O2J DirectionalKey `json:"-"` // offerer → joiner
+	J2O DirectionalKey `json:"-"` // joiner → offerer
 }
 
 // DeriveMaster derives the master key, bound to the full handshake transcript so any
