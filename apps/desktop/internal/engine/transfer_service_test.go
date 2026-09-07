@@ -2,7 +2,10 @@ package engine
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -679,5 +682,84 @@ func TestTransferService_PendingConsentAndRespond(t *testing.T) {
 	err = svc.RespondConsent("nonexistent", receiver.ConsentDecision{Accepted: false})
 	if err == nil {
 		t.Fatal("expected error responding to nonexistent consent request")
+	}
+}
+
+func TestTransferService_SendToDeviceAndBroadcast(t *testing.T) {
+	sink := &eventSink{}
+	svc := NewTransferService(sink.emit, nil)
+
+	dir := t.TempDir()
+	src := writePayload(t, dir, "broadcast-test.txt", 1024)
+
+	// 1. SendToDevice without DeviceService fails
+	_, err := svc.SendToDevice([]string{src}, "dev-some-id", "")
+	if err == nil {
+		t.Fatal("expected error when device service is not configured")
+	}
+
+	// 2. Wire DeviceService
+	memCreds := trust.NewMemoryCredentialStore()
+	devSvc, err := NewDeviceServiceWithCredentials(nil, dir, memCreds)
+	if err != nil {
+		t.Fatalf("NewDeviceServiceWithCredentials: %v", err)
+	}
+	defer devSvc.Close()
+
+	svc.SetDeviceService(devSvc)
+	if svc.DeviceService() != devSvc {
+		t.Fatal("expected DeviceService to be set")
+	}
+
+	// 3. Validation errors
+	if _, err := svc.SendToDevice([]string{}, "dev-1", ""); err == nil {
+		t.Fatal("expected error for empty files")
+	}
+	if _, err := svc.SendToDevice([]string{src}, "", ""); err == nil {
+		t.Fatal("expected error for empty recipient ID")
+	}
+
+	// 4. Unknown device returns error
+	if _, err := svc.SendToDevice([]string{src}, "dev-unknown-123", ""); err == nil {
+		t.Fatal("expected error for unknown device")
+	}
+
+	// 5. Revoked device returns error
+	ctx := context.Background()
+	pubA, _, _ := ed25519.GenerateKey(rand.Reader)
+	devID := wire.DeriveDeviceID(pubA)
+	pubHex := hex.EncodeToString(pubA)
+	rec := &wire.TrustRecord{
+		DeviceID:          devID,
+		PublicKey:         pubHex,
+		LocalLabel:        "Old Stale Peer",
+		PairCredentialRef: "cred-revoked",
+		Revoked:           true,
+		FirstSeenAt:       time.Now().UTC(),
+		Policy:            wire.DefaultTrustPolicy(),
+	}
+	if err := devSvc.GetStore().AddOrUpdateDevice(ctx, rec); err != nil {
+		t.Fatalf("AddOrUpdateDevice: %v", err)
+	}
+
+	if _, err := svc.SendToDevice([]string{src}, devID, ""); err == nil {
+		t.Fatal("expected error for revoked device in SendToDevice")
+	}
+
+	// 6. BroadcastSend validation
+	if _, err := svc.BroadcastSend([]string{}, []string{"dev-1"}, ""); err == nil {
+		t.Fatal("expected error for empty files in BroadcastSend")
+	}
+	if _, err := svc.BroadcastSend([]string{src}, []string{}, ""); err == nil {
+		t.Fatal("expected error for empty targets in BroadcastSend")
+	}
+	if _, err := svc.BroadcastSend([]string{src}, []string{"dev-unknown-123"}, ""); err == nil {
+		t.Fatal("expected error for unknown target device in BroadcastSend")
+	}
+
+	// 7. Nil DeviceService in BroadcastSend
+	svc.SetDeviceService(nil)
+	if _, err := svc.BroadcastSend([]string{src}, []string{"dev-1"}, ""); err == nil {
+		t.Fatal("expected error when device service is nil in BroadcastSend")
 	}
 }

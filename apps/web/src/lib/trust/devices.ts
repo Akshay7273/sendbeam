@@ -25,6 +25,7 @@ import {
   type SignalMsg,
 } from '@sendbeam/protocol';
 import { join, offer } from '../session/rendezvous.js';
+import { getWailsBridge, isWailsV3Available } from '../wails/wails-adapter.js';
 import type { TrustedDeviceUI } from './types.js';
 
 declare global {
@@ -61,7 +62,9 @@ declare global {
 export { isPersistentTrustSupported };
 
 export function isDesktopApp(): boolean {
-  return typeof window !== 'undefined' && !!window.go?.engine?.DeviceService;
+  return (
+    typeof window !== 'undefined' && (!!window.go?.engine?.DeviceService || isWailsV3Available())
+  );
 }
 
 type BrowserSecretStore = IndexedDBSecretStore | MemorySecretResolver;
@@ -104,6 +107,10 @@ export function getBrowserStores(): {
 }
 
 export async function listTrustedDevices(): Promise<TrustedDeviceUI[]> {
+  const bridge = getWailsBridge();
+  if (bridge) {
+    return bridge.device.listTrustedDevices();
+  }
   if (isDesktopApp() && window.go?.engine?.DeviceService) {
     return window.go.engine.DeviceService.ListTrustedDevices();
   }
@@ -149,6 +156,10 @@ export async function listTrustedDevices(): Promise<TrustedDeviceUI[]> {
 }
 
 export async function renameTrustedDevice(deviceId: string, newLabel: string): Promise<void> {
+  const bridge = getWailsBridge();
+  if (bridge) {
+    return bridge.device.renameDevice(deviceId, newLabel);
+  }
   if (isDesktopApp() && window.go?.engine?.DeviceService) {
     return window.go.engine.DeviceService.RenameDevice(deviceId, newLabel);
   }
@@ -164,6 +175,10 @@ export async function updateTrustedDevicePolicy(
   deviceId: string,
   policy: TrustPolicy,
 ): Promise<void> {
+  const bridge = getWailsBridge();
+  if (bridge) {
+    return bridge.device.updateDevicePolicy(deviceId, policy);
+  }
   if (isDesktopApp() && window.go?.engine?.DeviceService) {
     return window.go.engine.DeviceService.UpdateDevicePolicy(deviceId, policy);
   }
@@ -173,6 +188,10 @@ export async function updateTrustedDevicePolicy(
 }
 
 export async function unpairTrustedDevice(deviceId: string, purge: boolean): Promise<void> {
+  const bridge = getWailsBridge();
+  if (bridge) {
+    return bridge.device.unpairDevice(deviceId, purge);
+  }
   if (isDesktopApp() && window.go?.engine?.DeviceService) {
     return window.go.engine.DeviceService.UnpairDevice(deviceId, purge);
   }
@@ -276,6 +295,10 @@ export async function pairTrustedDevice(
   autoAccept: boolean,
   dest: string,
 ): Promise<TrustedDeviceUI> {
+  const bridge = getWailsBridge();
+  if (bridge) {
+    return bridge.device.pairDevice(server, code, name, autoAccept, dest);
+  }
   if (isDesktopApp() && window.go?.engine?.DeviceService) {
     return window.go.engine.DeviceService.PairDevice(server, code, name, autoAccept, dest);
   }

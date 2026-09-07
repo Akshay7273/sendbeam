@@ -312,6 +312,78 @@
       }
       .table th { color: var(--text-muted); font-weight: 500; }
       .table tr:last-child td { border-bottom: none; }
+
+      .modal-backdrop {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.75);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        padding: 1rem;
+      }
+      .modal-card {
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        width: 100%;
+        max-width: 520px;
+        padding: 1.5rem;
+        box-shadow: 0 16px 32px rgba(0, 0, 0, 0.5);
+      }
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 0.5rem;
+      }
+      .modal-header h3 {
+        font-size: 1rem;
+        font-weight: 600;
+        color: var(--text-heading);
+      }
+      .badge-lan {
+        background: rgba(35, 134, 54, 0.2);
+        color: #56d364;
+        border: 1px solid rgba(35, 134, 54, 0.4);
+        padding: 0.15rem 0.5rem;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
+      .badge-online {
+        background: rgba(56, 139, 253, 0.2);
+        color: #58a6ff;
+        border: 1px solid rgba(56, 139, 253, 0.4);
+        padding: 0.15rem 0.5rem;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
+      .badge-offline {
+        background: rgba(139, 148, 158, 0.2);
+        color: var(--text-muted);
+        border: 1px solid var(--border);
+        padding: 0.15rem 0.5rem;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
+      .badge-revoked {
+        background: rgba(218, 54, 51, 0.2);
+        color: #f85149;
+        border: 1px solid rgba(218, 54, 51, 0.4);
+        padding: 0.15rem 0.5rem;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
     </style>
   </head>
   <body>
@@ -334,6 +406,7 @@
     <div class="tabs">
       <button class="tab active" id="tab-send">Send</button>
       <button class="tab" id="tab-receive">Receive</button>
+      <button class="tab" id="tab-devices">Devices</button>
       <button class="tab" id="tab-interrupted">Interrupted</button>
       <button class="tab" id="tab-settings">Settings</button>
     </div>
@@ -347,7 +420,15 @@
         </div>
         <ul class="file-list hidden" id="send-list"></ul>
         <div class="statusline" id="send-sel-status"></div>
-        <div class="controls">
+
+        <div style="margin-top:0.75rem;">
+          <label for="send-recipient" style="margin-bottom:0.25rem;">Recipient</label>
+          <select id="send-recipient" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.45rem; border-radius:6px; font-size:0.85rem; outline:none;">
+            <option value="code">Anyone with invite code / link / QR (Default)</option>
+          </select>
+        </div>
+
+        <div class="controls" style="margin-top:0.75rem;">
           <button id="pick-send">Choose files &amp; folders…</button>
           <button class="primary" id="start-send" disabled>Start Transfer</button>
         </div>
@@ -420,6 +501,40 @@
           <button class="ghost hidden" id="recv-reveal">Reveal in Folder</button>
         </div>
         <div class="statusline" id="recv-status-line"></div>
+      </div>
+    </section>
+
+    <!-- DEVICES -->
+    <section class="panel" id="panel-devices">
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+          <div>
+            <h2 style="margin-bottom:0.25rem;">Trusted Devices</h2>
+            <span style="font-size:0.8rem; color:var(--text-muted);">Paired devices for authenticated, peer-to-peer transfers without one-time codes.</span>
+          </div>
+          <button class="primary small" id="open-pair-btn">+ Pair Device</button>
+        </div>
+
+        <div style="overflow-x:auto;">
+          <table class="table" id="devices-table">
+            <thead>
+              <tr>
+                <th>Device</th>
+                <th>Fingerprint</th>
+                <th>Status</th>
+                <th>Auto-Accept</th>
+                <th>Last Seen</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="devices-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="devices-empty" class="hidden" style="padding:2.5rem 1rem; text-align:center; color:var(--text-muted); font-size:0.85rem;">
+          No trusted devices paired yet. Click &ldquo;+ Pair Device&rdquo; to connect another computer or phone.
+        </div>
+        <div class="statusline" id="devices-status"></div>
       </div>
     </section>
 
@@ -502,11 +617,195 @@
       </div>
     </section>
 
+    <!-- PAIR MODAL -->
+    <div class="modal-backdrop hidden" id="modal-pair">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Pair Trusted Device</h3>
+          <button class="ghost small" id="pair-modal-close">&times;</button>
+        </div>
+        <div class="tabs" style="margin-bottom:1rem;">
+          <button class="tab active" id="pair-tab-offer">Show Code</button>
+          <button class="tab" id="pair-tab-join">Enter Code</button>
+        </div>
+
+        <!-- OFFER VIEW -->
+        <div id="pair-offer-view">
+          <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+            Scan this QR code with the SendBeam mobile/web app or enter the 7-word code below on your other device to establish mutual cryptographic trust.
+          </p>
+          <div style="display:flex; justify-content:center; margin-bottom:1rem;">
+            <img id="pair-offer-qr" alt="Pairing QR Code" style="width:200px; height:200px; background:#fff; border-radius:6px; padding:8px;" class="hidden" />
+          </div>
+          <div style="text-align:center; margin-bottom:1rem;">
+            <span class="mono" id="pair-offer-code" style="font-size:1.15rem; font-weight:600; color:var(--primary-hover); word-break:break-all;">Generating invite code…</span>
+          </div>
+          <div class="statusline" id="pair-offer-status" style="text-align:center; margin-bottom:1rem;">Waiting for peer to connect…</div>
+          <div class="controls" style="justify-content:flex-end;">
+            <button id="pair-offer-cancel">Cancel</button>
+          </div>
+        </div>
+
+        <!-- JOIN VIEW -->
+        <div id="pair-join-view" class="hidden">
+          <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.75rem;">
+            Enter the 7-word invite code displayed on the other SendBeam device.
+          </p>
+          <label for="pair-join-code">Invite Code</label>
+          <input type="text" id="pair-join-code" placeholder="e.g. 7-words-here" />
+
+          <label for="pair-join-label">Custom Device Name (Optional)</label>
+          <input type="text" id="pair-join-label" placeholder="e.g. Work Laptop" />
+
+          <label style="display:flex; align-items:center; gap:0.5rem; margin-top:0.75rem;">
+            <input type="checkbox" id="pair-join-auto-accept" />
+            <span>Auto-accept incoming transfers from this device</span>
+          </label>
+
+          <div id="pair-join-dest-container" class="hidden" style="margin-top:0.5rem;">
+            <label for="pair-join-dest-dir">Destination Folder</label>
+            <div style="display:flex; gap:0.5rem;">
+              <input type="text" id="pair-join-dest-dir" placeholder="/path/to/downloads" style="flex:1" />
+              <button class="ghost" id="pair-join-browse-dest">Browse…</button>
+            </div>
+          </div>
+
+          <div class="statusline" id="pair-join-status"></div>
+          <div class="controls" style="justify-content:flex-end; margin-top:1rem;">
+            <button id="pair-join-cancel">Cancel</button>
+            <button class="primary" id="pair-join-submit">Pair Device</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- POLICY MODAL -->
+    <div class="modal-backdrop hidden" id="modal-policy">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Device Policy</h3>
+          <button class="ghost small" id="policy-modal-close">&times;</button>
+        </div>
+        <div id="policy-device-info" style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;"></div>
+
+        <label style="display:flex; align-items:center; gap:0.5rem; margin-top:0.5rem;">
+          <input type="checkbox" id="policy-auto-accept" />
+          <span>Auto-accept incoming transfers from this device</span>
+        </label>
+
+        <div id="policy-dest-container" class="hidden" style="margin-top:0.75rem;">
+          <label for="policy-dest-dir">Auto-Accept Destination Folder</label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="text" id="policy-dest-dir" placeholder="/path/to/downloads" style="flex:1" />
+            <button class="ghost" id="policy-browse-dest">Browse…</button>
+          </div>
+        </div>
+
+        <div class="statusline" id="policy-status"></div>
+        <div class="controls" style="justify-content:flex-end; margin-top:1rem;">
+          <button id="policy-cancel-btn">Cancel</button>
+          <button class="primary" id="policy-save-btn">Save Policy</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RENAME MODAL -->
+    <div class="modal-backdrop hidden" id="modal-rename">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Rename Device</h3>
+          <button class="ghost small" id="rename-modal-close">&times;</button>
+        </div>
+        <label for="rename-label-input">Device Name</label>
+        <input type="text" id="rename-label-input" placeholder="e.g. Work Phone" />
+
+        <div class="statusline" id="rename-status"></div>
+        <div class="controls" style="justify-content:flex-end; margin-top:1rem;">
+          <button id="rename-cancel-btn">Cancel</button>
+          <button class="primary" id="rename-save-btn">Save Name</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- UNPAIR MODAL -->
+    <div class="modal-backdrop hidden" id="modal-unpair">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 style="color:var(--danger-hover);">Unpair Device</h3>
+          <button class="ghost small" id="unpair-modal-close">&times;</button>
+        </div>
+        <p id="unpair-device-prompt" style="font-size:0.85rem; margin-bottom:1rem;"></p>
+
+        <div style="display:flex; flex-direction:column; gap:0.75rem; margin-bottom:1rem;">
+          <label style="display:flex; align-items:flex-start; gap:0.5rem; cursor:pointer;">
+            <input type="radio" name="unpair-mode" value="revoke" checked style="margin-top:0.25rem;" />
+            <div>
+              <strong style="color:var(--text-heading);">Revoke trust (Recommended)</strong>
+              <div style="font-size:0.75rem; color:var(--text-muted);">Creates a cryptographic tombstone that permanently prevents unauthorized re-pairing from this device ID until tombstone expiration.</div>
+            </div>
+          </label>
+          <label style="display:flex; align-items:flex-start; gap:0.5rem; cursor:pointer;">
+            <input type="radio" name="unpair-mode" value="purge" style="margin-top:0.25rem;" />
+            <div>
+              <strong style="color:var(--text-heading);">Purge completely</strong>
+              <div style="font-size:0.75rem; color:var(--text-muted);">Deletes all local trust records and cryptographic keys without issuing a tombstone.</div>
+            </div>
+          </label>
+        </div>
+
+        <div class="statusline" id="unpair-status"></div>
+        <div class="controls" style="justify-content:flex-end; margin-top:1rem;">
+          <button id="unpair-cancel-btn">Cancel</button>
+          <button class="danger" id="unpair-confirm-btn">Unpair</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- INCOMING CONSENT MODAL -->
+    <div class="modal-backdrop hidden" id="modal-consent">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Incoming Transfer Request</h3>
+        </div>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.75rem;">
+          A paired trusted device is sending files to you.
+        </p>
+
+        <div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:0.75rem; margin-bottom:1rem; font-size:0.85rem;">
+          <div style="margin-bottom:0.4rem;">
+            <span style="color:var(--text-muted);">From: </span>
+            <strong id="consent-device-name" style="color:var(--text-heading);"></strong>
+          </div>
+          <div style="margin-bottom:0.4rem;">
+            <span style="color:var(--text-muted);">Fingerprint: </span>
+            <span class="mono small" id="consent-fingerprint"></span>
+          </div>
+          <div>
+            <span style="color:var(--text-muted);">Files: </span>
+            <span id="consent-files-summary" style="color:var(--text-heading);"></span>
+          </div>
+        </div>
+
+        <label for="consent-dest-dir">Save into folder</label>
+        <div style="display:flex; gap:0.5rem;">
+          <input type="text" id="consent-dest-dir" placeholder="/path/to/downloads" style="flex:1" />
+          <button class="ghost" id="consent-browse-dest">Browse…</button>
+        </div>
+
+        <div class="statusline" id="consent-status"></div>
+        <div class="controls" style="justify-content:flex-end; margin-top:1.25rem;">
+          <button class="danger small" id="consent-decline-btn">Decline</button>
+          <button class="primary small" id="consent-accept-btn">Accept Transfer</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       const SV = {
         Service:  "github.com/sendbeam/desktop/internal/engine.Service",
         Transfer: "github.com/sendbeam/desktop/internal/engine.TransferService",
         Update:   "github.com/sendbeam/desktop/internal/engine.UpdateService",
+        Device:   "github.com/sendbeam/desktop/internal/engine.DeviceService",
       };
       const call = (fqn, ...args) => wails.Call.ByName(fqn, ...args);
       const $ = (id) => document.getElementById(id);
@@ -532,21 +831,26 @@
       const state = {
         mode: "send",
         selected: [],
+        devices: [],
         send: { id: null },
         recv: { id: null, outPath: null },
+        activeDevice: null,
+        pendingConsentId: null,
       };
 
       function setMode(mode) {
         state.mode = mode;
-        ["send", "receive", "interrupted", "settings"].forEach((m) => {
+        ["send", "receive", "devices", "interrupted", "settings"].forEach((m) => {
           $("tab-" + m).classList.toggle("active", mode === m);
           $("panel-" + m).classList.toggle("active", mode === m);
         });
+        if (mode === "devices") loadDevicesList();
         if (mode === "interrupted") loadDurableList();
         if (mode === "settings") loadSettings();
       }
       $("tab-send").addEventListener("click", () => setMode("send"));
       $("tab-receive").addEventListener("click", () => setMode("receive"));
+      $("tab-devices").addEventListener("click", () => setMode("devices"));
       $("tab-interrupted").addEventListener("click", () => setMode("interrupted"));
       $("tab-settings").addEventListener("click", () => setMode("settings"));
 
@@ -604,7 +908,32 @@
       $("start-send").addEventListener("click", () => {
         if (!state.selected.length) return;
         const paths = state.selected.map((p) => p.path);
-        call(SV.Transfer + ".Send", paths, "").then((h) => {
+        const recipient = $("send-recipient") ? $("send-recipient").value : "code";
+
+        if (recipient === "broadcast:all") {
+          const devIds = state.devices.filter((d) => !d.revoked).map((d) => d.deviceId);
+          if (!devIds.length) {
+            $("send-status").textContent = "No trusted devices available for broadcast.";
+            return;
+          }
+          $("send-status").textContent = "Broadcasting to " + devIds.length + " devices…";
+          $("start-send").disabled = true;
+          call(SV.Transfer + ".BroadcastSend", paths, devIds, "").then((results) => {
+            const okCount = (results || []).filter((r) => r.status === "ok").length;
+            $("send-status").textContent = "Broadcast finished: " + okCount + "/" + devIds.length + " successful.";
+            $("start-send").disabled = false;
+          }).catch((err) => {
+            $("send-status").textContent = String(err);
+            $("start-send").disabled = false;
+          });
+          return;
+        }
+
+        const sendPromise = (recipient && recipient !== "code")
+          ? call(SV.Transfer + ".SendToDevice", paths, recipient, "")
+          : call(SV.Transfer + ".Send", paths, "");
+
+        sendPromise.then((h) => {
           if (h && h.error) { $("send-status").textContent = h.error; return; }
           state.send.id = h.id;
           $("send-status").textContent = "Preparing secure channel…";
@@ -757,6 +1086,467 @@
           catch (err) { $("invite-status").textContent = "Copy failed — select the code manually."; }
           document.body.removeChild(ta);
         }
+      });
+
+      // DEVICES
+      function formatStatusBadge(status, revoked) {
+        const span = document.createElement("span");
+        if (revoked || status === "revoked") {
+          span.className = "badge-revoked";
+          span.textContent = "Revoked";
+        } else if (status === "lan_direct") {
+          span.className = "badge-lan";
+          span.textContent = "LAN Direct";
+        } else if (status === "online") {
+          span.className = "badge-online";
+          span.textContent = "Online";
+        } else {
+          span.className = "badge-offline";
+          span.textContent = "Offline";
+        }
+        return span;
+      }
+
+      function updateRecipientSelect(devices) {
+        const sel = $("send-recipient");
+        if (!sel) return;
+        const currentVal = sel.value;
+        sel.replaceChildren();
+
+        const defOpt = document.createElement("option");
+        defOpt.value = "code";
+        defOpt.textContent = "Anyone with invite code / link / QR (Default)";
+        sel.appendChild(defOpt);
+
+        const activeDevs = (devices || []).filter((d) => !d.revoked);
+        for (const d of activeDevs) {
+          const opt = document.createElement("option");
+          opt.value = d.deviceId;
+          const statusText = d.status === "lan_direct" ? "LAN Direct" : d.status === "online" ? "Online" : "Offline";
+          opt.textContent = d.localLabel + " (" + statusText + ")";
+          sel.appendChild(opt);
+        }
+
+        if (activeDevs.length > 1) {
+          const bOpt = document.createElement("option");
+          bOpt.value = "broadcast:all";
+          bOpt.textContent = "Broadcast to all trusted devices (" + activeDevs.length + ")";
+          sel.appendChild(bOpt);
+        }
+
+        sel.value = currentVal || "code";
+        if (sel.selectedIndex === -1) sel.value = "code";
+      }
+
+      function renderDevicesList(devices) {
+        state.devices = devices || [];
+        updateRecipientSelect(state.devices);
+
+        const tbody = $("devices-tbody");
+        if (!tbody) return;
+        tbody.replaceChildren();
+
+        if (!devices || devices.length === 0) {
+          $("devices-empty").classList.remove("hidden");
+          $("devices-table").classList.add("hidden");
+          return;
+        }
+
+        $("devices-empty").classList.add("hidden");
+        $("devices-table").classList.remove("hidden");
+
+        for (const dev of devices) {
+          const tr = document.createElement("tr");
+
+          // Device Name + ID
+          const tdDev = document.createElement("td");
+          const strong = document.createElement("strong");
+          strong.textContent = dev.localLabel;
+          tdDev.appendChild(strong);
+          const devIdDiv = document.createElement("div");
+          devIdDiv.className = "mono small";
+          devIdDiv.style.color = "var(--text-muted)";
+          devIdDiv.textContent = dev.deviceId;
+          tdDev.appendChild(devIdDiv);
+          tr.appendChild(tdDev);
+
+          // Fingerprint
+          const tdFp = document.createElement("td");
+          const fpSpan = document.createElement("span");
+          fpSpan.className = "mono small";
+          fpSpan.textContent = dev.fingerprint;
+          tdFp.appendChild(fpSpan);
+          tr.appendChild(tdFp);
+
+          // Status Badge
+          const tdStatus = document.createElement("td");
+          tdStatus.appendChild(formatStatusBadge(dev.status, dev.revoked));
+          tr.appendChild(tdStatus);
+
+          // Auto-Accept
+          const tdAuto = document.createElement("td");
+          if (dev.policy && dev.policy.autoAccept) {
+            tdAuto.textContent = "Yes (" + (dev.policy.autoAcceptDestDir || "") + ")";
+          } else {
+            tdAuto.textContent = "No";
+          }
+          tr.appendChild(tdAuto);
+
+          // Last Seen
+          const tdSeen = document.createElement("td");
+          tdSeen.textContent = dev.lastSeenAt || "Never";
+          tr.appendChild(tdSeen);
+
+          // Actions
+          const tdActions = document.createElement("td");
+          tdActions.style.whiteSpace = "nowrap";
+
+          const btnPolicy = document.createElement("button");
+          btnPolicy.className = "ghost small";
+          btnPolicy.textContent = "Policy";
+          btnPolicy.setAttribute("data-id", dev.deviceId);
+          btnPolicy.setAttribute("data-action", "policy");
+          btnPolicy.addEventListener("click", () => openPolicyModal(dev));
+          tdActions.appendChild(btnPolicy);
+
+          const btnRename = document.createElement("button");
+          btnRename.className = "ghost small";
+          btnRename.textContent = "Rename";
+          btnRename.setAttribute("data-id", dev.deviceId);
+          btnRename.setAttribute("data-action", "rename");
+          btnRename.addEventListener("click", () => openRenameModal(dev));
+          tdActions.appendChild(btnRename);
+
+          if (!dev.revoked) {
+            const btnSend = document.createElement("button");
+            btnSend.className = "ghost small";
+            btnSend.textContent = "Send";
+            btnSend.setAttribute("data-id", dev.deviceId);
+            btnSend.setAttribute("data-action", "send");
+            btnSend.addEventListener("click", () => {
+              setMode("send");
+              if ($("send-recipient")) $("send-recipient").value = dev.deviceId;
+            });
+            tdActions.appendChild(btnSend);
+          }
+
+          const btnUnpair = document.createElement("button");
+          btnUnpair.className = "ghost small danger";
+          btnUnpair.textContent = "Unpair";
+          btnUnpair.setAttribute("data-id", dev.deviceId);
+          btnUnpair.setAttribute("data-action", "unpair");
+          btnUnpair.addEventListener("click", () => openUnpairModal(dev));
+          tdActions.appendChild(btnUnpair);
+
+          tr.appendChild(tdActions);
+          tbody.appendChild(tr);
+        }
+      }
+
+      async function loadDevicesList() {
+        try {
+          $("devices-status").textContent = "Loading devices…";
+          const list = await call(SV.Device + ".ListTrustedDevices");
+          $("devices-status").textContent = "";
+          renderDevicesList(list);
+        } catch (err) {
+          $("devices-status").textContent = "Failed to load devices: " + err;
+        }
+      }
+
+      wails.Events.On("sendbeam:devices", (devices) => {
+        renderDevicesList(devices);
+      });
+
+      // MODALS
+      function hideAllModals() {
+        ["modal-pair", "modal-policy", "modal-rename", "modal-unpair", "modal-consent"].forEach((id) => {
+          const m = $(id);
+          if (m) m.classList.add("hidden");
+        });
+      }
+
+      // 1. PAIR MODAL
+      let activeOfferCanceller = false;
+      function openPairModal() {
+        hideAllModals();
+        $("modal-pair").classList.remove("hidden");
+        setPairMode("offer");
+      }
+      function closePairModal() {
+        $("modal-pair").classList.add("hidden");
+        if (activeOfferCanceller) {
+          call(SV.Device + ".CancelPairingOffer").catch(() => {});
+          activeOfferCanceller = false;
+        }
+      }
+      $("open-pair-btn").addEventListener("click", openPairModal);
+      $("pair-modal-close").addEventListener("click", closePairModal);
+      $("pair-offer-cancel").addEventListener("click", closePairModal);
+      $("pair-join-cancel").addEventListener("click", closePairModal);
+
+      function setPairMode(mode) {
+        $("pair-tab-offer").classList.toggle("active", mode === "offer");
+        $("pair-tab-join").classList.toggle("active", mode === "join");
+        $("pair-offer-view").classList.toggle("hidden", mode !== "offer");
+        $("pair-join-view").classList.toggle("hidden", mode !== "join");
+
+        if (mode === "offer") {
+          startOfferCeremony();
+        } else {
+          if (activeOfferCanceller) {
+            call(SV.Device + ".CancelPairingOffer").catch(() => {});
+            activeOfferCanceller = false;
+          }
+        }
+      }
+      $("pair-tab-offer").addEventListener("click", () => setPairMode("offer"));
+      $("pair-tab-join").addEventListener("click", () => setPairMode("join"));
+
+      async function startOfferCeremony() {
+        activeOfferCanceller = true;
+        $("pair-offer-code").textContent = "Allocating pairing room…";
+        $("pair-offer-status").textContent = "Waiting for peer to connect…";
+        const qrImg = $("pair-offer-qr");
+        qrImg.classList.add("hidden");
+        qrImg.src = "";
+
+        try {
+          const res = await call(SV.Device + ".StartPairingOffer", "", "", false, "");
+          if (res && res.code) {
+            $("pair-offer-code").textContent = res.code;
+            if (res.qr && res.qr.startsWith("data:image/png;base64,")) {
+              qrImg.src = res.qr;
+              qrImg.classList.remove("hidden");
+            }
+          }
+        } catch (err) {
+          $("pair-offer-code").textContent = "Offer failed";
+          $("pair-offer-status").textContent = String(err);
+        }
+      }
+
+      $("pair-join-auto-accept").addEventListener("change", (e) => {
+        $("pair-join-dest-container").classList.toggle("hidden", !e.target.checked);
+      });
+      $("pair-join-browse-dest").addEventListener("click", async () => {
+        const res = await call(SV.Transfer + ".PickDestination");
+        if (res && res.paths && res.paths.length) {
+          $("pair-join-dest-dir").value = res.paths[0];
+        }
+      });
+      $("pair-join-submit").addEventListener("click", async () => {
+        const code = $("pair-join-code").value.trim();
+        const label = $("pair-join-label").value.trim();
+        const autoAccept = $("pair-join-auto-accept").checked;
+        const destDir = $("pair-join-dest-dir").value.trim();
+
+        if (!code) {
+          $("pair-join-status").textContent = "Invite code is required.";
+          return;
+        }
+        if (autoAccept && !destDir) {
+          $("pair-join-status").textContent = "Destination directory required when auto-accept is enabled.";
+          return;
+        }
+
+        $("pair-join-status").textContent = "Pairing with device…";
+        $("pair-join-submit").disabled = true;
+
+        try {
+          await call(SV.Device + ".PairDevice", "", code, label, autoAccept, destDir);
+          $("pair-join-status").textContent = "Paired successfully!";
+          closePairModal();
+          loadDevicesList();
+        } catch (err) {
+          $("pair-join-status").textContent = String(err);
+        } finally {
+          $("pair-join-submit").disabled = false;
+        }
+      });
+
+      wails.Events.On("sendbeam:pairing_complete", () => {
+        $("pair-offer-status").textContent = "Successfully paired!";
+        setTimeout(() => {
+          closePairModal();
+          loadDevicesList();
+        }, 1000);
+      });
+
+      wails.Events.On("sendbeam:pairing_failed", (ev) => {
+        $("pair-offer-status").textContent = "Pairing failed: " + (ev && ev.error ? ev.error : "unknown error");
+      });
+
+      // 2. POLICY MODAL
+      function openPolicyModal(dev) {
+        hideAllModals();
+        state.activeDevice = dev;
+        $("modal-policy").classList.remove("hidden");
+
+        const info = $("policy-device-info");
+        info.replaceChildren();
+        const st = document.createElement("strong");
+        st.textContent = dev.localLabel;
+        info.appendChild(st);
+        info.appendChild(document.createTextNode(" (" + dev.fingerprint + ")"));
+
+        const isAuto = !!(dev.policy && dev.policy.autoAccept);
+        $("policy-auto-accept").checked = isAuto;
+        $("policy-dest-container").classList.toggle("hidden", !isAuto);
+        $("policy-dest-dir").value = (dev.policy && dev.policy.autoAcceptDestDir) || "";
+        $("policy-status").textContent = "";
+      }
+      function closePolicyModal() {
+        $("modal-policy").classList.add("hidden");
+        state.activeDevice = null;
+      }
+      $("policy-modal-close").addEventListener("click", closePolicyModal);
+      $("policy-cancel-btn").addEventListener("click", closePolicyModal);
+      $("policy-auto-accept").addEventListener("change", (e) => {
+        $("policy-dest-container").classList.toggle("hidden", !e.target.checked);
+      });
+      $("policy-browse-dest").addEventListener("click", async () => {
+        const res = await call(SV.Transfer + ".PickDestination");
+        if (res && res.paths && res.paths.length) {
+          $("policy-dest-dir").value = res.paths[0];
+        }
+      });
+      $("policy-save-btn").addEventListener("click", async () => {
+        if (!state.activeDevice) return;
+        const autoAccept = $("policy-auto-accept").checked;
+        const destDir = $("policy-dest-dir").value.trim();
+        if (autoAccept && !destDir) {
+          $("policy-status").textContent = "Destination folder required when auto-accept is enabled.";
+          return;
+        }
+        $("policy-status").textContent = "Saving policy…";
+        try {
+          await call(SV.Device + ".UpdateDevicePolicy", state.activeDevice.deviceId, {
+            autoAccept: autoAccept,
+            autoAcceptDestDir: destDir,
+          });
+          closePolicyModal();
+          loadDevicesList();
+        } catch (err) {
+          $("policy-status").textContent = String(err);
+        }
+      });
+
+      // 3. RENAME MODAL
+      function openRenameModal(dev) {
+        hideAllModals();
+        state.activeDevice = dev;
+        $("modal-rename").classList.remove("hidden");
+        $("rename-label-input").value = dev.localLabel;
+        $("rename-status").textContent = "";
+      }
+      function closeRenameModal() {
+        $("modal-rename").classList.add("hidden");
+        state.activeDevice = null;
+      }
+      $("rename-modal-close").addEventListener("click", closeRenameModal);
+      $("rename-cancel-btn").addEventListener("click", closeRenameModal);
+      $("rename-save-btn").addEventListener("click", async () => {
+        if (!state.activeDevice) return;
+        const newLabel = $("rename-label-input").value.trim();
+        if (!newLabel) {
+          $("rename-status").textContent = "Name cannot be empty.";
+          return;
+        }
+        $("rename-status").textContent = "Saving…";
+        try {
+          await call(SV.Device + ".RenameDevice", state.activeDevice.deviceId, newLabel);
+          closeRenameModal();
+          loadDevicesList();
+        } catch (err) {
+          $("rename-status").textContent = String(err);
+        }
+      });
+
+      // 4. UNPAIR MODAL
+      function openUnpairModal(dev) {
+        hideAllModals();
+        state.activeDevice = dev;
+        $("modal-unpair").classList.remove("hidden");
+        const prompt = $("unpair-device-prompt");
+        prompt.replaceChildren();
+        prompt.appendChild(document.createTextNode("Are you sure you want to unpair "));
+        const st = document.createElement("strong");
+        st.textContent = dev.localLabel;
+        prompt.appendChild(st);
+        prompt.appendChild(document.createTextNode(" (" + dev.fingerprint + ")?"));
+        $("unpair-status").textContent = "";
+      }
+      function closeUnpairModal() {
+        $("modal-unpair").classList.add("hidden");
+        state.activeDevice = null;
+      }
+      $("unpair-modal-close").addEventListener("click", closeUnpairModal);
+      $("unpair-cancel-btn").addEventListener("click", closeUnpairModal);
+      $("unpair-confirm-btn").addEventListener("click", async () => {
+        if (!state.activeDevice) return;
+        const modeEl = document.querySelector('input[name="unpair-mode"]:checked');
+        const purge = modeEl ? modeEl.value === "purge" : false;
+        $("unpair-status").textContent = "Unpairing…";
+        try {
+          await call(SV.Device + ".UnpairDevice", state.activeDevice.deviceId, purge);
+          closeUnpairModal();
+          loadDevicesList();
+        } catch (err) {
+          $("unpair-status").textContent = String(err);
+        }
+      });
+
+      // 5. INCOMING CONSENT MODAL
+      function showConsentPrompt(req) {
+        if (!req || !req.transferId) return;
+        state.pendingConsentId = req.transferId;
+        $("modal-consent").classList.remove("hidden");
+        $("consent-device-name").textContent = req.peerName || req.peerDeviceId || "Trusted Device";
+        $("consent-fingerprint").textContent = req.fingerprint || "";
+        const label = req.fileName || "File";
+        $("consent-files-summary").textContent = label + " (" + humanBytes(req.totalSize || 0) + ")";
+        $("consent-dest-dir").value = req.destDir || $("cfg-downdir").value || "";
+        $("consent-status").textContent = "";
+      }
+      $("consent-browse-dest").addEventListener("click", async () => {
+        const res = await call(SV.Transfer + ".PickDestination");
+        if (res && res.paths && res.paths.length) {
+          $("consent-dest-dir").value = res.paths[0];
+        }
+      });
+      $("consent-accept-btn").addEventListener("click", async () => {
+        if (!state.pendingConsentId) return;
+        const destDir = $("consent-dest-dir").value.trim();
+        $("consent-status").textContent = "Accepting…";
+        try {
+          await call(SV.Transfer + ".RespondConsent", state.pendingConsentId, {
+            accepted: true,
+            destDir: destDir,
+          });
+          $("modal-consent").classList.add("hidden");
+          state.pendingConsentId = null;
+        } catch (err) {
+          $("consent-status").textContent = String(err);
+        }
+      });
+      $("consent-decline-btn").addEventListener("click", async () => {
+        if (!state.pendingConsentId) return;
+        $("consent-status").textContent = "Declining…";
+        try {
+          await call(SV.Transfer + ".RespondConsent", state.pendingConsentId, {
+            accepted: false,
+            reason: "Declined by user",
+          });
+          $("modal-consent").classList.add("hidden");
+          state.pendingConsentId = null;
+        } catch (err) {
+          $("consent-status").textContent = String(err);
+        }
+      });
+
+      wails.Events.On("sendbeam:consent", (req) => {
+        showConsentPrompt(req);
       });
 
       // DURABLE / INTERRUPTED
@@ -1017,6 +1807,15 @@
         try {
           const st = await call(SV.Update + ".GetStatus");
           if (st) renderUpdateStatus(st);
+        } catch (err) {}
+
+        try {
+          await loadDevicesList();
+        } catch (err) {}
+
+        try {
+          const consents = await call(SV.Transfer + ".PendingConsents");
+          if (consents && consents.length) showConsentPrompt(consents[0]);
         } catch (err) {}
       })();
     </script>

@@ -177,6 +177,22 @@ type TransferService struct {
 
 	nativeReceiver       *receiver.Listener
 	nativeReceiverCancel context.CancelFunc
+
+	deviceService *DeviceService
+}
+
+// SetDeviceService sets the device service reference for targeted sends and peer trust resolution.
+func (s *TransferService) SetDeviceService(ds *DeviceService) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deviceService = ds
+}
+
+// DeviceService returns the configured device service or nil.
+func (s *TransferService) DeviceService() *DeviceService {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deviceService
 }
 
 // SetPicker sets the native dialog picker provider (e.g. Wails dialogs).
@@ -447,6 +463,201 @@ func (s *TransferService) Send(paths []string, server string) (Handle, error) {
 
 	go r.runSend(r.ctx, server, sources, paths, iceServers)
 	return Handle{ID: id, Role: "send"}, nil
+}
+
+// SendToDevice starts a targeted send to a paired trusted device using sendbeam/3 opaque rendezvous.
+func (s *TransferService) SendToDevice(paths []string, deviceID string, server string) (Handle, error) {
+	if len(paths) == 0 {
+		return Handle{}, errors.New("no files or folders selected")
+	}
+	if deviceID == "" {
+		return Handle{}, errors.New("device ID is required")
+	}
+	if server == "" {
+		if s.configStore != nil {
+			if cfg, err := s.configStore.Load(); err == nil && cfg.ServerURL != "" {
+				server = cfg.ServerURL
+			}
+		}
+		if server == "" {
+			server = DefaultServer
+		}
+	}
+	if err := validatePaths(paths); err != nil {
+		return Handle{}, err
+	}
+	iceServers, err := s.resolveICEServers()
+	if err != nil {
+		return Handle{}, err
+	}
+
+	ds := s.DeviceService()
+	if ds == nil {
+		return Handle{}, errors.New("device service not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	dev, err := ds.GetStore().GetDevice(ctx, deviceID)
+	if err != nil {
+		return Handle{}, fmt.Errorf("device %s not found: %w", deviceID, err)
+	}
+	tombstones := ds.GetTombstoneStore()
+	if dev.Revoked || (tombstones != nil && tombstones.HasTombstone(ctx, dev.DeviceID)) {
+		return Handle{}, fmt.Errorf("trust for device %q is revoked", dev.LocalLabel)
+	}
+	kPair, err := ds.GetCredentialStore().ResolvePairSecret(ctx, dev.DeviceID, dev.PairCredentialRef)
+	if err != nil || len(kPair) == 0 {
+		return Handle{}, fmt.Errorf("failed to resolve pair secret for device %q: %w", dev.LocalLabel, err)
+	}
+	peerPubKey, err := wire.ParsePublicKeyHex(dev.PublicKey)
+	if err != nil {
+		return Handle{}, fmt.Errorf("invalid public key for device %q: %w", dev.LocalLabel, err)
+	}
+	localID, err := ds.GetIdentityManager().GetOrCreateIdentity()
+	if err != nil {
+		return Handle{}, fmt.Errorf("failed to get local identity: %w", err)
+	}
+
+	handle := wire.DeriveRendezvousHandleForTime(kPair, time.Now().UTC(), wire.DefaultRendezvousEpochWindow)
+	replayCache := wire.NewNonceReplayCache(5 * time.Minute)
+	opaqueOpts := &rendezvous.OpaqueOptions{
+		Role:              rendezvous.RoleOfferer,
+		Handle:            handle,
+		LocalIdentity:     localID,
+		PeerDeviceID:      dev.DeviceID,
+		PeerPublicKey:     peerPubKey,
+		KPair:             kPair,
+		PairCredentialRef: dev.PairCredentialRef,
+		LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume"},
+		ReplayCache:       replayCache,
+		Tombstones:        tombstones,
+		TrustStore:        ds.GetStore(),
+	}
+
+	sources, total, err := transfer.NewOSFileSources(paths)
+	if err != nil {
+		return Handle{}, err
+	}
+
+	id := s.newID()
+	r := s.newRun(id, wire.RoleOfferer)
+	for _, src := range sources {
+		meta := src.Meta()
+		r.mu.Lock()
+		r.files = append(r.files, FileInfo{Name: meta.Name, Size: meta.Size})
+		r.totalBytes += meta.Size
+		r.mu.Unlock()
+	}
+	_ = total
+
+	go r.runSendTargeted(r.ctx, server, sources, paths, iceServers, opaqueOpts, dev.LocalLabel, dev.DeviceID)
+	return Handle{ID: id, Role: "send"}, nil
+}
+
+// BroadcastSend sends files concurrently to multiple trusted devices.
+func (s *TransferService) BroadcastSend(paths []string, deviceIDs []string, server string) ([]transfer.TargetResult, error) {
+	if len(paths) == 0 {
+		return nil, errors.New("no files or folders selected")
+	}
+	if len(deviceIDs) == 0 {
+		return nil, errors.New("no target devices selected")
+	}
+	if server == "" {
+		if s.configStore != nil {
+			if cfg, err := s.configStore.Load(); err == nil && cfg.ServerURL != "" {
+				server = cfg.ServerURL
+			}
+		}
+		if server == "" {
+			server = DefaultServer
+		}
+	}
+	if err := validatePaths(paths); err != nil {
+		return nil, err
+	}
+	iceServers, err := s.resolveICEServers()
+	if err != nil {
+		return nil, err
+	}
+
+	ds := s.DeviceService()
+	if ds == nil {
+		return nil, errors.New("device service not available")
+	}
+
+	ctx := context.Background()
+	localID, err := ds.GetIdentityManager().GetOrCreateIdentity()
+	if err != nil {
+		return nil, fmt.Errorf("local identity error: %w", err)
+	}
+
+	sources, _, err := transfer.NewOSFileSources(paths)
+	if err != nil {
+		return nil, err
+	}
+
+	replayCache := wire.NewNonceReplayCache(5 * time.Minute)
+	targets := make([]transfer.BroadcastTarget, 0, len(deviceIDs))
+
+	for _, devID := range deviceIDs {
+		dev, err := ds.GetStore().GetDevice(ctx, devID)
+		if err != nil {
+			return nil, fmt.Errorf("device %s not found: %w", devID, err)
+		}
+		tombstones := ds.GetTombstoneStore()
+		if dev.Revoked || (tombstones != nil && tombstones.HasTombstone(ctx, dev.DeviceID)) {
+			return nil, fmt.Errorf("trust for device %q is revoked", dev.LocalLabel)
+		}
+		kPair, err := ds.GetCredentialStore().ResolvePairSecret(ctx, dev.DeviceID, dev.PairCredentialRef)
+		if err != nil || len(kPair) == 0 {
+			return nil, fmt.Errorf("failed to resolve pair secret for device %q: %w", dev.LocalLabel, err)
+		}
+		peerPubKey, err := wire.ParsePublicKeyHex(dev.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("invalid public key for device %q: %w", dev.LocalLabel, err)
+		}
+
+		handle := wire.DeriveRendezvousHandleForTime(kPair, time.Now().UTC(), wire.DefaultRendezvousEpochWindow)
+		opaqueOpts := &rendezvous.OpaqueOptions{
+			Role:              rendezvous.RoleOfferer,
+			Handle:            handle,
+			LocalIdentity:     localID,
+			PeerDeviceID:      dev.DeviceID,
+			PeerPublicKey:     peerPubKey,
+			KPair:             kPair,
+			PairCredentialRef: dev.PairCredentialRef,
+			LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume"},
+			ReplayCache:       replayCache,
+			Tombstones:        tombstones,
+			TrustStore:        ds.GetStore(),
+		}
+
+		spec := transfer.Spec{
+			Opaque:       opaqueOpts,
+			PeerDeviceID: dev.DeviceID,
+			PeerLabel:    dev.LocalLabel,
+			Sources:      sources,
+			ICEServers:   iceServers,
+			ForceRelay:   s.forceRelay,
+		}
+
+		targets = append(targets, transfer.BroadcastTarget{
+			ID:    dev.DeviceID,
+			Label: dev.LocalLabel,
+			Dial: func(dialCtx context.Context) (transfer.Signal, error) {
+				return s.dial(dialCtx, server, wire.RoleOfferer)
+			},
+			Spec: spec,
+		})
+	}
+
+	bResult := transfer.RunBroadcast(ctx, targets, transfer.BroadcastOptions{
+		Concurrency: 4,
+	})
+
+	return bResult.Results, nil
 }
 
 // Receive starts a joiner (receive) transfer for a code (or a full invite
@@ -1282,6 +1493,91 @@ func (r *transferRun) runSend(ctx context.Context, server string, sources []wire
 
 	if r.svc.notifier != nil {
 		summary := fmt.Sprintf("Sent %d file(s) (%s)", len(out.Files), humanBytes(r.totalBytes))
+		r.svc.notifier.NotifySuccess("Transfer Complete", summary, "")
+	}
+}
+
+// runSendTargeted drives an offerer transfer targeted to a specific paired device via opaque rendezvous.
+func (r *transferRun) runSendTargeted(ctx context.Context, server string, sources []wire.FileSource, paths []string, iceServers []webrtc.ICEServer, opaqueOpts *rendezvous.OpaqueOptions, peerLabel, peerDeviceID string) {
+	defer r.svc.remove(r)
+
+	sig, err := r.svc.dial(ctx, server, wire.RoleOfferer)
+	if err != nil {
+		r.fail("dial: " + err.Error())
+		if r.svc.notifier != nil {
+			r.svc.notifier.NotifyFailure("Transfer Failed", "dial: "+err.Error())
+		}
+		return
+	}
+	defer sig.Close()
+
+	lastProgress := time.Time{}
+	emitProgress := func() {
+		now := time.Now()
+		if now.Sub(lastProgress) < 200*time.Millisecond {
+			return
+		}
+		lastProgress = now
+		r.publish("progress")
+	}
+
+	spec := transfer.Spec{
+		Opaque:         opaqueOpts,
+		PeerDeviceID:   peerDeviceID,
+		PeerLabel:      peerLabel,
+		Sources:        sources,
+		ForceRelay:     r.svc.forceRelay,
+		ICEServers:     iceServers,
+		OnTransport:    r.onTransport,
+		OnConnect:      func() { r.publish("connect") },
+		OnFileProgress: r.onFileProgress,
+		OnProgress: func(n int64) {
+			r.mu.Lock()
+			r.doneBytes = n
+			r.recordSample(n)
+			r.mu.Unlock()
+			emitProgress()
+		},
+		OnControls: func(c transfer.Controls) {
+			r.mu.Lock()
+			r.controls = c
+			r.mu.Unlock()
+			r.publish("connect")
+		},
+		OnStateChange: r.onState,
+	}
+
+	out, err := transfer.Run(ctx, sig, spec)
+	if err != nil {
+		r.fail(err.Error())
+		if r.svc.notifier != nil {
+			r.svc.notifier.NotifyFailure("Transfer Failed", err.Error())
+		}
+		return
+	}
+
+	r.mu.Lock()
+	var done int64
+	for i, f := range out.Files {
+		done += f.Size
+		if i < len(r.files) {
+			r.files[i].Size = f.Size
+		}
+	}
+	r.doneBytes = done
+	r.filesDone = len(out.Files)
+	if out.Handshake != nil {
+		r.fingerprint = fingerprint(out.Handshake.Master)
+	}
+	r.mu.Unlock()
+
+	r.publish("done", func(ev *TransferEvent) {
+		ev.Digest = out.Digest
+		ev.Percent = 100
+	})
+
+	if r.svc.notifier != nil {
+		summary := fmt.Sprintf("Sent %d file(s) (%s) to %s", len(out.Files), humanBytes(r.totalBytes), peerLabel)
 		r.svc.notifier.NotifySuccess("Transfer Complete", summary, "")
 	}
 }

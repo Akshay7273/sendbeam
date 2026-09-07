@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -18,10 +19,17 @@ import (
 	"github.com/sendbeam/engine/trust"
 	"github.com/sendbeam/engine/wsclient"
 	"github.com/sendbeam/wire"
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 // DeviceEventName is emitted to frontend whenever trusted devices or presence states update.
 const DeviceEventName = "sendbeam:devices"
+
+// PairingOfferResult represents the generated invite code and QR code for an offerer pairing session.
+type PairingOfferResult struct {
+	Code string `json:"code"`
+	QR   string `json:"qr"`
+}
 
 // TrustedDeviceView is the JSON-serializable representation of a paired device for the UI.
 type TrustedDeviceView struct {
@@ -46,17 +54,19 @@ type discoveredPeerInfo struct {
 
 // DeviceService manages trusted device operations and background presence for the desktop UI.
 type DeviceService struct {
-	mu           sync.RWMutex
-	emit         func(name string, data any)
-	idMgr        *trust.IdentityManager
-	store        trust.Store
-	secrets      trust.CredentialStore
-	coordinator  *trust.PairingCoordinator
-	tombstones   trust.TombstoneStore
-	lanDiscovery *discovery.LanDiscoveryService
-	activePeers  map[string]discoveredPeerInfo // deviceID -> info
-	configDir    string
-	cancel       context.CancelFunc
+	mu            sync.RWMutex
+	emit          func(name string, data any)
+	idMgr         *trust.IdentityManager
+	store         trust.Store
+	secrets       trust.CredentialStore
+	coordinator   *trust.PairingCoordinator
+	tombstones    trust.TombstoneStore
+	lanDiscovery  *discovery.LanDiscoveryService
+	activePeers   map[string]discoveredPeerInfo // deviceID -> info
+	configDir     string
+	cancel        context.CancelFunc
+	pairingMu     sync.Mutex
+	pairingCancel context.CancelFunc
 }
 
 // NewDeviceService initializes the desktop device service with the default OS-protected credential store.
@@ -335,9 +345,6 @@ func (s *DeviceService) PairDevice(serverURL, inviteCode, customLabel string, au
 	if hostname == "" {
 		hostname = "Desktop Device"
 	}
-	if customLabel != "" {
-		hostname = customLabel
-	}
 
 	opts := rendezvous.Options{
 		Role: wire.RoleJoiner,
@@ -366,6 +373,10 @@ func (s *DeviceService) PairDevice(serverURL, inviteCode, customLabel string, au
 	if err != nil {
 		return nil, fmt.Errorf("pairing ceremony failed: %w", err)
 	}
+	if customLabel != "" {
+		pairResult.PeerRecord.LocalLabel = customLabel
+		_ = s.store.AddOrUpdateDevice(ctx, pairResult.PeerRecord)
+	}
 
 	s.notifyDevicesChanged()
 
@@ -386,6 +397,155 @@ func (s *DeviceService) PairDevice(serverURL, inviteCode, customLabel string, au
 	}, nil
 }
 
+// StartPairingOffer starts an offerer pairing session, returning the invite code and QR code.
+// The ceremony completes asynchronously when a peer connects with the invite code.
+func (s *DeviceService) StartPairingOffer(serverURL, customLabel string, autoAccept bool, destDir string) (*PairingOfferResult, error) {
+	if autoAccept {
+		if destDir == "" {
+			return nil, errors.New("destination directory is required when auto-accept is enabled")
+		}
+		if !filepath.IsAbs(destDir) {
+			return nil, errors.New("destination directory must be an absolute path")
+		}
+	}
+	server := serverURL
+	if server == "" {
+		server = DefaultServer
+	}
+
+	s.pairingMu.Lock()
+	if s.pairingCancel != nil {
+		s.pairingCancel()
+		s.pairingCancel = nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	s.pairingCancel = cancel
+	s.pairingMu.Unlock()
+
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "SendBeam Desktop"
+	}
+
+	codeChan := make(chan string, 1)
+	errChan := make(chan error, 1)
+
+	opts := rendezvous.Options{
+		Role: wire.RoleOfferer,
+		OnCode: func(code string) {
+			select {
+			case codeChan <- code:
+			default:
+			}
+		},
+	}
+	dopts := wsclient.DialOptions{
+		InsecureSkipVerify: true,
+	}
+
+	go func() {
+		pairSess, err := wsclient.RendezvousPair(ctx, server, dopts, opts)
+		if err != nil {
+			select {
+			case errChan <- err:
+			default:
+			}
+			return
+		}
+		defer pairSess.Close()
+
+		cfg := trust.PairingSessionConfig{
+			DeviceName:   hostname,
+			Capabilities: []string{"transfer.v1", "transfer.v2", "lan_direct"},
+			MasterKey:    pairSess.Result.Master,
+			AutoAccept:   autoAccept,
+			DestDir:      destDir,
+		}
+
+		pairResult, err := s.coordinator.InitiatePairing(ctx, pairSess, cfg)
+		if err != nil {
+			if s.emit != nil {
+				s.emit("sendbeam:pairing_failed", map[string]any{
+					"error": err.Error(),
+				})
+			}
+			return
+		}
+
+		if customLabel != "" {
+			pairResult.PeerRecord.LocalLabel = customLabel
+			_ = s.store.AddOrUpdateDevice(ctx, pairResult.PeerRecord)
+		}
+
+		s.notifyDevicesChanged()
+		if s.emit != nil {
+			s.emit("sendbeam:pairing_complete", map[string]any{
+				"deviceId":   pairResult.PeerRecord.DeviceID,
+				"localLabel": pairResult.PeerRecord.LocalLabel,
+			})
+		}
+	}()
+
+	select {
+	case code := <-codeChan:
+		var qr string
+		if png, err := qrcode.Encode(code, qrcode.Medium, 256); err == nil {
+			qr = "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+		}
+		return &PairingOfferResult{
+			Code: code,
+			QR:   qr,
+		}, nil
+	case err := <-errChan:
+		_ = s.CancelPairingOffer()
+		return nil, fmt.Errorf("pairing offer failed: %w", err)
+	case <-time.After(15 * time.Second):
+		_ = s.CancelPairingOffer()
+		return nil, errors.New("timed out waiting for pairing room allocation")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// CancelPairingOffer cancels an in-progress pairing offer session.
+func (s *DeviceService) CancelPairingOffer() error {
+	s.pairingMu.Lock()
+	defer s.pairingMu.Unlock()
+	if s.pairingCancel != nil {
+		s.pairingCancel()
+		s.pairingCancel = nil
+	}
+	return nil
+}
+
+// GetIdentityManager returns the local IdentityManager.
+func (s *DeviceService) GetIdentityManager() *trust.IdentityManager {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.idMgr
+}
+
+// GetStore returns the local TrustStore.
+func (s *DeviceService) GetStore() trust.Store {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.store
+}
+
+// GetCredentialStore returns the local CredentialStore.
+func (s *DeviceService) GetCredentialStore() trust.CredentialStore {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.secrets
+}
+
+// GetTombstoneStore returns the local TombstoneStore.
+func (s *DeviceService) GetTombstoneStore() trust.TombstoneStore {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tombstones
+}
+
 func (s *DeviceService) notifyDevicesChanged() {
 	if s.emit == nil {
 		return
@@ -398,6 +558,7 @@ func (s *DeviceService) notifyDevicesChanged() {
 
 // Close gracefully stops the device service.
 func (s *DeviceService) Close() {
+	_ = s.CancelPairingOffer()
 	if s.cancel != nil {
 		s.cancel()
 	}
