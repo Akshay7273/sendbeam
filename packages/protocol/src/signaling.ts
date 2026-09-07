@@ -13,16 +13,25 @@ export interface CreateMsg {
   type: 'create';
 }
 
-/** Server → sender: room allocated (smallest free number); waiting for a peer. */
+/** Server → sender: room allocated (smallest free number) or handle registered; waiting for a peer. */
 export interface CreatedMsg {
   type: 'created';
-  room: number;
+  room?: number;
+  handle?: string;
 }
 
-/** Receiver → server: pair with an existing room. */
+/** Receiver → server: pair with an existing room or handle. */
 export interface JoinMsg {
   type: 'join';
-  room: number;
+  room?: number;
+  handle?: string;
+}
+
+/** Client → server: pair or register on an opaque 64-hex rendezvous handle. */
+export interface RendezvousMsg {
+  type: 'rendezvous';
+  handle: string;
+  role?: Role;
 }
 
 /** Server → both: the two sockets are now paired. Carries this peer's role. */
@@ -118,14 +127,16 @@ export interface ByeMsg {
  */
 export interface ResumeMsg {
   type: 'resume';
-  room: number;
+  room?: number;
+  handle?: string;
   role: Role;
 }
 
 /** Server → client: a {@link ResumeMsg} was accepted; the partner state follows. */
 export interface ResumedMsg {
   type: 'resumed';
-  room: number;
+  room?: number;
+  handle?: string;
 }
 
 /**
@@ -163,13 +174,15 @@ export type SignalErrorCode =
   | 'rate_limited'
   | 'too_large'
   | 'bad_message'
-  | 'expired';
+  | 'expired'
+  | 'invalid_handle';
 
 /** All JSON signaling messages. */
 export type SignalMsg =
   | CreateMsg
   | CreatedMsg
   | JoinMsg
+  | RendezvousMsg
   | PeerJoinedMsg
   | PakeMsg
   | ConfirmMsg

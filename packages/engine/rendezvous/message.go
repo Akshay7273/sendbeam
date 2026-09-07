@@ -17,17 +17,25 @@ import "encoding/json"
 // packages/protocol/src/signaling.ts exactly; the server forwards the peer→peer bodies
 // verbatim, so a mismatch here would break interop with a browser peer.
 const (
-	typeCreate     = "create"
-	typeCreated    = "created"
-	typeJoin       = "join"
-	typePeerJoined = "peer-joined"
-	typePake       = "pake"
-	typeConfirm    = "confirm"
-	typeCaps       = "caps"
-	typeSDP        = "sdp"
-	typeICE        = "ice"
-	typeBye        = "bye"
-	typeError      = "error"
+	typeCreate              = "create"
+	typeCreated             = "created"
+	typeJoin                = "join"
+	typePeerJoined          = "peer-joined"
+	typePake                = "pake"
+	typeConfirm             = "confirm"
+	typeCaps                = "caps"
+	typeSDP                 = "sdp"
+	typeICE                 = "ice"
+	typeBye                 = "bye"
+	typeError               = "error"
+	typeRendezvous          = "rendezvous"
+	typeResume              = "resume"
+	typeResumed             = "resumed"
+	typePeerRejoined        = "peer_rejoined"
+	typePeerLeft            = "peer_left"
+	typeTrustedAuthInit     = "trusted_auth_init"
+	typeTrustedAuthResponse = "trusted_auth_response"
+	typeTrustedAuthConfirm  = "trusted_auth_confirm"
 )
 
 // Relay control tags are exported for the adopted transfer transport. They remain outside the
@@ -71,6 +79,10 @@ type Message struct {
 	Code string `json:"code,omitempty"`
 	// Bytes carries bounded flow-control credit on relay_credit and credit messages.
 	Bytes int64 `json:"bytes,omitempty"`
+	// Handle carries the 64-character lowercase hex opaque handle on rendezvous and resume.
+	Handle string `json:"handle,omitempty"`
+	// Raw preserves verbatim wire bytes when unmarshaled or custom-encoded.
+	Raw []byte `json:"-"`
 }
 
 // Sink is the outbound half of the signaling channel the session drives.
@@ -85,7 +97,12 @@ type SinkFunc func(Message) error
 func (f SinkFunc) Send(m Message) error { return f(m) }
 
 // MarshalMessage encodes a signaling message to its JSON wire form.
-func MarshalMessage(m Message) ([]byte, error) { return json.Marshal(m) }
+func MarshalMessage(m Message) ([]byte, error) {
+	if len(m.Raw) > 0 {
+		return m.Raw, nil
+	}
+	return json.Marshal(m)
+}
 
 // NewSDP builds an authenticated sdp message. seq is the sender-monotonic sequence
 // number and mac the base64url authmac tag over the body. It is
@@ -108,6 +125,16 @@ func NewRelayCredit(bytes int64) Message {
 	return Message{Type: TypeRelayCredit, Bytes: bytes}
 }
 
+// NewRendezvous builds an opaque handle rendezvous message.
+func NewRendezvous(handle, role string) Message {
+	return Message{Type: typeRendezvous, Handle: handle, Role: role}
+}
+
+// NewResume builds an opaque handle resume message.
+func NewResume(handle, role string) Message {
+	return Message{Type: typeResume, Handle: handle, Role: role}
+}
+
 // UnmarshalMessage decodes a JSON signaling frame. A frame missing a type is rejected so
 // the session can fail cleanly rather than act on an empty tag.
 func UnmarshalMessage(data []byte) (Message, error) {
@@ -115,5 +142,6 @@ func UnmarshalMessage(data []byte) (Message, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return Message{}, err
 	}
+	m.Raw = append([]byte(nil), data...)
 	return m, nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/sendbeam/wire"
 )
 
 const (
@@ -35,8 +36,9 @@ type peer struct {
 	logger   *slog.Logger
 	clientIP string
 
-	room int    // -1 until the peer creates or joins a room
-	role string // set on create/join
+	room   int    // -1 until the peer creates or joins a room
+	handle string // opaque rendezvous handle if in a handle room
+	role   string // set on create/join/rendezvous
 
 	send             chan outboundFrame
 	queueMu          sync.Mutex
@@ -131,7 +133,7 @@ func (p *peer) dispatch(data []byte, msgLimiter *tokenBucket) bool {
 
 	switch m.Type {
 	case typeCreate:
-		if p.room >= 0 {
+		if p.room >= 0 || p.handle != "" {
 			p.fail(errProtocol, "already in a room")
 			return false
 		}
@@ -144,13 +146,57 @@ func (p *peer) dispatch(data []byte, msgLimiter *tokenBucket) bool {
 		p.enqueue(createdFrame(room))
 		return true
 
-	case typeJoin:
-		if p.room >= 0 {
+	case typeRendezvous:
+		if p.room >= 0 || p.handle != "" {
 			p.fail(errProtocol, "already in a room")
 			return false
 		}
+		if m.Handle == "" || !wire.ValidateRendezvousHandle(m.Handle) {
+			p.fail(errInvalidHandle, "invalid rendezvous handle")
+			return false
+		}
+		other, code := p.hub.rendezvous(p, m.Handle, m.Role, p.clientIP)
+		if code != "" {
+			p.fail(code, "")
+			return false
+		}
+		if other != nil {
+			p.logger.Info("signal: handle paired", "handle", p.handle)
+			p.enqueue(peerJoinedFrame(p.role))
+			other.enqueue(peerJoinedFrame(other.role))
+		} else {
+			p.logger.Info("signal: handle registered", "handle", p.handle)
+			p.enqueue(createdHandleFrame(p.handle))
+		}
+		return true
+
+	case typeJoin:
+		if p.room >= 0 || p.handle != "" {
+			p.fail(errProtocol, "already in a room")
+			return false
+		}
+		if m.Handle != "" {
+			if !wire.ValidateRendezvousHandle(m.Handle) {
+				p.fail(errInvalidHandle, "invalid rendezvous handle")
+				return false
+			}
+			other, code := p.hub.rendezvous(p, m.Handle, m.Role, p.clientIP)
+			if code != "" {
+				p.fail(code, "")
+				return false
+			}
+			if other != nil {
+				p.logger.Info("signal: handle paired", "handle", p.handle)
+				p.enqueue(peerJoinedFrame(p.role))
+				other.enqueue(peerJoinedFrame(other.role))
+			} else {
+				p.logger.Info("signal: handle registered", "handle", p.handle)
+				p.enqueue(createdHandleFrame(p.handle))
+			}
+			return true
+		}
 		if m.Room == nil {
-			p.fail(errBadMessage, "join requires a room")
+			p.fail(errBadMessage, "join requires a room or handle")
 			return false
 		}
 		other, code := p.hub.join(p, *m.Room, p.clientIP)
@@ -164,21 +210,32 @@ func (p *peer) dispatch(data []byte, msgLimiter *tokenBucket) bool {
 		return true
 
 	case typeResume:
-		if p.room >= 0 {
+		if p.room >= 0 || p.handle != "" {
 			p.fail(errProtocol, "already in a room")
 			return false
 		}
-		if m.Room == nil {
-			p.fail(errBadMessage, "resume requires a room")
+		if m.Handle == "" && m.Room == nil {
+			p.fail(errBadMessage, "resume requires a room or handle")
 			return false
 		}
-		other, code := p.hub.resume(p, *m.Room, m.Role, p.clientIP)
+		var other *peer
+		var code string
+		if m.Handle != "" {
+			other, code = p.hub.resumeHandle(p, m.Handle, m.Role, p.clientIP)
+		} else {
+			other, code = p.hub.resume(p, *m.Room, m.Role, p.clientIP)
+		}
 		if code != "" {
 			p.fail(code, "")
 			return false
 		}
-		p.logger.Info("signal: room resumed", "room", p.room)
-		p.enqueue(resumedFrame(p.room))
+		if p.handle != "" {
+			p.logger.Info("signal: handle resumed", "handle", p.handle)
+			p.enqueue(resumedHandleFrame(p.handle))
+		} else {
+			p.logger.Info("signal: room resumed", "room", p.room)
+			p.enqueue(resumedFrame(p.room))
+		}
 		if other != nil {
 			other.enqueue(peerRejoinedFrame())
 		}

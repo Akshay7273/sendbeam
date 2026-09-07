@@ -254,6 +254,9 @@ export class RendezvousSession {
     if (this.settled) return;
     switch (msg.type) {
       case 'created':
+        if (msg.room === undefined) {
+          throw new RendezvousError('protocol', 'created message missing room number');
+        }
         return this.onCreated(msg.room);
       case 'peer-joined':
         return this.onPeerJoined(msg.role);

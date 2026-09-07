@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/sendbeam/wire"
 )
 
 // Hub owns every room and the goroutine that reaps idle ones. A room holds at most
@@ -19,6 +20,7 @@ type Hub struct {
 
 	mu                sync.Mutex
 	rooms             map[int]*room
+	handleRooms       map[string]*room
 	draining          bool
 	drainCh           chan struct{}
 	activeConns       int
@@ -36,6 +38,7 @@ type Hub struct {
 
 type room struct {
 	number     int
+	handle     string
 	offerer    *peer
 	joiner     *peer
 	lastSeen   time.Time
@@ -54,6 +57,7 @@ func NewHub(ctx context.Context, cfg Config, logger *slog.Logger) *Hub {
 		logger:         orDiscard(logger),
 		trustedProxies: trusted,
 		rooms:          make(map[int]*room),
+		handleRooms:    make(map[string]*room),
 		drainCh:        make(chan struct{}),
 		errors:         make(map[string]int64),
 		messages:       make(map[string]int64),
@@ -61,6 +65,16 @@ func NewHub(ctx context.Context, cfg Config, logger *slog.Logger) *Hub {
 	}
 	go h.reap(ctx)
 	return h
+}
+
+func (h *Hub) getRoomLocked(p *peer) *room {
+	if p.handle != "" {
+		return h.handleRooms[p.handle]
+	}
+	if p.room >= 0 {
+		return h.rooms[p.room]
+	}
+	return nil
 }
 
 func stringsJoin(elems []string, sep string) string {
@@ -108,6 +122,17 @@ func (h *Hub) Drain(ctx context.Context) error {
 			delete(h.rooms, n)
 		}
 	}
+	for handle, r := range h.handleRooms {
+		if r.offerer == nil || r.joiner == nil {
+			if r.offerer != nil {
+				unpairedPeers = append(unpairedPeers, r.offerer)
+			}
+			if r.joiner != nil {
+				unpairedPeers = append(unpairedPeers, r.joiner)
+			}
+			delete(h.handleRooms, handle)
+		}
+	}
 	h.mu.Unlock()
 
 	for _, p := range unpairedPeers {
@@ -130,7 +155,7 @@ func (h *Hub) Drain(ctx context.Context) error {
 
 	for {
 		h.mu.Lock()
-		count := len(h.rooms)
+		count := len(h.rooms) + len(h.handleRooms)
 		h.mu.Unlock()
 		if count == 0 {
 			return nil
@@ -149,6 +174,15 @@ func (h *Hub) Drain(ctx context.Context) error {
 					remaining = append(remaining, r.joiner)
 				}
 				delete(h.rooms, n)
+			}
+			for handle, r := range h.handleRooms {
+				if r.offerer != nil {
+					remaining = append(remaining, r.offerer)
+				}
+				if r.joiner != nil {
+					remaining = append(remaining, r.joiner)
+				}
+				delete(h.handleRooms, handle)
 			}
 			h.mu.Unlock()
 
@@ -225,7 +259,7 @@ func (h *Hub) createRoom(p *peer, ip string) (int, string) {
 	if h.draining {
 		return -1, errDraining
 	}
-	if h.cfg.RateLimitEnabled && h.cfg.MaxRooms > 0 && len(h.rooms) >= h.cfg.MaxRooms {
+	if h.cfg.RateLimitEnabled && h.cfg.MaxRooms > 0 && (len(h.rooms)+len(h.handleRooms)) >= h.cfg.MaxRooms {
 		return -1, errRoomLimit
 	}
 
@@ -241,6 +275,76 @@ func (h *Hub) createRoom(p *peer, ip string) (int, string) {
 	p.role = roleOfferer
 	h.roomsCreatedTotal++
 	return n, ""
+}
+
+// rendezvous seats p into an opaque handle room. If the handle room does not exist,
+// it is created with p as the first peer (default roleOfferer unless roleJoiner is requested).
+// If the handle room exists with one peer, p is seated as the complementary peer.
+// If the room is full, it is refused with errRoomFull.
+func (h *Hub) rendezvous(p *peer, handle string, role string, ip string) (*peer, string) {
+	if !wire.ValidateRendezvousHandle(handle) {
+		return nil, errInvalidHandle
+	}
+
+	tracker := h.getOrCreateIPTracker(ip)
+	if !tracker.allowJoin(h.cfg.RateLimitEnabled) {
+		return nil, errRateLimited
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.draining {
+		return nil, errDraining
+	}
+
+	if r, ok := h.handleRooms[handle]; ok {
+		if r.offerer != nil && r.joiner != nil {
+			tracker.recordFailedJoin(h.cfg.RateLimitEnabled)
+			return nil, errRoomFull
+		}
+
+		if r.offerer == nil {
+			r.offerer = p
+			p.role = roleOfferer
+			p.handle = handle
+			r.lastSeen = time.Now()
+			h.roomsPairedTotal++
+			return r.joiner, ""
+		}
+
+		r.joiner = p
+		p.role = roleJoiner
+		p.handle = handle
+		r.lastSeen = time.Now()
+		h.roomsPairedTotal++
+		return r.offerer, ""
+	}
+
+	if !tracker.allowRoomCreate(h.cfg.RateLimitEnabled) {
+		return nil, errRateLimited
+	}
+
+	if h.cfg.RateLimitEnabled && h.cfg.MaxRooms > 0 && (len(h.rooms)+len(h.handleRooms)) >= h.cfg.MaxRooms {
+		return nil, errRoomLimit
+	}
+
+	r := &room{
+		number:   -1,
+		handle:   handle,
+		lastSeen: time.Now(),
+	}
+	if role == roleJoiner {
+		r.joiner = p
+		p.role = roleJoiner
+	} else {
+		r.offerer = p
+		p.role = roleOfferer
+	}
+	p.handle = handle
+	h.handleRooms[handle] = r
+	h.roomsCreatedTotal++
+	return nil, ""
 }
 
 // join seats p as the joiner of an existing room and returns the offerer it paired
@@ -279,6 +383,15 @@ func (h *Hub) join(p *peer, number int, ip string) (*peer, string) {
 // reloaded and lost its ephemeral session. Only the slot for the claimed role may be
 // filled, and only if empty; the room and its number are unchanged.
 func (h *Hub) resume(p *peer, number int, role string, ip string) (*peer, string) {
+	return h.resumeInternal(p, number, "", role, ip)
+}
+
+// resumeHandle re-attaches p to a vacated slot of an existing (lingering) handle room.
+func (h *Hub) resumeHandle(p *peer, handle string, role string, ip string) (*peer, string) {
+	return h.resumeInternal(p, -1, handle, role, ip)
+}
+
+func (h *Hub) resumeInternal(p *peer, number int, handle string, role string, ip string) (*peer, string) {
 	if role != roleOfferer && role != roleJoiner {
 		return nil, errBadMessage
 	}
@@ -294,7 +407,17 @@ func (h *Hub) resume(p *peer, number int, role string, ip string) (*peer, string
 		return nil, errDraining
 	}
 
-	r, ok := h.rooms[number]
+	var r *room
+	var ok bool
+	if handle != "" {
+		if !wire.ValidateRendezvousHandle(handle) {
+			return nil, errInvalidHandle
+		}
+		r, ok = h.handleRooms[handle]
+	} else {
+		r, ok = h.rooms[number]
+	}
+
 	if !ok {
 		tracker.recordFailedJoin(h.cfg.RateLimitEnabled)
 		return nil, errUnknownRoom
@@ -313,7 +436,8 @@ func (h *Hub) resume(p *peer, number int, role string, ip string) (*peer, string
 		}
 		r.joiner = p
 	}
-	p.room = number
+	p.room = r.number
+	p.handle = r.handle
 	p.role = role
 	r.lastSeen = time.Now()
 	return roomPartner(r, p), ""
@@ -323,8 +447,8 @@ func (h *Hub) resume(p *peer, number int, role string, ip string) (*peer, string
 func (h *Hub) openRelay(p *peer) (other *peer, ready bool, code string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	r, ok := h.rooms[p.room]
-	if !ok {
+	r := h.getRoomLocked(p)
+	if r == nil {
 		return nil, false, errNotPaired
 	}
 	other = roomPartner(r, p)
@@ -343,8 +467,8 @@ func (h *Hub) grantRelayCredit(receiver *peer, requested int64) (*peer, int64, s
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	r, ok := h.rooms[receiver.room]
-	if !ok {
+	r := h.getRoomLocked(receiver)
+	if r == nil {
 		return nil, 0, errNotPaired
 	}
 	sender := roomPartner(r, receiver)
@@ -371,8 +495,8 @@ func (h *Hub) forwardRelay(sender *peer, data []byte) string {
 	}
 
 	h.mu.Lock()
-	r, ok := h.rooms[sender.room]
-	if !ok {
+	r := h.getRoomLocked(sender)
+	if r == nil {
 		h.mu.Unlock()
 		return errNotPaired
 	}
@@ -398,8 +522,8 @@ func (h *Hub) forwardRelay(sender *peer, data []byte) string {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	r, ok = h.rooms[sender.room]
-	if !ok || roomPartner(r, sender) != other {
+	r = h.getRoomLocked(sender)
+	if r == nil || roomPartner(r, sender) != other {
 		return ""
 	}
 	sender.relayCredit -= size
@@ -424,8 +548,8 @@ func (h *Hub) partner(p *peer) *peer {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	r, ok := h.rooms[p.room]
-	if !ok {
+	r := h.getRoomLocked(p)
+	if r == nil {
 		return nil
 	}
 	r.lastSeen = time.Now()
@@ -444,8 +568,8 @@ func (h *Hub) vacate(p *peer) *peer {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	r, ok := h.rooms[p.room]
-	if !ok {
+	r := h.getRoomLocked(p)
+	if r == nil {
 		return nil
 	}
 	var other *peer
@@ -460,7 +584,11 @@ func (h *Hub) vacate(p *peer) *peer {
 		return nil
 	}
 	if other == nil {
-		delete(h.rooms, r.number)
+		if r.handle != "" {
+			delete(h.handleRooms, r.handle)
+		} else {
+			delete(h.rooms, r.number)
+		}
 		return nil
 	}
 	r.lastSeen = time.Now()
@@ -472,12 +600,16 @@ func (h *Hub) discard(p *peer) *peer {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	r, ok := h.rooms[p.room]
-	if !ok {
+	r := h.getRoomLocked(p)
+	if r == nil {
 		return nil
 	}
 	other := roomPartner(r, p)
-	delete(h.rooms, r.number)
+	if r.handle != "" {
+		delete(h.handleRooms, r.handle)
+	} else {
+		delete(h.rooms, r.number)
+	}
 	return other
 }
 
@@ -509,6 +641,16 @@ func (h *Hub) reapOnce(now time.Time) {
 			delete(h.rooms, n)
 		}
 	}
+	for handle, r := range h.handleRooms {
+		timeout := h.cfg.IdleTimeout
+		if (r.offerer == nil || r.joiner == nil) && h.cfg.UnpairedTimeout > 0 {
+			timeout = h.cfg.UnpairedTimeout
+		}
+		if now.Sub(r.lastSeen) > timeout {
+			stale = append(stale, r)
+			delete(h.handleRooms, handle)
+		}
+	}
 	h.roomsReapedTotal += int64(len(stale))
 	h.mu.Unlock()
 
@@ -522,7 +664,11 @@ func (h *Hub) reapOnce(now time.Time) {
 	h.ipMu.Unlock()
 
 	for _, r := range stale {
-		h.logger.Info("signal: reaping idle room", "room", r.number)
+		if r.handle != "" {
+			h.logger.Info("signal: reaping idle handle room", "handle", r.handle)
+		} else {
+			h.logger.Info("signal: reaping idle room", "room", r.number)
+		}
 		for _, p := range []*peer{r.offerer, r.joiner} {
 			if p != nil {
 				p.close(byeFrame("idle timeout"))
@@ -535,5 +681,5 @@ func (h *Hub) reapOnce(now time.Time) {
 func (h *Hub) roomCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(h.rooms)
+	return len(h.rooms) + len(h.handleRooms)
 }

@@ -83,4 +83,37 @@ func TestPresenceCoordinator(t *testing.T) {
 	if validTampered {
 		t.Errorf("tampered proof should not be valid")
 	}
+
+	// Truthful presence check: since MatchInboundPresence succeeded, devAlice is discovered
+	if status := coord.GetPeerPresence(devAlice, now); status != PresenceDiscovered {
+		t.Errorf("expected PresenceDiscovered, got %v", status)
+	}
+
+	// Truthful presence: 20 minutes later (> 15 min epoch window), must be PresenceOffline
+	if status := coord.GetPeerPresence(devAlice, now.Add(20*time.Minute)); status != PresenceOffline {
+		t.Errorf("expected PresenceOffline after epoch window expiry, got %v", status)
+	}
+
+	// State transitions
+	coord.SetPeerConnecting(devAlice)
+	if status := coord.GetPeerPresence(devAlice, now.Add(20*time.Minute)); status != PresenceConnecting {
+		t.Errorf("expected PresenceConnecting, got %v", status)
+	}
+
+	coord.SetPeerConnected(devAlice)
+	if status := coord.GetPeerPresence(devAlice, now.Add(20*time.Minute)); status != PresenceConnected {
+		t.Errorf("expected PresenceConnected, got %v", status)
+	}
+
+	coord.SetPeerDisconnected(devAlice)
+	if status := coord.GetPeerPresence(devAlice, now.Add(20*time.Minute)); status != PresenceOffline {
+		t.Errorf("expected PresenceOffline, got %v", status)
+	}
+
+	// Re-record discovered and test PruneExpired
+	coord.RecordPeerDiscovered(devAlice, handleAlice, now)
+	coord.PruneExpired(now.Add(20 * time.Minute))
+	if status := coord.GetPeerPresence(devAlice, now); status != PresenceOffline {
+		t.Errorf("expected record pruned and offline, got %v", status)
+	}
 }
