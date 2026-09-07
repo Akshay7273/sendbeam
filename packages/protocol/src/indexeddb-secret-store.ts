@@ -51,16 +51,23 @@ export class IndexedDBSecretStore implements SecretResolver {
     const db = await this.getDb();
     return new Promise((resolve, reject) => {
       const tx = db.transaction([SECRETS_STORE_NAME], 'readonly');
-      const req = tx.objectStore(SECRETS_STORE_NAME).get(deviceId);
+      const req = tx.objectStore(SECRETS_STORE_NAME).get(deviceIDKey(deviceId));
       req.onsuccess = () => {
         const val = req.result as string | undefined;
-        if (!val) {
+        if (val === undefined || val === null) {
           resolve(null);
         } else {
           try {
-            resolve(hexToBytes(val));
-          } catch {
-            resolve(null);
+            const bytes = hexToBytes(val);
+            if (bytes.length === 0) {
+              reject(new Error(`corrupt pair secret for device ${deviceId}: empty secret bytes`));
+              return;
+            }
+            resolve(bytes);
+          } catch (err) {
+            reject(
+              new Error(`corrupt pair secret for device ${deviceId}: ${(err as Error).message}`),
+            );
           }
         }
       };
@@ -69,6 +76,12 @@ export class IndexedDBSecretStore implements SecretResolver {
   }
 
   async setPairSecret(deviceId: string, secret: Uint8Array): Promise<void> {
+    if (!deviceId || deviceId.trim() === '') {
+      throw new Error('invalid deviceId for pair secret');
+    }
+    if (secret.length === 0) {
+      throw new Error('invalid pair secret length: secret cannot be empty');
+    }
     const db = await this.getDb();
     const hex = bytesToHex(secret);
     return new Promise((resolve, reject) => {

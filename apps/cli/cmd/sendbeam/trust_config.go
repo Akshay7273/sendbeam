@@ -2,14 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/sendbeam/engine/trust"
 	"github.com/sendbeam/wire"
@@ -22,78 +19,12 @@ const (
 	secretsFileName     = "secrets.json"
 )
 
-// FileSecretResolver manages persistent storage of 32-byte k_pair secrets with 0600 permissions.
-type FileSecretResolver struct {
-	path string
-	mu   sync.RWMutex
-	data map[string]string // deviceID -> hex(k_pair)
-}
+// FileSecretResolver is an alias to trust.FileSecretStore for headless CLI environments.
+type FileSecretResolver = trust.FileSecretStore
 
-// NewFileSecretResolver initializes the secret resolver from disk.
+// NewFileSecretResolver initializes the secret store from disk.
 func NewFileSecretResolver(path string) (*FileSecretResolver, error) {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("create secrets dir: %w", err)
-	}
-
-	r := &FileSecretResolver{
-		path: path,
-		data: make(map[string]string),
-	}
-
-	content, err := os.ReadFile(path)
-	if err == nil && len(content) > 0 {
-		_ = json.Unmarshal(content, &r.data)
-	}
-	return r, nil
-}
-
-// SetSecret stores a raw 32-byte secret for a device and flushes atomically to disk.
-func (r *FileSecretResolver) SetSecret(deviceID string, secret []byte) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.data[deviceID] = hex.EncodeToString(secret)
-	data, err := json.MarshalIndent(r.data, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	tmp := fmt.Sprintf("%s.tmp.%d", r.path, os.Getpid())
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, r.path)
-}
-
-// DeleteSecret removes a device secret from storage.
-func (r *FileSecretResolver) DeleteSecret(deviceID string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	delete(r.data, deviceID)
-	data, err := json.MarshalIndent(r.data, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	tmp := fmt.Sprintf("%s.tmp.%d", r.path, os.Getpid())
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, r.path)
-}
-
-// ResolvePairSecret implements trust.SecretResolver.
-func (r *FileSecretResolver) ResolvePairSecret(_ context.Context, deviceID, _ string) ([]byte, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	hexStr, ok := r.data[deviceID]
-	if !ok || len(hexStr) == 0 {
-		return nil, errors.New("pair secret not found")
-	}
-	return hex.DecodeString(hexStr)
+	return trust.NewFileSecretStore(path)
 }
 
 // CLIEnvironment provides shared access to local device identity, trust store, and secret store.

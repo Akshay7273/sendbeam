@@ -76,7 +76,10 @@ func executeUnpair(args []string, stdin io.Reader, stdout, stderr io.Writer) int
 			_, _ = fmt.Fprintf(stderr, "error deleting device from trust store: %v\n", err)
 			return 1
 		}
-		_ = env.Secrets.DeleteSecret(dev.DeviceID)
+		if err := env.Secrets.DeleteSecret(dev.DeviceID); err != nil {
+			_, _ = fmt.Fprintf(stderr, "error deleting device secret: %v\n", err)
+			return 1
+		}
 	} else {
 		if err := env.TrustStore.RevokeDevice(ctx, dev.DeviceID); err != nil {
 			_, _ = fmt.Fprintf(stderr, "error revoking device in trust store: %v\n", err)

@@ -43,12 +43,19 @@ export async function getOrCreateBrowserIdentity(customIdb?: IDBFactory): Promis
     req.onerror = () => reject(req.error ?? new Error('read identity failed'));
   });
 
-  if (existingSeedHex && existingSeedHex.length === 64) {
+  if (existingSeedHex !== undefined && existingSeedHex !== null) {
+    if (typeof existingSeedHex !== 'string' || existingSeedHex.trim().length !== 64) {
+      throw new Error(
+        'corrupt browser device identity: invalid seed length or format; refusing to regenerate',
+      );
+    }
     try {
-      const seed = hexToBytes(existingSeedHex);
+      const seed = hexToBytes(existingSeedHex.trim());
       return await createDeviceIdentityFromSeed(seed);
-    } catch {
-      // In case of corruption, generate fresh below
+    } catch (err) {
+      throw new Error(
+        `corrupt browser device identity: ${(err as Error).message}; refusing to regenerate`,
+      );
     }
   }
 

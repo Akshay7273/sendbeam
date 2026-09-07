@@ -93,4 +93,30 @@ func TestTrustRecordValidation(t *testing.T) {
 	if err := rootPolicyRecord.Validate(); err == nil {
 		t.Errorf("expected validation failure for root auto accept dir")
 	}
+
+	// Empty PairCredentialRef should fail
+	noCredRecord := *validRecord
+	noCredRecord.PairCredentialRef = ""
+	if err := noCredRecord.Validate(); err == nil {
+		t.Errorf("expected validation failure for empty pair credential ref")
+	}
+
+	// Relationship validation
+	clusterRecord := *validRecord
+	clusterRecord.Relationship = RelationshipClusterMember
+	clusterRecord.ClusterID = ""
+	if err := clusterRecord.Validate(); err == nil {
+		t.Errorf("expected validation failure for cluster_member without cluster_id")
+	}
+
+	clusterRecord.ClusterID = "sb-cluster-12345"
+	if err := clusterRecord.Validate(); err != nil {
+		t.Fatalf("valid cluster record failed: %v", err)
+	}
+
+	badRelRecord := *validRecord
+	badRelRecord.Relationship = "super_admin"
+	if err := badRelRecord.Validate(); err == nil {
+		t.Errorf("expected validation failure for invalid relationship")
+	}
 }
