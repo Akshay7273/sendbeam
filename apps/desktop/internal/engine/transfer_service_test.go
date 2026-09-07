@@ -14,8 +14,10 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/pion/webrtc/v4"
+	"github.com/sendbeam/engine/receiver"
 	"github.com/sendbeam/engine/rendezvous"
 	"github.com/sendbeam/engine/transfer"
+	"github.com/sendbeam/engine/trust"
 	"github.com/sendbeam/engine/wsclient"
 	"github.com/sendbeam/wire"
 )
@@ -576,5 +578,106 @@ func TestServiceInteropInviteLinkFormat(t *testing.T) {
 	link := inviteLink("wss://relay.example.com:8443/ws", "12-quick-brown")
 	if !strings.HasPrefix(link, "https://relay.example.com:8443/#12-quick-brown") {
 		t.Fatalf("unexpected invite link: %q", link)
+	}
+}
+
+func TestTransferService_NativeReceiverLifecycle(t *testing.T) {
+	sink := &eventSink{}
+	svc := NewTransferService(sink.emit, nil)
+
+	tmpDir := t.TempDir()
+	idPath := filepath.Join(tmpDir, "identity.key")
+	idMgr, err := trust.NewIdentityManager(idPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localID, err := idMgr.GetOrCreateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	trustStore, err := trust.NewFileTrustStore(filepath.Join(tmpDir, "trust.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secStore := trust.NewMemoryCredentialStore()
+
+	cfg := receiver.Config{
+		DestDir:    tmpDir,
+		AutoAccept: true,
+		Identity:   localID,
+		TrustStore: trustStore,
+		Secrets:    secStore,
+		Port:       0, // disable LAN discovery in this test
+	}
+
+	if svc.NativeReceiver() != nil {
+		t.Fatal("expected nil native receiver before start")
+	}
+
+	if err := svc.StartNativeReceiver(cfg); err != nil {
+		t.Fatalf("StartNativeReceiver: %v", err)
+	}
+
+	if svc.NativeReceiver() == nil {
+		t.Fatal("expected non-nil native receiver after start")
+	}
+
+	// Double start should fail
+	if err := svc.StartNativeReceiver(cfg); err == nil {
+		t.Fatal("expected error on starting already running receiver")
+	}
+
+	if err := svc.StopNativeReceiver(); err != nil {
+		t.Fatalf("StopNativeReceiver: %v", err)
+	}
+
+	if svc.NativeReceiver() != nil {
+		t.Fatal("expected nil native receiver after stop")
+	}
+}
+
+func TestTransferService_PendingConsentAndRespond(t *testing.T) {
+	sink := &eventSink{}
+	svc := NewTransferService(sink.emit, nil)
+
+	// Calling when not running fails
+	err := svc.RespondConsent("tx-123", receiver.ConsentDecision{Accepted: true})
+	if err == nil {
+		t.Fatal("expected error when receiver is not running")
+	}
+
+	if consents := svc.PendingConsents(); consents != nil {
+		t.Fatalf("expected nil consents when not running, got %v", consents)
+	}
+
+	tmpDir := t.TempDir()
+	idMgr, _ := trust.NewIdentityManager(filepath.Join(tmpDir, "identity.key"))
+	localID, _ := idMgr.GetOrCreateIdentity()
+	trustStore, _ := trust.NewFileTrustStore(filepath.Join(tmpDir, "trust.json"))
+	secStore := trust.NewMemoryCredentialStore()
+
+	cfg := receiver.Config{
+		DestDir:    tmpDir,
+		Identity:   localID,
+		TrustStore: trustStore,
+		Secrets:    secStore,
+		Port:       0,
+	}
+
+	if err := svc.StartNativeReceiver(cfg); err != nil {
+		t.Fatalf("StartNativeReceiver: %v", err)
+	}
+	defer svc.StopNativeReceiver()
+
+	consents := svc.PendingConsents()
+	if len(consents) != 0 {
+		t.Fatalf("expected 0 pending consents initially, got %d", len(consents))
+	}
+
+	// Responding to unknown transfer returns error
+	err = svc.RespondConsent("nonexistent", receiver.ConsentDecision{Accepted: false})
+	if err == nil {
+		t.Fatal("expected error responding to nonexistent consent request")
 	}
 }

@@ -21,13 +21,14 @@ import (
 // partner. It lets a complete offerer↔joiner exchange — SPAKE2 handshake, authenticated
 // SDP/ICE, and the sealed file transfer — run in one process with no sockets.
 type relay struct {
-	off      *relayEnd
-	join     *relayEnd
-	room     int
-	created  chan struct{} // closed once the offerer has created the room
-	once     sync.Once
-	mu       sync.Mutex
-	captured [][]byte
+	off           *relayEnd
+	join          *relayEnd
+	room          int
+	createdHandle string
+	created       chan struct{} // closed once the offerer has created the room
+	once          sync.Once
+	mu            sync.Mutex
+	captured      [][]byte
 }
 
 func newRelay() *relay {
@@ -60,6 +61,19 @@ func (r *relay) route(from *relayEnd, m rendezvous.Message) {
 		<-r.created
 		r.join.enqueue(rendezvous.Message{Type: "peer-joined", Role: r.join.role})
 		r.off.enqueue(rendezvous.Message{Type: "peer-joined", Role: r.off.role})
+	case "rendezvous":
+		r.mu.Lock()
+		if r.createdHandle == "" {
+			r.createdHandle = m.Handle
+			r.mu.Unlock()
+			from.enqueue(rendezvous.Message{Type: "created", Handle: m.Handle})
+			r.once.Do(func() { close(r.created) })
+		} else {
+			r.mu.Unlock()
+			<-r.created
+			r.join.enqueue(rendezvous.Message{Type: "peer-joined", Role: r.join.role})
+			r.off.enqueue(rendezvous.Message{Type: "peer-joined", Role: r.off.role})
+		}
 	case rendezvous.TypeRelayOpen:
 		r.mu.Lock()
 		from.relayOpen = true
@@ -668,3 +682,200 @@ func TestDriverAuthenticatedCrossSessionResume(t *testing.T) {
 		t.Fatalf("sender record still present after discard: ok=%v err=%v", ok, err)
 	}
 }
+
+func TestDriverOpaqueSessionTransfersFileWithConsent(t *testing.T) {
+	hub := newRelay()
+
+	idAlice, err := wire.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idBob, err := wire.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kPair := bytes.Repeat([]byte{0x42}, 32)
+	handle := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	payload := []byte("hello from opaque session transfer with mutual consent")
+	meta := wire.FileMeta{
+		Name:         "hello.txt",
+		Size:         int64(len(payload)),
+		Mime:         "text/plain",
+		LastModified: 1_700_000_000_000,
+	}
+	dir := t.TempDir()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	type result struct {
+		out *Outcome
+		err error
+	}
+	sendDone := make(chan result, 1)
+	recvDone := make(chan result, 1)
+
+	consentCalled := false
+	go func() {
+		out, err := Run(ctx, hub.off, Spec{
+			Opaque: &rendezvous.OpaqueOptions{
+				Role:              rendezvous.RoleOfferer,
+				Handle:            handle,
+				LocalIdentity:     idAlice,
+				PeerDeviceID:      idBob.DeviceID,
+				PeerPublicKey:     idBob.PublicKey,
+				KPair:             kPair,
+				PairCredentialRef: "cred-1",
+			},
+			Source:     wire.BytesSource(payload, meta, 64*1024),
+			ICEServers: []webrtc.ICEServer{},
+		})
+		sendDone <- result{out, err}
+	}()
+
+	go func() {
+		out, err := Run(ctx, hub.join, Spec{
+			Opaque: &rendezvous.OpaqueOptions{
+				Role:              rendezvous.RoleJoiner,
+				Handle:            handle,
+				LocalIdentity:     idBob,
+				PeerDeviceID:      idAlice.DeviceID,
+				PeerPublicKey:     idAlice.PublicKey,
+				KPair:             kPair,
+				PairCredentialRef: "cred-1",
+			},
+			DestDir: dir,
+			Consent: func(ctx context.Context, req ConsentRequest) (ConsentDecision, error) {
+				consentCalled = true
+				if req.PeerDeviceID != idAlice.DeviceID {
+					t.Errorf("consent peer device id = %q, want %q", req.PeerDeviceID, idAlice.DeviceID)
+				}
+				if len(req.Files) != 1 || req.Files[0].Name != "hello.txt" {
+					t.Errorf("consent files mismatch: %+v", req.Files)
+				}
+				return ConsentDecision{Accepted: true}, nil
+			},
+			ICEServers: []webrtc.ICEServer{},
+		})
+		recvDone <- result{out, err}
+	}()
+
+	send := <-sendDone
+	recv := <-recvDone
+
+	if recv.err != nil {
+		t.Fatalf("receiver: %v", recv.err)
+	}
+	if send.err != nil {
+		t.Fatalf("sender: %v", send.err)
+	}
+	if !consentCalled {
+		t.Fatal("consent handler was not called")
+	}
+
+	if send.out.Digest != recv.out.Digest {
+		t.Errorf("digests differ: sender %s, receiver %s", send.out.Digest, recv.out.Digest)
+	}
+	if recv.out.Name != "hello.txt" {
+		t.Errorf("received name = %q, want hello.txt", recv.out.Name)
+	}
+	got, err := os.ReadFile(recv.out.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("content mismatch: got %q, want %q", got, payload)
+	}
+}
+
+func TestDriverOpaqueSessionDeclinedConsent(t *testing.T) {
+	hub := newRelay()
+
+	idAlice, err := wire.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idBob, err := wire.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kPair := bytes.Repeat([]byte{0x42}, 32)
+	handle := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	payload := []byte("declined payload should not be written")
+	meta := wire.FileMeta{
+		Name:         "declined.txt",
+		Size:         int64(len(payload)),
+		Mime:         "text/plain",
+		LastModified: 1_700_000_000_000,
+	}
+	dir := t.TempDir()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	type result struct {
+		out *Outcome
+		err error
+	}
+	sendDone := make(chan result, 1)
+	recvDone := make(chan result, 1)
+
+	go func() {
+		out, err := Run(ctx, hub.off, Spec{
+			Opaque: &rendezvous.OpaqueOptions{
+				Role:              rendezvous.RoleOfferer,
+				Handle:            handle,
+				LocalIdentity:     idAlice,
+				PeerDeviceID:      idBob.DeviceID,
+				PeerPublicKey:     idBob.PublicKey,
+				KPair:             kPair,
+				PairCredentialRef: "cred-1",
+			},
+			Source:     wire.BytesSource(payload, meta, 64*1024),
+			ICEServers: []webrtc.ICEServer{},
+		})
+		sendDone <- result{out, err}
+	}()
+
+	go func() {
+		out, err := Run(ctx, hub.join, Spec{
+			Opaque: &rendezvous.OpaqueOptions{
+				Role:              rendezvous.RoleJoiner,
+				Handle:            handle,
+				LocalIdentity:     idBob,
+				PeerDeviceID:      idAlice.DeviceID,
+				PeerPublicKey:     idAlice.PublicKey,
+				KPair:             kPair,
+				PairCredentialRef: "cred-1",
+			},
+			DestDir: dir,
+			Consent: func(ctx context.Context, req ConsentRequest) (ConsentDecision, error) {
+				return ConsentDecision{Accepted: false, Reason: "declined by recipient"}, nil
+			},
+			ICEServers: []webrtc.ICEServer{},
+		})
+		recvDone <- result{out, err}
+	}()
+
+	send := <-sendDone
+	recv := <-recvDone
+
+	if recv.err == nil {
+		t.Fatal("expected receiver error due to declined consent, got nil")
+	}
+	if send.err == nil {
+		t.Fatal("expected sender error due to declined consent, got nil")
+	}
+
+	// Verify nothing was written to the destination directory
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected empty destDir, found %d entries: %+v", len(entries), entries)
+	}
+}
+
