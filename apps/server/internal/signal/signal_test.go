@@ -782,3 +782,64 @@ func TestOpaqueHandleUnpairedExpiry(t *testing.T) {
 	}
 }
 
+func TestPairingMessagesForwarded(t *testing.T) {
+	url := testServer(t, DefaultConfig())
+
+	offerer := mustDial(t, url)
+	joiner := mustDial(t, url)
+
+	offerer.send(map[string]any{"type": "create"})
+	created := offerer.recv()
+	room := int(created["room"].(float64))
+
+	joiner.send(map[string]any{"type": "join", "room": room})
+	_ = offerer.recv() // peer-joined
+	_ = joiner.recv()  // peer-joined
+
+	// Offerer sends pairing_request; joiner must receive it verbatim
+	req := map[string]any{
+		"type":             "pairing_request",
+		"protocol_version": "sendbeam/1",
+		"device_id":        "dev-offerer-123",
+		"public_key":       "abcdef",
+		"device_name":      "Offerer Device",
+		"capabilities":     []any{"transfer.v1"},
+		"nonce":            "112233",
+		"signature":        "sig1",
+	}
+	offerer.send(req)
+	gotReq := joiner.recv()
+	if gotReq["type"] != "pairing_request" || gotReq["device_id"] != "dev-offerer-123" {
+		t.Fatalf("joiner expected pairing_request, got %v", gotReq)
+	}
+
+	// Joiner sends pairing_response; offerer must receive it verbatim
+	resp := map[string]any{
+		"type":             "pairing_response",
+		"protocol_version": "sendbeam/1",
+		"device_id":        "dev-joiner-456",
+		"public_key":       "fedcba",
+		"device_name":      "Joiner Device",
+		"capabilities":     []any{"transfer.v1"},
+		"nonce":            "445566",
+		"signature":        "sig2",
+	}
+	joiner.send(resp)
+	gotResp := offerer.recv()
+	if gotResp["type"] != "pairing_response" || gotResp["device_id"] != "dev-joiner-456" {
+		t.Fatalf("offerer expected pairing_response, got %v", gotResp)
+	}
+
+	// Offerer sends pairing_confirm accepted; joiner receives
+	confirm := map[string]any{
+		"type":     "pairing_confirm",
+		"status":   "accepted",
+		"auth_tag": "tag123",
+	}
+	offerer.send(confirm)
+	gotConf := joiner.recv()
+	if gotConf["type"] != "pairing_confirm" || gotConf["status"] != "accepted" || gotConf["auth_tag"] != "tag123" {
+		t.Fatalf("joiner expected pairing_confirm, got %v", gotConf)
+	}
+}
+

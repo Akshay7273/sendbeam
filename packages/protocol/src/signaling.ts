@@ -6,6 +6,8 @@
  * inspecting bodies. It never receives the invite words or any derived key.
  */
 
+import type { PairingRequest, PairingResponse, PairingConfirm } from './pairing.js';
+
 export type Role = 'offerer' | 'joiner';
 
 /** Sender → server: ask for a room. The server allocates the number. */
@@ -199,6 +201,9 @@ export type SignalMsg =
   | ResumedMsg
   | PeerLeftMsg
   | PeerRejoinedMsg
+  | PairingRequest
+  | PairingResponse
+  | PairingConfirm
   | ErrorMsg;
 
 export type SignalMsgType = SignalMsg['type'];

@@ -30,6 +30,9 @@ const (
 	typeTrustedAuthInit    = "trusted_auth_init"
 	typeTrustedAuthResp    = "trusted_auth_response"
 	typeTrustedAuthConfirm = "trusted_auth_confirm"
+	typePairingRequest     = "pairing_request"
+	typePairingResponse    = "pairing_response"
+	typePairingConfirm     = "pairing_confirm"
 	typeRelayOpen     = "relay_open"
 	typeRelayRequired = "relay_required"
 	typeRelayReady    = "relay_ready"
@@ -55,7 +58,7 @@ const (
 )
 
 // forwardable is the set of peer→peer types the server relays without inspection.
-// SDP, ICE, and trusted_auth bodies are forwarded without being parsed.
+// SDP, ICE, trusted_auth, and pairing bodies are forwarded without being parsed.
 var forwardable = map[string]bool{
 	typePake:               true,
 	typeConfirm:            true,
@@ -65,6 +68,9 @@ var forwardable = map[string]bool{
 	typeTrustedAuthInit:    true,
 	typeTrustedAuthResp:    true,
 	typeTrustedAuthConfirm: true,
+	typePairingRequest:     true,
+	typePairingResponse:    true,
+	typePairingConfirm:     true,
 }
 
 // Error codes carried in an error message's "code" field.
