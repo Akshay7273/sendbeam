@@ -207,14 +207,14 @@ func TestReceiverPolicyAutoAccept(t *testing.T) {
 		TrustStore: storeBob,
 		Secrets:    secretsBob,
 		Tombstones: tombstonesBob,
-		Dialer: func(ctx context.Context, url string) (transfer.Signal, error) {
+		Dialer: func(_ context.Context, _ string) (transfer.Signal, error) {
 			return relay.join, nil
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	payload := []byte("auto-accepted file content")
 	meta := wire.FileMeta{
@@ -300,7 +300,7 @@ func TestReceiverConsentPromptAccept(t *testing.T) {
 		TrustStore: storeBob,
 		Secrets:    secretsBob,
 		Tombstones: tombstonesBob,
-		ConsentHandler: func(ctx context.Context, req ConsentRequest) (ConsentDecision, error) {
+		ConsentHandler: func(_ context.Context, req ConsentRequest) (ConsentDecision, error) {
 			promptCalled = true
 			if req.PeerDeviceID != idAlice.DeviceID {
 				t.Errorf("prompt PeerDeviceID = %q, want %q", req.PeerDeviceID, idAlice.DeviceID)
@@ -314,7 +314,7 @@ func TestReceiverConsentPromptAccept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	payload := []byte("image bytes for photo")
 	meta := wire.FileMeta{
@@ -396,14 +396,14 @@ func TestReceiverConsentPromptDecline(t *testing.T) {
 		TrustStore: storeBob,
 		Secrets:    secretsBob,
 		Tombstones: tombstonesBob,
-		ConsentHandler: func(ctx context.Context, req ConsentRequest) (ConsentDecision, error) {
+		ConsentHandler: func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
 			return ConsentDecision{Accepted: false, Reason: "declined by user"}, nil
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	payload := []byte("super secret data")
 	meta := wire.FileMeta{
@@ -494,7 +494,7 @@ func TestReceiverRevokedPeerRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -529,7 +529,7 @@ func TestReceiverOnceModeSingleDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	payload := []byte("once mode verified delivery")
 	meta := wire.FileMeta{
@@ -598,7 +598,7 @@ func TestReceiverOnceModeDeclinedDoesNotExit(t *testing.T) {
 	listener, err := NewListener(Config{
 		DestDir: destDir,
 		Once:    true, // --once mode
-		ConsentHandler: func(ctx context.Context, req ConsentRequest) (ConsentDecision, error) {
+		ConsentHandler: func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
 			if !acceptSecond {
 				return ConsentDecision{Accepted: false, Reason: "declined first"}, nil
 			}
@@ -612,7 +612,7 @@ func TestReceiverOnceModeDeclinedDoesNotExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -710,7 +710,7 @@ func TestEvaluateConsentUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	handlerCalled := false
-	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, "/default", idAlice.DeviceID, manifest, func(ctx context.Context, req ConsentRequest) (ConsentDecision, error) {
+	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, "/default", idAlice.DeviceID, manifest, func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
 		handlerCalled = true
 		return ConsentDecision{Accepted: false, Reason: "prompted"}, nil
 	})
@@ -729,7 +729,7 @@ func TestEvaluateConsentUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	handlerCalled = false
-	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, "/default", idAlice.DeviceID, manifest, func(ctx context.Context, req ConsentRequest) (ConsentDecision, error) {
+	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, "/default", idAlice.DeviceID, manifest, func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
 		handlerCalled = true
 		return ConsentDecision{Accepted: false, Reason: "mime blocked"}, nil
 	})
@@ -766,7 +766,7 @@ func TestListenerPendingConsentAsync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	// Initially empty pending consent
 	if len(listener.PendingConsent()) != 0 {

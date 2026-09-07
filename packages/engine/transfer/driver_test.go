@@ -746,7 +746,7 @@ func TestDriverOpaqueSessionTransfersFileWithConsent(t *testing.T) {
 				PairCredentialRef: "cred-1",
 			},
 			DestDir: dir,
-			Consent: func(ctx context.Context, req ConsentRequest) (ConsentDecision, error) {
+			Consent: func(_ context.Context, req ConsentRequest) (ConsentDecision, error) {
 				consentCalled = true
 				if req.PeerDeviceID != idAlice.DeviceID {
 					t.Errorf("consent peer device id = %q, want %q", req.PeerDeviceID, idAlice.DeviceID)
@@ -851,7 +851,7 @@ func TestDriverOpaqueSessionDeclinedConsent(t *testing.T) {
 				PairCredentialRef: "cred-1",
 			},
 			DestDir: dir,
-			Consent: func(ctx context.Context, req ConsentRequest) (ConsentDecision, error) {
+			Consent: func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
 				return ConsentDecision{Accepted: false, Reason: "declined by recipient"}, nil
 			},
 			ICEServers: []webrtc.ICEServer{},

@@ -21,9 +21,7 @@ import (
 )
 
 func runListen(args []string) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	return executeListenWithContext(ctx, args, os.Stdin, os.Stdout, os.Stderr)
+	return executeListen(args, os.Stdout, os.Stderr)
 }
 
 func executeListen(args []string, stdout, stderr io.Writer) int {
@@ -73,7 +71,7 @@ func executeListenWithContext(ctx context.Context, args []string, stdin io.Reade
 		serverURL = defaultServer
 	}
 
-	consentHandler := func(cctx context.Context, req receiver.ConsentRequest) (receiver.ConsentDecision, error) {
+	consentHandler := func(_ context.Context, req receiver.ConsentRequest) (receiver.ConsentDecision, error) {
 		if *jsonOutput {
 			evt := map[string]any{
 				"event":          "consent_requested",
@@ -201,7 +199,7 @@ func executeListenWithContext(ctx context.Context, args []string, stdin io.Reade
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	if !*jsonOutput {
 		s := newStyleFromWriter(stdout)

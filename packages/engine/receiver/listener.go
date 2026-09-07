@@ -1,3 +1,4 @@
+// Package receiver coordinates LAN discovery, opaque rendezvous listening, consent policy, and verified transfers.
 package receiver
 
 import (

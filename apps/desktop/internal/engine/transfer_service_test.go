@@ -668,7 +668,7 @@ func TestTransferService_PendingConsentAndRespond(t *testing.T) {
 	if err := svc.StartNativeReceiver(cfg); err != nil {
 		t.Fatalf("StartNativeReceiver: %v", err)
 	}
-	defer svc.StopNativeReceiver()
+	defer func() { _ = svc.StopNativeReceiver() }()
 
 	consents := svc.PendingConsents()
 	if len(consents) != 0 {

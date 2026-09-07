@@ -12,9 +12,13 @@ import (
 	"github.com/sendbeam/wire"
 )
 
-// Re-export transfer consent types for consumers of receiver package
+// ConsentRequest aliases transfer.ConsentRequest for consumers of the receiver package.
 type ConsentRequest = transfer.ConsentRequest
+
+// ConsentDecision aliases transfer.ConsentDecision for consumers of the receiver package.
 type ConsentDecision = transfer.ConsentDecision
+
+// ConsentHandler aliases transfer.ConsentHandler for consumers of the receiver package.
 type ConsentHandler = transfer.ConsentHandler
 
 // DiscoveredPeer aliases discovery.DiscoveredPeer
