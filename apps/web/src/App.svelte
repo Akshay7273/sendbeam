@@ -32,9 +32,21 @@
   } from './lib/transfer/durable-store.js';
   import QrCode from './lib/QrCode.svelte';
   import markUrl from './lib/assets/sendbeam-mark.svg';
+  import { onMount } from 'svelte';
   import DevicesModal from './lib/trust/DevicesModal.svelte';
   import IncomingTransferModal from './lib/trust/IncomingTransferModal.svelte';
-  import type { TrustedDeviceUI, IncomingTransferRequest } from './lib/trust/types.js';
+  import type {
+    TrustedDeviceUI,
+    IncomingTransferRequest,
+    BroadcastDeviceState,
+    BroadcastDeviceStatus,
+  } from './lib/trust/types.js';
+  import {
+    startTargetedSend,
+    runBroadcastSend,
+    type TargetedSendSession,
+  } from './lib/trust/targeted-send.js';
+  import { IncomingTransferCoordinator } from './lib/trust/incoming-listener.js';
   import { notifyTransferStart, notifyTransferEnd } from './lib/pwa/register.js';
 
   loadConfig();
@@ -60,7 +72,8 @@
     type ErrorLike,
   } from './lib/session/present.js';
 
-  type Screen = 'home' | 'sending' | 'receiving' | 'done' | 'failed';
+  type Screen =
+    'home' | 'sending' | 'receiving' | 'done' | 'failed' | 'targeted_send' | 'broadcast_send';
 
   /** One locally kept interrupted receive (V13-PR08). Safe metadata only — never secrets. */
   interface ReceiveJournalEntry {
@@ -141,27 +154,152 @@
   let outcome = $state<TransferOutcome | null>(null);
   let downloadUrl = $state<string | null>(null);
 
-  // Trusted Devices state (V15-PR06)
+  // Trusted Devices state (V15-PR06 & V19-PR09)
   let showDevicesModal = $state(false);
   let incomingTransfer = $state<IncomingTransferRequest | null>(null);
+  let incomingCoordinator = $state<IncomingTransferCoordinator | null>(null);
+
+  // Single targeted send state
+  let targetedRecipient = $state<TrustedDeviceUI | null>(null);
+  let targetedStatus = $state<BroadcastDeviceStatus>('pending');
+  let targetedSession = $state<TargetedSendSession | null>(null);
+
+  // Multi-send broadcast state
+  let broadcastRecipients = $state<TrustedDeviceUI[]>([]);
+  let broadcastStates = $state.raw<BroadcastDeviceState[]>([]);
+  let broadcastAllOk = $state(false);
+  let broadcastFinished = $state(false);
 
   function handleSendToTrustedDevice(dev: TrustedDeviceUI) {
-    void dev;
-    startSend();
+    reset();
+    targetedRecipient = dev;
+    if (pickedFiles.length > 0) {
+      void runTargetedTransfer(dev, pickedFiles);
+    } else {
+      screen = 'targeted_send';
+    }
   }
 
   function handleSendToTrustedDevices(devs: TrustedDeviceUI[]) {
-    void devs;
-    startSend();
+    reset();
+    broadcastRecipients = devs;
+    if (pickedFiles.length > 0) {
+      void runBroadcastTransfer(devs, pickedFiles);
+    } else {
+      screen = 'broadcast_send';
+    }
   }
 
-  function handleAcceptIncoming() {
-    incomingTransfer = null;
-    startReceive();
+  async function runTargetedTransfer(dev: TrustedDeviceUI, files: File[]) {
+    reset();
+    targetedRecipient = dev;
+    pickedFiles = files;
+    screen = 'targeted_send';
+    targetedStatus = 'connecting';
+    const ice = iceServers();
+
+    try {
+      const sess = await startTargetedSend({
+        target: dev,
+        files,
+        ...(ice ? { iceServers: ice } : {}),
+        onStateChange: (st) => {
+          targetedStatus = st;
+        },
+      });
+      targetedSession = sess;
+      beginTransfer(sess.transferCtrl);
+      sess.done
+        .then((res) => {
+          targetedStatus = 'ok';
+          outcome = res;
+          screen = 'done';
+        })
+        .catch((err: unknown) => {
+          errorText = describeError(asErrorLike(err));
+          screen = 'failed';
+        });
+    } catch (err: unknown) {
+      errorText = describeError(asErrorLike(err));
+      screen = 'failed';
+    }
   }
 
-  function handleDeclineIncoming() {
+  async function runBroadcastTransfer(devs: TrustedDeviceUI[], files: File[]) {
+    reset();
+    broadcastRecipients = devs;
+    pickedFiles = files;
+    screen = 'broadcast_send';
+    broadcastFinished = false;
+    broadcastAllOk = false;
+    const ice = iceServers();
+
+    const initialTotal = files.reduce((acc, f) => acc + f.size, 0);
+    broadcastStates = devs.map((d) => ({
+      deviceId: d.deviceId,
+      label: d.localLabel,
+      status: 'pending',
+      progressBytes: 0,
+      totalBytes: initialTotal,
+    }));
+
+    try {
+      const res = await runBroadcastSend(devs, files, {
+        ...(ice ? { iceServers: ice } : {}),
+        onTargetUpdate: (st) => {
+          const next = [...broadcastStates];
+          const idx = next.findIndex((x) => x.deviceId === st.deviceId);
+          if (idx >= 0) {
+            next[idx] = st;
+          } else {
+            next.push(st);
+          }
+          broadcastStates = next;
+        },
+      });
+      broadcastAllOk = res.allOk;
+      broadcastFinished = true;
+    } catch (err: unknown) {
+      errorText = describeError(asErrorLike(err));
+      screen = 'failed';
+    }
+  }
+
+  function onPickTargetedFiles(ev: Event) {
+    const input = ev.currentTarget as HTMLInputElement;
+    const files = canonicalizeFiles(Array.from(input.files ?? []));
+    if (files.length > 0 && targetedRecipient) {
+      void runTargetedTransfer(targetedRecipient, files);
+    }
+  }
+
+  function onPickBroadcastFiles(ev: Event) {
+    const input = ev.currentTarget as HTMLInputElement;
+    const files = canonicalizeFiles(Array.from(input.files ?? []));
+    if (files.length > 0 && broadcastRecipients.length > 0) {
+      void runBroadcastTransfer(broadcastRecipients, files);
+    }
+  }
+
+  function cancelTargetedSend() {
+    targetedSession?.cancel('cancelled by user');
+    backHome();
+  }
+
+  async function handleAcceptIncoming() {
+    const req = incomingTransfer;
     incomingTransfer = null;
+    if (req && incomingCoordinator) {
+      await incomingCoordinator.respondConsent(req.transferId, true);
+    }
+  }
+
+  async function handleDeclineIncoming() {
+    const req = incomingTransfer;
+    incomingTransfer = null;
+    if (req && incomingCoordinator) {
+      await incomingCoordinator.respondConsent(req.transferId, false, 'declined by user');
+    }
   }
 
   let controller: RendezvousController | undefined;
@@ -626,6 +764,14 @@
     activeReceiveResume = undefined;
     receiveResumeHint = '';
     resumeNote = '';
+    targetedSession?.cancel();
+    targetedSession = null;
+    targetedRecipient = null;
+    targetedStatus = 'pending';
+    broadcastRecipients = [];
+    broadcastStates = [];
+    broadcastAllOk = false;
+    broadcastFinished = false;
   }
 
   async function discardDurable() {
@@ -792,12 +938,40 @@
     void refreshReceiveJournals();
   }
 
-  // Populate the interrupted-receives AND interrupted-sends lists once the app mounts, so
-  // interrupted transfers are discoverable before a fresh rendezvous is created.
-  if (typeof window !== 'undefined') {
-    void refreshReceiveJournals();
-    void refreshSenderRecords();
-  }
+  onMount(() => {
+    if (typeof window !== 'undefined') {
+      void refreshReceiveJournals();
+      void refreshSenderRecords();
+
+      const ice = iceServers();
+      incomingCoordinator = new IncomingTransferCoordinator({
+        serverUrl: baseUrl(),
+        ...(ice ? { iceServers: ice } : {}),
+        onIncomingRequest: (req) => {
+          incomingTransfer = req;
+        },
+        onTransferStart: (_id, ctrl) => {
+          screen = 'receiving';
+          beginTransfer(ctrl);
+        },
+        onTransferComplete: (_id, out) => {
+          outcome = out;
+          screen = 'done';
+        },
+        onTransferError: (_id, err) => {
+          errorText = describeError(asErrorLike(err));
+          screen = 'failed';
+        },
+      });
+
+      void incomingCoordinator.start();
+
+      return () => {
+        incomingCoordinator?.stop();
+        incomingCoordinator = null;
+      };
+    }
+  });
 </script>
 
 <div class="backdrop" aria-hidden="true">
@@ -1069,6 +1243,199 @@
 
       <button class="ghost" onclick={backHome}>Cancel</button>
     </section>
+  {:else if screen === 'targeted_send'}
+    <section class="stage card targeted-stage">
+      {#if targetedRecipient}
+        <div class="stage-head">
+          <h2>Sending to @{targetedRecipient.localLabel}</h2>
+          <p class="muted">
+            Authenticated direct transfer to trusted device
+            <code class="fp-badge">{targetedRecipient.fingerprint}</code>
+          </p>
+        </div>
+
+        {#if pickedFiles.length === 0}
+          <div class="pick-box">
+            <p class="muted">
+              Choose the files you want to beam to <strong>@{targetedRecipient.localLabel}</strong>.
+            </p>
+            <div class="pick-actions">
+              <label class="primary btn file-input-label">
+                <span>Choose files</span>
+                <input type="file" multiple onchange={onPickTargetedFiles} style="display: none" />
+              </label>
+              <button class="ghost" onclick={backHome}>Cancel</button>
+            </div>
+          </div>
+        {:else}
+          <div class="targeted-transfer-info">
+            <div class="file-summary">
+              {#if pickedFiles.length === 1 && pickedFiles[0]}
+                <span
+                  >Sending <strong>{pickedFiles[0].name}</strong> ({humanBytes(
+                    pickedFiles[0].size,
+                  )})</span
+                >
+              {:else}
+                <span
+                  >Sending <strong>{pickedFiles.length} files</strong> ({humanBytes(
+                    totalBytes || pickedFiles.reduce((a, f) => a + f.size, 0),
+                  )})</span
+                >
+              {/if}
+            </div>
+
+            <div class="phase" aria-live="polite">
+              <span
+                class={targetedStatus === 'sending' || targetedStatus === 'ok'
+                  ? 'spinner ok'
+                  : 'spinner'}
+                aria-hidden="true"
+              ></span>
+              {#if targetedStatus === 'connecting'}
+                Connecting to @{targetedRecipient.localLabel}…
+              {:else if targetedStatus === 'sending'}
+                Sending to @{targetedRecipient.localLabel}…
+              {:else}
+                Preparing authenticated transfer…
+              {/if}
+            </div>
+
+            {#if targetedStatus === 'sending' || transfer}
+              <div class="transfer-block">
+                <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                  <div
+                    class="bar-fill"
+                    style={`width:${progressPercent(sentBytes, totalBytes)}%`}
+                  ></div>
+                </div>
+                <p class="status" aria-live="polite">
+                  {progressLabel(sentBytes, totalBytes)}
+                </p>
+                <div class="stats">
+                  <div class="stat">
+                    <span class="stat-label">Rate</span>
+                    <span class="stat-value">{rateLabel(rateBps)}</span>
+                  </div>
+                  <div class="stat">
+                    <span class="stat-label">ETA</span>
+                    <span class="stat-value"
+                      >{etaSeconds !== undefined ? etaLabel(etaSeconds) : '—'}</span
+                    >
+                  </div>
+                </div>
+              </div>
+            {/if}
+
+            <button class="ghost" onclick={cancelTargetedSend}>Cancel</button>
+          </div>
+        {/if}
+      {/if}
+    </section>
+  {:else if screen === 'broadcast_send'}
+    <section class="stage card broadcast-stage">
+      <div class="stage-head">
+        <h2>Multi-device transfer</h2>
+        <p class="muted">
+          Broadcasting to {broadcastRecipients.length} trusted device(s) concurrently.
+        </p>
+      </div>
+
+      {#if pickedFiles.length === 0}
+        <div class="pick-box">
+          <p class="muted">Choose the files you want to broadcast to selected devices.</p>
+          <div class="pick-actions">
+            <label class="primary btn file-input-label">
+              <span>Choose files</span>
+              <input type="file" multiple onchange={onPickBroadcastFiles} style="display: none" />
+            </label>
+            <button class="ghost" onclick={backHome}>Cancel</button>
+          </div>
+        </div>
+      {:else}
+        <div class="file-summary-banner">
+          <span
+            >Payload: <strong
+              >{pickedFiles.length === 1
+                ? (pickedFiles[0]?.name ?? 'file')
+                : `${pickedFiles.length} files`}</strong
+            >
+            ({humanBytes(pickedFiles.reduce((a, f) => a + f.size, 0))})</span
+          >
+        </div>
+
+        <div class="broadcast-list">
+          {#each broadcastStates as devState}
+            <div class="broadcast-item">
+              <div class="broadcast-item-head">
+                <span class="device-label"><strong>@{devState.label}</strong></span>
+                <span class="status-badge {devState.status}">
+                  {#if devState.status === 'ok'}
+                    ✓ Verified
+                  {:else if devState.status === 'refused'}
+                    Declined
+                  {:else if devState.status === 'offline'}
+                    Offline
+                  {:else if devState.status === 'failed'}
+                    Failed
+                  {:else if devState.status === 'sending'}
+                    Sending ({progressPercent(devState.progressBytes, devState.totalBytes)}%)
+                  {:else if devState.status === 'connecting'}
+                    Connecting…
+                  {:else}
+                    Pending
+                  {/if}
+                </span>
+              </div>
+
+              {#if devState.status === 'sending'}
+                <div class="mini-bar-wrap">
+                  <div
+                    class="mini-bar-fill"
+                    style="width: {progressPercent(devState.progressBytes, devState.totalBytes)}%"
+                  ></div>
+                </div>
+              {/if}
+
+              <div class="broadcast-item-meta">
+                {#if devState.status === 'ok'}
+                  <span class="meta-digest"
+                    >SHA-256: <code
+                      >{devState.digest ? devState.digest.slice(0, 16) + '…' : '-'}</code
+                    ></span
+                  >
+                  {#if devState.durationMs}
+                    <span class="meta-duration">{(devState.durationMs / 1000).toFixed(1)}s</span>
+                  {/if}
+                {:else if devState.error}
+                  <span class="meta-error">{devState.error}</span>
+                {/if}
+              </div>
+            </div>
+          {/each}
+        </div>
+
+        <div class="broadcast-footer">
+          {#if broadcastFinished}
+            <div class="broadcast-summary">
+              {#if broadcastAllOk}
+                <span class="summary-ok"
+                  >✓ All {broadcastStates.length} transfers completed successfully.</span
+                >
+              {:else}
+                {@const okCount = broadcastStates.filter((s) => s.status === 'ok').length}
+                <span class="summary-partial"
+                  >{okCount} of {broadcastStates.length} transfers succeeded.</span
+                >
+              {/if}
+            </div>
+            <button class="primary" onclick={backHome}>Done</button>
+          {:else}
+            <button class="ghost" onclick={backHome}>Cancel</button>
+          {/if}
+        </div>
+      {/if}
+    </section>
   {:else if screen === 'receiving'}
     <section class="stage card">
       <div class="stage-head">
@@ -1134,7 +1501,12 @@
         {:else}
           <div class="outcome">
             <p class="muted">
-              Sent <strong>{outcome.name}</strong> — verified by the receiver.
+              {#if targetedRecipient}
+                Sent <strong>{outcome.name}</strong> to
+                <strong>@{targetedRecipient.localLabel}</strong> — verified by the receiver.
+              {:else}
+                Sent <strong>{outcome.name}</strong> — verified by the receiver.
+              {/if}
             </p>
           </div>
         {/if}
@@ -2080,6 +2452,149 @@
     background: rgba(52, 211, 153, 0.07);
     border: 1px solid rgba(52, 211, 153, 0.28);
     text-align: left;
+  }
+
+  /* ————— targeted and broadcast send (V19-PR09) ————— */
+  .targeted-stage,
+  .broadcast-stage {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    align-items: stretch;
+  }
+  .pick-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    padding: 1.5rem;
+    border-radius: 0.85rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px dashed rgba(255, 255, 255, 0.15);
+  }
+  .pick-actions {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+  }
+  .file-input-label {
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .targeted-transfer-info {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    align-items: center;
+  }
+  .file-summary-banner {
+    padding: 0.6rem 1rem;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 0.875rem;
+    text-align: center;
+  }
+  .broadcast-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    width: 100%;
+  }
+  .broadcast-item {
+    padding: 0.85rem 1rem;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .broadcast-item-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .status-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    text-transform: capitalize;
+  }
+  .status-badge.ok {
+    background: rgba(52, 211, 153, 0.15);
+    color: #34d399;
+    border: 1px solid rgba(52, 211, 153, 0.3);
+  }
+  .status-badge.refused {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(251, 191, 36, 0.3);
+  }
+  .status-badge.offline {
+    background: rgba(148, 163, 184, 0.15);
+    color: #94a3b8;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+  }
+  .status-badge.failed {
+    background: rgba(248, 113, 113, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(248, 113, 113, 0.3);
+  }
+  .status-badge.sending {
+    background: rgba(56, 189, 248, 0.15);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.3);
+  }
+  .status-badge.connecting {
+    background: rgba(167, 139, 250, 0.15);
+    color: #a78bfa;
+    border: 1px solid rgba(167, 139, 250, 0.3);
+  }
+  .status-badge.pending {
+    background: rgba(255, 255, 255, 0.06);
+    color: #a1a1aa;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .mini-bar-wrap {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .mini-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #38bdf8, #818cf8);
+    transition: width 0.15s ease-out;
+  }
+  .broadcast-item-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: #94a3b8;
+  }
+  .meta-error {
+    color: #f87171;
+  }
+  .broadcast-footer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+  }
+  .broadcast-summary {
+    font-size: 0.9rem;
+    font-weight: 500;
+  }
+  .summary-ok {
+    color: #34d399;
+  }
+  .summary-partial {
+    color: #fbbf24;
   }
 
   @media (prefers-reduced-motion: reduce) {

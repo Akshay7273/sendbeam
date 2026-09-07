@@ -1011,4 +1011,34 @@ describe('App transfer completion', () => {
     expect(target.textContent).toContain('armed to resume a different interrupted transfer');
     expect(target.textContent).toContain('nothing was sent');
   });
+
+  it('opens and closes trusted devices modal from the header', async () => {
+    mocks.offer.mockReturnValue({
+      code: undefined,
+      phase: 'idle',
+      done: new Promise(() => {}),
+      cancel: vi.fn(),
+      adoptSignaling: vi.fn(),
+    });
+
+    component = mount(App, { target });
+    await settle();
+
+    const devicesBtn = target.querySelector('.btn-devices-header') as HTMLButtonElement;
+    expect(devicesBtn).not.toBeNull();
+    devicesBtn.click();
+    await settle();
+
+    // Devices modal should be open
+    expect(target.querySelector('.modal-backdrop')).not.toBeNull();
+    expect(target.textContent).toContain('Trusted Devices');
+
+    // Close modal
+    const closeBtn = target.querySelector('.btn-close') as HTMLButtonElement;
+    expect(closeBtn).not.toBeNull();
+    closeBtn.click();
+    await settle();
+
+    expect(target.querySelector('.modal-backdrop')).toBeNull();
+  });
 });
