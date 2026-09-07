@@ -7,6 +7,13 @@
  */
 
 import {
+  ERR_REVOCATION_SEQ_ROLLBACK,
+  ERR_REVOCATION_UNAUTHORIZED,
+  ERR_UNKNOWN_REVOKER,
+} from './errors.js';
+import {
+  RELATIONSHIP_CLUSTER_MEMBER,
+  RELATIONSHIP_CLUSTER_OWNER,
   type TrustPolicy,
   type TrustRecord,
   type TrustStore,
@@ -120,34 +127,73 @@ export class IndexedDBTrustStore implements TrustStore {
     return new Promise((resolve, reject) => {
       const tx = db.transaction([TRUST_DEVICES_STORE], 'readwrite');
       const store = tx.objectStore(TRUST_DEVICES_STORE);
-      const req = store.get(record.revoked_device_id);
-      req.onsuccess = () => {
-        const rec = req.result as TrustRecord | undefined;
-        if (!rec) {
-          // If the revoked device is not directly in our local store, do not fail
-          resolve();
-          return;
-        }
-        if (rec.revoked && rec.revokedBy === record.revoker_device_id) {
-          if (rec.revocationSeq && record.seq <= rec.revocationSeq) {
-            tx.abort();
-            reject(new Error('revocation sequence number rollback'));
+
+      const isSelf = record.revoker_device_id === record.revoked_device_id;
+      const finishRevocation = () => {
+        const targetReq = store.get(record.revoked_device_id);
+        targetReq.onsuccess = () => {
+          const rec = targetReq.result as TrustRecord | undefined;
+          if (!rec) {
+            resolve();
             return;
           }
-        }
-        rec.revoked = true;
-        rec.revokedAt = record.timestamp;
-        rec.revokedBy = record.revoker_device_id;
-        rec.revocationSeq = record.seq;
-        rec.revocationSig = record.signature;
-        store.put(rec);
+          if (rec.revoked && rec.revocationSeq && record.seq <= rec.revocationSeq) {
+            tx.abort();
+            reject(new Error(ERR_REVOCATION_SEQ_ROLLBACK));
+            return;
+          }
+          rec.revoked = true;
+          rec.revokedAt = record.timestamp;
+          rec.revokedBy = record.revoker_device_id;
+          rec.revocationSeq = record.seq;
+          rec.revocationSig = record.signature;
+          store.put(rec);
+        };
+        targetReq.onerror = () => {
+          tx.abort();
+          reject(targetReq.error ?? new Error('revokeDeviceWithRecord read target failed'));
+        };
       };
-      req.onerror = () => {
-        tx.abort();
-        reject(req.error ?? new Error(`revokeDeviceWithRecord read failed`));
-      };
+
+      if (!isSelf) {
+        const revokerReq = store.get(record.revoker_device_id);
+        revokerReq.onsuccess = () => {
+          const revoker = revokerReq.result as TrustRecord | undefined;
+          if (!revoker) {
+            tx.abort();
+            reject(new Error(ERR_UNKNOWN_REVOKER));
+            return;
+          }
+          if (revoker.revoked) {
+            tx.abort();
+            reject(new Error('revocation revoker is revoked'));
+            return;
+          }
+          if (
+            revoker.relationship !== RELATIONSHIP_CLUSTER_MEMBER &&
+            revoker.relationship !== RELATIONSHIP_CLUSTER_OWNER
+          ) {
+            tx.abort();
+            reject(new Error(ERR_REVOCATION_UNAUTHORIZED));
+            return;
+          }
+          if (!revoker.clusterId || revoker.clusterId.trim() === '') {
+            tx.abort();
+            reject(new Error(ERR_REVOCATION_UNAUTHORIZED));
+            return;
+          }
+          finishRevocation();
+        };
+        revokerReq.onerror = () => {
+          tx.abort();
+          reject(revokerReq.error ?? new Error('revokeDeviceWithRecord read revoker failed'));
+        };
+      } else {
+        finishRevocation();
+      }
+
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error ?? new Error(`revokeDeviceWithRecord failed`));
+      tx.onerror = () => reject(tx.error ?? new Error('revokeDeviceWithRecord failed'));
     });
   }
 

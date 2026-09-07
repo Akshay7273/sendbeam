@@ -320,7 +320,7 @@ func runBroadcastSend(filePaths []string, toDevices []string, server string, ins
 			_, _ = fmt.Fprintf(stderr, "sendbeam send: %v\n", err)
 			return 1
 		}
-		if dev.Revoked {
+		if dev.Revoked || (env.Tombstones != nil && env.Tombstones.HasTombstone(ctx, dev.DeviceID)) {
 			_, _ = fmt.Fprintf(stderr, "sendbeam send: trust for device %q is revoked\n", dev.LocalLabel)
 			return 1
 		}

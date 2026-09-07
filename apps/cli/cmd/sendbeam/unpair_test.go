@@ -37,6 +37,11 @@ func TestUnpairCommand(t *testing.T) {
 		Policy:            wire.DefaultTrustPolicy(),
 	})
 
+	secStore, _ := trust.NewFileSecretStore(filepath.Join(tmpDir, "secrets.json"))
+	var kPair [32]byte
+	kPair[0] = 0x99
+	_ = secStore.SetSecret(devAlice, kPair[:])
+
 	// Cancel interactive prompt
 	var stdin, stdout, stderr bytes.Buffer
 	stdin.WriteString("n\n")
@@ -60,6 +65,18 @@ func TestUnpairCommand(t *testing.T) {
 	rec, _ := storeAfterRevoke.GetDevice(ctx, devAlice)
 	if rec == nil || !rec.Revoked {
 		t.Errorf("expected device to be revoked in store")
+	}
+
+	// Verify tombstone is saved
+	tombAfter, err := trust.NewFileTombstoneStore(filepath.Join(tmpDir, "tombstones.json"))
+	if err != nil || !tombAfter.HasTombstone(ctx, devAlice) {
+		t.Errorf("expected tombstone in tombstones.json, err: %v", err)
+	}
+
+	// Verify secret is deleted
+	secAfter, _ := trust.NewFileSecretStore(filepath.Join(tmpDir, "secrets.json"))
+	if _, err := secAfter.ResolvePairSecret(ctx, devAlice, ""); err == nil {
+		t.Errorf("expected secret to be deleted from secrets.json upon unpair")
 	}
 
 	// Purge with --yes and --json

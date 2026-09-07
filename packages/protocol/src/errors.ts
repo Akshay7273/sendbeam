@@ -17,3 +17,8 @@ export const ErrorCode = {
   Internal: 'INTERNAL',
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
+
+export const ERR_REVOCATION_UNAUTHORIZED = 'revocation record is unauthorized';
+export const ERR_REVOCATION_SEQ_ROLLBACK = 'revocation sequence number rollback';
+export const ERR_TRUSTED_PEER_REVOKED = 'trusted peer device is revoked';
+export const ERR_UNKNOWN_REVOKER = 'revocation revoker is not an active trusted peer';

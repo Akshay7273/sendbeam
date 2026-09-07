@@ -105,6 +105,7 @@ export async function validateTrustRecord(record: TrustRecord): Promise<void> {
   }
 }
 
+import { ERR_REVOCATION_SEQ_ROLLBACK, ERR_REVOCATION_UNAUTHORIZED } from './errors.js';
 import { type RevocationRecord, validateRevocationRecord } from './revocation.js';
 
 /**
@@ -155,14 +156,33 @@ export class MemoryTrustStore implements TrustStore {
 
   async revokeDeviceWithRecord(record: RevocationRecord): Promise<void> {
     validateRevocationRecord(record);
+
+    // ADR 0010 §4.4: If revoker is in the store, verify it is not revoked and not an unauthorized contact
+    const isSelf = record.revoker_device_id === record.revoked_device_id;
+    if (!isSelf) {
+      const revoker = this.records.get(record.revoker_device_id);
+      if (revoker) {
+        if (revoker.revoked) {
+          throw new Error('revocation revoker is revoked');
+        }
+        if (
+          revoker.relationship !== RELATIONSHIP_CLUSTER_MEMBER &&
+          revoker.relationship !== RELATIONSHIP_CLUSTER_OWNER
+        ) {
+          throw new Error(ERR_REVOCATION_UNAUTHORIZED);
+        }
+        if (!revoker.clusterId || revoker.clusterId.trim() === '') {
+          throw new Error(ERR_REVOCATION_UNAUTHORIZED);
+        }
+      }
+    }
+
     const rec = this.records.get(record.revoked_device_id);
     if (!rec) {
       return;
     }
-    if (rec.revoked && rec.revokedBy === record.revoker_device_id) {
-      if (rec.revocationSeq && record.seq <= rec.revocationSeq) {
-        throw new Error('revocation sequence number rollback');
-      }
+    if (rec.revoked && rec.revocationSeq && record.seq <= rec.revocationSeq) {
+      throw new Error(ERR_REVOCATION_SEQ_ROLLBACK);
     }
     rec.revoked = true;
     rec.revokedAt = record.timestamp;

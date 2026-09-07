@@ -699,7 +699,7 @@ describe('SendBeam v1.8 Attack-Matrix & Adversarial Security Campaign', () => {
     expect(await verifyPairingConfirmTag(kPair1, devAttacker.deviceId, tagBob1)).toBe(false);
 
     // 3. Bit-flipped / forged tag
-    const badTag = '00' + tagBob1.slice(2);
+    const badTag = (tagBob1.startsWith('00') ? 'ff' : '00') + tagBob1.slice(2);
     expect(await verifyPairingConfirmTag(kPair1, devB.deviceId, badTag)).toBe(false);
 
     // 4. Malformed tag length

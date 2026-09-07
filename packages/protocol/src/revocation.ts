@@ -78,9 +78,6 @@ export async function signRevocation(
   if (!validateDeviceId(revokedDeviceId)) {
     throw new Error(`invalid revoked device id: ${revokedDeviceId}`);
   }
-  if (identity.deviceId === revokedDeviceId) {
-    throw new Error('cannot revoke self in mesh sync');
-  }
   if (!Number.isInteger(seq) || seq <= 0) {
     throw new Error('seq must be a positive integer > 0');
   }
@@ -99,7 +96,29 @@ export async function signRevocation(
 }
 
 /**
+ * Sign a new self-tombstone RevocationRecord announcing this device's own revocation (ADR 0010 §4.2).
+ */
+export async function signSelfTombstone(
+  identity: DeviceIdentity,
+  seq: number,
+  now = new Date(),
+): Promise<RevocationRecord> {
+  if (!identity) throw new Error('invalid identity: null or undefined');
+  return signRevocation(identity, identity.deviceId, seq, now);
+}
+
+/**
+ * Returns true if the revocation record is a self-tombstone where the revoker revokes itself (ADR 0010 §4.2).
+ */
+export function isSelfTombstone(record: RevocationRecord): boolean {
+  return (
+    !!record && !!record.revoker_device_id && record.revoker_device_id === record.revoked_device_id
+  );
+}
+
+/**
  * Validate the structural integrity of a RevocationRecord.
+ * Under ADR 0010 §4.2, self-tombstones (revoker_device_id === revoked_device_id) are structurally valid.
  */
 export function validateRevocationRecord(record: RevocationRecord): void {
   if (!record) throw new Error('invalid revocation record: null or undefined');
@@ -108,9 +127,6 @@ export function validateRevocationRecord(record: RevocationRecord): void {
   }
   if (!validateDeviceId(record.revoked_device_id)) {
     throw new Error(`invalid revoked device id: ${record.revoked_device_id}`);
-  }
-  if (record.revoker_device_id === record.revoked_device_id) {
-    throw new Error('cannot revoke self in mesh sync');
   }
   if (!Number.isInteger(record.seq) || record.seq <= 0) {
     throw new Error('seq must be a positive integer > 0');
@@ -166,4 +182,117 @@ export async function verifyRevocation(
   );
 
   return verifyDeviceSignature(revokerPublicKey, challenge, sigBytes);
+}
+
+import {
+  ERR_REVOCATION_SEQ_ROLLBACK,
+  ERR_REVOCATION_UNAUTHORIZED,
+  ERR_UNKNOWN_REVOKER,
+} from './errors.js';
+import type { TombstoneStore } from './tombstone-store.js';
+import {
+  RELATIONSHIP_CLUSTER_MEMBER,
+  RELATIONSHIP_CLUSTER_OWNER,
+  type TrustStore,
+} from './trust-store.js';
+
+export interface IngestRevocationOptions {
+  tombstoneStore?: TombstoneStore;
+  localClusterId?: string;
+  localDeviceId?: string;
+  localPublicKey?: Uint8Array;
+  now?: Date;
+  onAbortSession?: (deviceId: string) => void;
+}
+
+/**
+ * Ingest and verify an incoming mesh RevocationRecord in accordance with ADR 0010 §4.4.
+ */
+export async function ingestRevocationRecord(
+  record: RevocationRecord,
+  trustStore: TrustStore,
+  options?: IngestRevocationOptions,
+): Promise<void> {
+  // 1. Syntax validation
+  validateRevocationRecord(record);
+
+  const now = options?.now ?? new Date();
+  const isSelf = record.revoker_device_id === record.revoked_device_id;
+  const isLocal = Boolean(
+    options?.localDeviceId && record.revoker_device_id === options.localDeviceId,
+  );
+
+  // 2. Retrieve Revoker A from local trust store
+  let revokerPubBytes: Uint8Array;
+  if (isLocal && options?.localPublicKey) {
+    revokerPubBytes = options.localPublicKey;
+  } else {
+    const revoker = await trustStore.getDevice(record.revoker_device_id);
+    if (!revoker) {
+      if (isSelf) {
+        if (options?.tombstoneStore) {
+          await options.tombstoneStore.storeTombstone(record);
+        }
+        return;
+      }
+      throw new Error(ERR_UNKNOWN_REVOKER);
+    }
+
+    // 3. Check if Revoker A is already revoked locally
+    if (revoker.revoked) {
+      throw new Error('revocation revoker is revoked');
+    }
+
+    // 4. Authorization check
+    if (!isSelf && !isLocal) {
+      if (
+        revoker.relationship !== RELATIONSHIP_CLUSTER_MEMBER &&
+        revoker.relationship !== RELATIONSHIP_CLUSTER_OWNER
+      ) {
+        throw new Error(ERR_REVOCATION_UNAUTHORIZED);
+      }
+      if (!revoker.clusterId || revoker.clusterId.trim() === '') {
+        throw new Error(ERR_REVOCATION_UNAUTHORIZED);
+      }
+      if (options?.localClusterId && revoker.clusterId !== options.localClusterId) {
+        throw new Error(ERR_REVOCATION_UNAUTHORIZED);
+      }
+    }
+    revokerPubBytes = hexToBytes(revoker.publicKey);
+  }
+
+  // 5. Retrieve Target B from local trust store
+  const target = await trustStore.getDevice(record.revoked_device_id);
+  if (!target) {
+    if (options?.tombstoneStore) {
+      await options.tombstoneStore.storeTombstone(record);
+    }
+    return;
+  }
+
+  // 6. Verify Ed25519 signature
+  const sigValid = await verifyRevocation(
+    record,
+    revokerPubBytes,
+    MAX_REVOCATION_TIMESTAMP_SKEW_MS,
+    now,
+  );
+  if (!sigValid) {
+    throw new Error('trusted-session signature verification failed');
+  }
+
+  // 7. Sequence monotonicity check
+  if (target.revoked && target.revocationSeq && record.seq <= target.revocationSeq) {
+    throw new Error(ERR_REVOCATION_SEQ_ROLLBACK);
+  }
+
+  // 9. Apply revocation to Target B in trust store
+  await trustStore.revokeDeviceWithRecord(record);
+
+  if (options?.tombstoneStore) {
+    await options.tombstoneStore.storeTombstone(record);
+  }
+
+  // 10. Abort active sessions
+  options?.onAbortSession?.(record.revoked_device_id);
 }
