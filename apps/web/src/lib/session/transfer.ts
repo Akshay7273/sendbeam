@@ -551,6 +551,9 @@ function run(
         const output = msg.output;
         if (output?.kind === 'opfs') {
           await writer?.drain();
+          if (transport === 'relay') {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
           signaling.close();
           relay?.close();
           peer?.close();
@@ -565,6 +568,9 @@ function run(
           });
         } else if (output?.kind === 'blob') {
           await writer?.drain();
+          if (transport === 'relay') {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
           signaling.close();
           relay?.close();
           peer?.close();

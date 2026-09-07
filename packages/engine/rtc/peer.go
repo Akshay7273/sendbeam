@@ -341,14 +341,14 @@ func (p *Peer) sendOffer() {
 		p.fail(fmt.Errorf("rtc: create offer: %w", err))
 		return
 	}
+	p.sendMu.Lock()
+	defer p.sendMu.Unlock()
 	if err := p.pc.SetLocalDescription(offer); err != nil {
 		p.fail(fmt.Errorf("rtc: set local offer: %w", err))
 		return
 	}
-	p.sendMu.Lock()
 	err = p.send(p.auth.SignSDP(offer.SDP))
 	p.sdpOnce.Do(func() { close(p.sdpSent) })
-	p.sendMu.Unlock()
 	if err != nil {
 		p.fail(fmt.Errorf("rtc: send offer: %w", err))
 	}
@@ -379,13 +379,13 @@ func (p *Peer) handle(msg rendezvous.Message) error {
 		if err != nil {
 			return fmt.Errorf("rtc: create answer: %w", err)
 		}
+		p.sendMu.Lock()
+		defer p.sendMu.Unlock()
 		if err := p.pc.SetLocalDescription(answer); err != nil {
 			return fmt.Errorf("rtc: set local answer: %w", err)
 		}
-		p.sendMu.Lock()
 		err = p.send(p.auth.SignSDP(answer.SDP))
 		p.sdpOnce.Do(func() { close(p.sdpSent) })
-		p.sendMu.Unlock()
 		return err
 	case string(wire.SignalICE):
 		var cand webrtc.ICECandidateInit
@@ -537,11 +537,14 @@ func (p *Peer) restartOffer() error {
 	if err != nil {
 		return fmt.Errorf("rtc: create restart offer: %w", err)
 	}
+	p.sendMu.Lock()
+	defer p.sendMu.Unlock()
 	if err := p.pc.SetLocalDescription(offer); err != nil {
 		return fmt.Errorf("rtc: set restart offer: %w", err)
 	}
-	p.sendMu.Lock()
-	defer p.sendMu.Unlock()
+	p.mu.Lock()
+	p.remoteReady = false
+	p.mu.Unlock()
 	return p.send(p.auth.SignSDP(offer.SDP))
 }
 

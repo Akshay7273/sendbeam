@@ -354,7 +354,7 @@ func TestPeerRecoveryCallbacks(t *testing.T) {
 // network-change cycles (disconnect → recover → reconnect) never reset transfer progress: the
 // existing channel survives each cycle and bytes flow in both directions with no loss.
 func TestPeerRepeatedRecoveryCyclesKeepChannelAlive(t *testing.T) {
-	offerer, joiner := linkedPeersOptions(t, PeerOptions{RecoverWindow: 45 * time.Second}, PeerOptions{})
+	offerer, joiner := linkedPeersOptions(t, PeerOptions{RecoverWindow: 45 * time.Second}, PeerOptions{RecoverWindow: 45 * time.Second})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -389,6 +389,12 @@ func TestPeerRepeatedRecoveryCyclesKeepChannelAlive(t *testing.T) {
 				joiner.pc.SignalingState() == webrtc.SignalingStateStable &&
 				(offerer.pc.ICEConnectionState() == webrtc.ICEConnectionStateConnected || offerer.pc.ICEConnectionState() == webrtc.ICEConnectionStateCompleted) &&
 				(joiner.pc.ICEConnectionState() == webrtc.ICEConnectionStateConnected || joiner.pc.ICEConnectionState() == webrtc.ICEConnectionStateCompleted) {
+				break
+			}
+			if offerer.pc.ICEConnectionState() == webrtc.ICEConnectionStateFailed ||
+				offerer.pc.ICEConnectionState() == webrtc.ICEConnectionStateClosed ||
+				joiner.pc.ICEConnectionState() == webrtc.ICEConnectionStateFailed ||
+				joiner.pc.ICEConnectionState() == webrtc.ICEConnectionStateClosed {
 				break
 			}
 			time.Sleep(10 * time.Millisecond)

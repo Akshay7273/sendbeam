@@ -189,8 +189,8 @@ SendBeam v1.5 adds mutual cryptographic pairing, persistent trust management, re
 All 9 cross-client pairs (Browser ↔ CLI ↔ Desktop) interoperate seamlessly across both ephemeral one-time (`sendbeam/1`) and persistent trusted (`sendbeam/2`) sessions.
 
 > [!NOTE]
-> **Cryptographic Properties & Limits (`sendbeam/2`):**
-> `sendbeam/2` trusted sessions establish mutual peer authentication, replay protection, and domain-separated directional keys derived from the pairwise credential `k_pair` and ephemeral nonces. Because derivation mixes ephemeral public parameters via HMAC with `k_pair` rather than computing an ephemeral Diffie-Hellman exchange, `sendbeam/2` in v1.5–v1.8 does **not** provide forward secrecy against compromise of `k_pair`. A redesigned, reviewed authenticated ephemeral Diffie-Hellman key exchange is scheduled for v1.9 (V19-PR01 / V19-PR02).
+> **Cryptographic Evolution (`sendbeam/2` → `sendbeam/3`):**
+> `sendbeam/2` trusted sessions in v1.5–v1.8 established mutual peer authentication, replay protection, and domain-separated directional keys derived from `k_pair` and ephemeral nonces, but did not provide forward secrecy against compromise of `k_pair`. SendBeam v1.9 introduces **`sendbeam/3`** (ADR 0010 / V19-PR02), implementing authenticated ephemeral Diffie-Hellman key exchange via X25519 (RFC 7748) and HKDF-SHA256 (RFC 5869) with memory zeroization of private scalars, providing true forward secrecy. Paired devices mandatorily negotiate `sendbeam/3`; downgrades to `sendbeam/2` or `sendbeam/1` fail closed.
 
 ## Distribution, Packaging & Self-Update Matrix (v1.6)
 
@@ -232,7 +232,20 @@ SendBeam v1.7 introduces traffic padding, opportunistic mesh revocation sync, an
 
 > [!NOTE]
 > **Negotiated Padding vs Host Enforcement Policy:**
-> Wire traffic padding is negotiated via `caps.features` and engaged only when both peers support and announce `padding`. When a sender enables `--private`, it requests padding but does not reject unpadded peers in v1.8. Strict host-level policy (refusing transfers when private mode is requested against an unpadded peer or when frames are unpadded) is scheduled for v1.9 (V19-PR11).
+> Wire traffic padding is negotiated via `caps.features` and engaged only when both peers support and announce `padding`. In v1.9 (V19-PR11), strict client-side host policy (`--require-padding` / `require_padding`) fails closed (`ErrPaddingRequired`) if the remote peer lacks the padding capability, and rejects unpadded inbound payload and control frames fail-closed (`ErrUnpaddedFrame`).
+
+## Trusted Handoffs & Forward-Secret Interoperability (v1.9)
+
+SendBeam v1.9 completes end-to-end trusted-device handoffs across Browser, CLI, and Desktop:
+
+| Feature / Interoperability             |               v1.9 Peer ↔ v1.9 Peer               |  v1.9 Peer ↔ Legacy Peer  | Guarantees & Enforcement Rules                                                                                          |
+| :------------------------------------- | :-----------------------------------------------: | :-----------------------: | :---------------------------------------------------------------------------------------------------------------------- |
+| **Key Agreement (`sendbeam/3`)**       |   Authenticated Ephemeral Diffie-Hellman X25519   | Rejected (`ErrDowngrade`) | Mutual Ed25519 identity signatures + pairwise $k_{pair}$ MAC; ephemeral private scalars zeroized; true forward secrecy. |
+| **Strict Padding Policy**              |  Mandatory Quantized Frames ($256..65535$ Bytes)  | Rejected (`ErrNoPadding`) | When `--require-padding` / `require_padding` is configured, incompatible peers and unpadded frames fail closed.         |
+| **Opaque Blind Rendezvous**            |  15-minute Epoch-Rotated Handles (`sendbeam/2`)   |       Handle Match        | Discover peers over signaling without central directory harvesting; truthful presence without IP concealment overreach. |
+| **Authorized Revocation (ADR 0010)**   |  Monotonic Signed Tombstones + Cluster Authority  |        Fail Closed        | Self-tombstones accepted universally; external contacts cannot revoke third-party mesh devices.                         |
+| **Native Background Listener**         | Interactive Consent Prompt or Auto-Accept Policy  |      Verified Digest      | Shared engine powers CLI `listen` and Desktop native daemon; `--once` mode guarantees single verified delivery.         |
+| **Browser Pairing & Targeted Handoff** | Foreground SPAKE2 Ceremony + IndexedDB Authed Key |        Fail Closed        | Web UI pairs with native clients, remembers trusted records in IndexedDB, and transfers without one-time room codes.    |
 
 ## Interpretation
 

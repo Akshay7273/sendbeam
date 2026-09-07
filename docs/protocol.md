@@ -411,7 +411,7 @@ Inside the AEAD envelope, the plaintext is formatted as:
 
 - **Header AAD Invariant:** The 16-byte frame header remains verbatim as AEAD Associated Data; its `len` field matches the total padded ciphertext length ($S + 16$ bytes AEAD tag).
 - **Integrity Validation:** Upon decryption, the receiver validates that `ActualPayloadLength <= BucketSize - 2` and verifies all padding bytes are strictly `0x00`. Any malformed length or non-zero padding byte fails closed (`ErrInvalidFramePadding`).
-- **Interop Fallback:** If either peer lacks the `padding` capability, transfers automatically proceed unpadded without protocol failure. In v1.8, `--private` requests padding on the wire, but does not refuse unpadded peers unless enforced by future policy. A strict client-side require-padding policy (rejecting transfers if padding is unnegotiated or stripped) is scheduled for v1.9 (V19-PR11).
+- **Interop Fallback & Strict Host Policy:** If either peer lacks the `padding` capability, ordinary transfers automatically proceed unpadded without protocol failure. When strict privacy is configured via `--require-padding`, `require_padding` trust policy, or `RequirePadding` config (V19-PR11), connection attempts against peers lacking `wire.PaddingCapability` fail closed before payload transfer begins (`ErrPaddingRequired`), and inbound unpadded frames fail closed (`ErrUnpaddedFrame`).
 
 ---
 
@@ -424,3 +424,27 @@ All assurance enhancements in v1.8 operate strictly on protocol verification, va
 1. **Continuous Fuzzing Verification:** 22 native Go fuzz targets continuously stress all wire decoders, control message parsers, and untrusted byte envelopes (`docs/fuzzing.md`).
 2. **Differential Parity Verification:** Automated Go ↔ TypeScript parity harness deterministically verifies byte-for-byte serialization and fail-closed rejection across all wire codecs.
 3. **20-Vector Adversarial Attack Matrix:** Expanded security regression matrix enforces existing fail-closed invariants across both languages without altering protocol semantics (`docs/threat-model.md`).
+
+---
+
+## v1.9 Trusted Handoffs & Forward-Secret Authenticated Key Exchange
+
+SendBeam v1.9 introduces **`sendbeam/3`** and complete trusted-device automation across the CLI, Web, and Desktop applications:
+
+1. **Ephemeral Forward Secrecy (`sendbeam/3` / ADR 0010):**
+   - Implements authenticated ephemeral Diffie-Hellman key agreement using X25519 (RFC 7748) and HKDF-SHA256 (RFC 5869).
+   - Pairs long-term Ed25519 identities and pairwise symmetric secrets ($k_{pair}$) with ephemeral public keys ($(e_A, E_A)$, $(e_B, E_B)$), zeroizing private scalars immediately upon shared secret computation.
+   - Binds full transcripts, nonces, timestamps (±5 min skew), and capabilities into directional traffic keys ($k_{i2r}, k_{r2i}$).
+   - Verifies mutual authenticity via constant-time domain-separated confirmation HMAC tags (`TrustedAuthConfirm`).
+   - Rejects protocol downgrades to `sendbeam/2` or `sendbeam/1` for paired peers fail-closed (`ErrProtocolDowngradeForbidden`).
+
+2. **Authorized Revocation Hierarchy (ADR 0010):**
+   - Distinguishes self-tombstones (universally valid), pairwise unpairing (local/direct relationship only), and owner cluster authority.
+   - Prevents external contacts from revoking third-party devices across an owner's mesh (`ErrRevocationUnauthorized`).
+
+3. **Opaque Blind Rendezvous & Truthful Presence:**
+   - 15-minute epoch-rotated blind handles (`HMAC(k_pair, "sendbeam/2 rendezvous-handle:" || epoch)`) prevent global directory harvesting while preserving truthful connection presence.
+
+4. **Shared Native Receiver & Production Require-Padding Policy:**
+   - Unified native receiver engine powering CLI `listen` and Desktop background daemon with interactive consent and durable receive.
+   - Client-wide strict padding policy (`--require-padding`) mandating fail-closed rejection of unpadded peers (`ErrPaddingRequired`) and unpadded frames (`ErrUnpaddedFrame`).
