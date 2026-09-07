@@ -83,7 +83,7 @@ func (c *consentDestination) Prepare(manifest wire.Manifest) error {
 			if reason == "" {
 				reason = "transfer declined by user"
 			}
-			return wire.Errorf(wire.CodeAuth, "%s", reason)
+			return wire.NewTransferError(wire.FailCanceled, reason)
 		}
 		if decision.DestDir != "" {
 			targetDir = decision.DestDir

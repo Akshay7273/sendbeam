@@ -137,6 +137,8 @@ func TestExecuteSend_MultipleTargetArgParsing(t *testing.T) {
 		LastSeenAt:        now,
 		Policy:            wire.DefaultTrustPolicy(),
 	})
+	_ = env.Secrets.SetPairSecret(ctx, dev1, "cred-1", bytes.Repeat([]byte{0x01}, 32))
+	_ = env.Secrets.SetPairSecret(ctx, dev2, "cred-2", bytes.Repeat([]byte{0x02}, 32))
 
 	testFile := filepath.Join(tmpDir, "report.pdf")
 	if err := os.WriteFile(testFile, []byte("fake-pdf-content"), 0600); err != nil {
@@ -448,6 +450,362 @@ func TestExecuteSend_JSONSuccess_NoSecretsExposed(t *testing.T) {
 	}
 }
 
+func TestExecuteSend_MissingPairSecret(t *testing.T) {
+	tmpDir := t.TempDir()
+	env, err := InitCLIEnvironment(tmpDir)
+	if err != nil {
+		t.Fatalf("init cli env: %v", err)
+	}
+
+	pub, _, _ := ed25519.GenerateKey(nil)
+	devID := wire.DeriveDeviceID(pub)
+	now := time.Now().UTC()
+
+	ctx := context.Background()
+	_ = env.TrustStore.AddOrUpdateDevice(ctx, &wire.TrustRecord{
+		DeviceID:          devID,
+		PublicKey:         hex.EncodeToString(pub),
+		LocalLabel:        "secretless-peer",
+		PairCredentialRef: "missing-ref",
+		FirstSeenAt:       now,
+		LastSeenAt:        now,
+		Policy:            wire.DefaultTrustPolicy(),
+	})
+
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("payload"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := executeSend([]string{
+		"--config-dir", env.ConfigDir,
+		testFile,
+		"@secretless-peer",
+	}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1 for missing secret, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "failed to resolve pair secret") {
+		t.Fatalf("expected 'failed to resolve pair secret' in stderr, got: %s", stderr.String())
+	}
+}
+
+func TestExecuteSend_TargetDevice_SuccessfulSend(t *testing.T) {
+	srv := httptest.NewServer(newTestBlindHub())
+	defer srv.Close()
+	wsServerURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	senderDir := t.TempDir()
+	envSender, err := InitCLIEnvironment(senderDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderID, err := envSender.IdentityMgr.GetOrCreateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	receiverDir := t.TempDir()
+	envReceiver, err := InitCLIEnvironment(receiverDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiverID, err := envReceiver.IdentityMgr.GetOrCreateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Shared 32-byte pairwise secret
+	kPair := bytes.Repeat([]byte{0x77}, 32)
+	now := time.Now().UTC()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Configure sender trust in receiver
+	_ = envSender.TrustStore.AddOrUpdateDevice(ctx, &wire.TrustRecord{
+		DeviceID:          receiverID.DeviceID,
+		PublicKey:         receiverID.PublicKeyHex(),
+		LocalLabel:        "WorkLaptop",
+		PairCredentialRef: "cred-recv",
+		FirstSeenAt:       now,
+		LastSeenAt:        now,
+		Policy:            wire.DefaultTrustPolicy(),
+	})
+	_ = envSender.Secrets.SetPairSecret(ctx, receiverID.DeviceID, "cred-recv", kPair)
+
+	// Configure receiver trust in sender
+	_ = envReceiver.TrustStore.AddOrUpdateDevice(ctx, &wire.TrustRecord{
+		DeviceID:          senderID.DeviceID,
+		PublicKey:         senderID.PublicKeyHex(),
+		LocalLabel:        "DesktopRig",
+		PairCredentialRef: "cred-send",
+		FirstSeenAt:       now,
+		LastSeenAt:        now,
+		Policy:            wire.DefaultTrustPolicy(),
+	})
+	_ = envReceiver.Secrets.SetPairSecret(ctx, senderID.DeviceID, "cred-send", kPair)
+
+	payload := []byte("confidential-targeted-send-payload-999")
+	testFile := filepath.Join(senderDir, "document.pdf")
+	if err := os.WriteFile(testFile, payload, 0600); err != nil {
+		t.Fatal(err)
+	}
+	hasher := sha256.New()
+	hasher.Write(payload)
+	expectedDigest := hex.EncodeToString(hasher.Sum(nil))
+
+	handle := wire.DeriveRendezvousHandleForTime(kPair, time.Now().UTC(), wire.DefaultRendezvousEpochWindow)
+
+	// Start receiver listening on handle
+	recvDestDir := t.TempDir()
+	recvDone := make(chan struct{})
+	var recvOutcome *transfer.Outcome
+	var recvErr error
+
+	go func() {
+		defer close(recvDone)
+		receiverSig, err := wsclient.NewReconnectingSignal(ctx, wsServerURL, wsclient.DialOptions{})
+		if err != nil {
+			recvErr = err
+			return
+		}
+		defer receiverSig.Close()
+
+		recvOutcome, recvErr = transfer.Run(ctx, receiverSig, transfer.Spec{
+			Opaque: &rendezvous.OpaqueOptions{
+				Role:              rendezvous.RoleJoiner,
+				Handle:            handle,
+				LocalIdentity:     receiverID,
+				PeerDeviceID:      senderID.DeviceID,
+				PeerPublicKey:     senderID.PublicKey,
+				KPair:             kPair,
+				PairCredentialRef: "cred-send",
+				LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume"},
+				ReplayCache:       wire.NewNonceReplayCache(5 * time.Minute),
+				Tombstones:        envReceiver.Tombstones,
+				TrustStore:        envReceiver.TrustStore,
+			},
+			DestDir:    recvDestDir,
+			ForceRelay: true,
+		})
+	}()
+
+	// Small pause for receiver to seat in handle room
+	time.Sleep(50 * time.Millisecond)
+
+	var stdout, stderr bytes.Buffer
+	sendCode := executeSend([]string{
+		"--config-dir", envSender.ConfigDir,
+		"--server", wsServerURL,
+		"--relay-only",
+		"--json",
+		testFile,
+		"@WorkLaptop",
+	}, &stdout, &stderr)
+
+	if sendCode != 0 {
+		t.Fatalf("executeSend targeted failed with code %d. stdout: %s, stderr: %s", sendCode, stdout.String(), stderr.String())
+	}
+
+	select {
+	case <-recvDone:
+		if recvErr != nil {
+			t.Fatalf("receiver failed: %v", recvErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for receiver")
+	}
+
+	var res transfer.BroadcastResult
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal json: %v. Output: %s", err, stdout.String())
+	}
+
+	if !res.AllOk {
+		t.Fatalf("expected AllOk=true, got %+v", res)
+	}
+	if len(res.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(res.Results))
+	}
+	r := res.Results[0]
+	if r.Status != transfer.StatusOk {
+		t.Errorf("status = %s, want ok", r.Status)
+	}
+	if r.Digest != expectedDigest {
+		t.Errorf("digest = %s, want %s", r.Digest, expectedDigest)
+	}
+	if recvOutcome == nil || recvOutcome.Digest != expectedDigest {
+		t.Errorf("receiver digest = %v, want %s", recvOutcome, expectedDigest)
+	}
+
+	// Verify received file on disk
+	gotFile, err := os.ReadFile(recvOutcome.Path)
+	if err != nil {
+		t.Fatalf("read received file: %v", err)
+	}
+	if !bytes.Equal(gotFile, payload) {
+		t.Errorf("received payload mismatch: got %q, want %q", string(gotFile), string(payload))
+	}
+}
+
+func TestExecuteSend_Broadcast_MixedOutcomes(t *testing.T) {
+	srv := httptest.NewServer(newTestBlindHub())
+	defer srv.Close()
+	wsServerURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	senderDir := t.TempDir()
+	envSender, err := InitCLIEnvironment(senderDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderID, err := envSender.IdentityMgr.GetOrCreateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Peer 1: Accepts and succeeds
+	idPeer1, err := wire.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kPair1 := bytes.Repeat([]byte{0x11}, 32)
+	now := time.Now().UTC()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	_ = envSender.TrustStore.AddOrUpdateDevice(ctx, &wire.TrustRecord{
+		DeviceID:          idPeer1.DeviceID,
+		PublicKey:         idPeer1.PublicKeyHex(),
+		LocalLabel:        "accepting-peer",
+		PairCredentialRef: "cred-1",
+		FirstSeenAt:       now,
+		LastSeenAt:        now,
+		Policy:            wire.DefaultTrustPolicy(),
+	})
+	_ = envSender.Secrets.SetPairSecret(ctx, idPeer1.DeviceID, "cred-1", kPair1)
+
+	// Peer 2: Declined / Refused
+	idPeer2, err := wire.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kPair2 := bytes.Repeat([]byte{0x22}, 32)
+	_ = envSender.TrustStore.AddOrUpdateDevice(ctx, &wire.TrustRecord{
+		DeviceID:          idPeer2.DeviceID,
+		PublicKey:         idPeer2.PublicKeyHex(),
+		LocalLabel:        "declining-peer",
+		PairCredentialRef: "cred-2",
+		FirstSeenAt:       now,
+		LastSeenAt:        now,
+		Policy:            wire.DefaultTrustPolicy(),
+	})
+	_ = envSender.Secrets.SetPairSecret(ctx, idPeer2.DeviceID, "cred-2", kPair2)
+
+	payload := []byte("broadcast-mixed-data-12345")
+	testFile := filepath.Join(senderDir, "bundle.bin")
+	if err := os.WriteFile(testFile, payload, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start accepting receiver (Peer 1)
+	handle1 := wire.DeriveRendezvousHandleForTime(kPair1, time.Now().UTC(), wire.DefaultRendezvousEpochWindow)
+	recvDir1 := t.TempDir()
+	recvDone1 := make(chan struct{})
+	go func() {
+		defer close(recvDone1)
+		sig1, err := wsclient.NewReconnectingSignal(ctx, wsServerURL, wsclient.DialOptions{})
+		if err != nil {
+			return
+		}
+		defer sig1.Close()
+		_, _ = transfer.Run(ctx, sig1, transfer.Spec{
+			Opaque: &rendezvous.OpaqueOptions{
+				Role:              rendezvous.RoleJoiner,
+				Handle:            handle1,
+				LocalIdentity:     idPeer1,
+				PeerDeviceID:      senderID.DeviceID,
+				PeerPublicKey:     senderID.PublicKey,
+				KPair:             kPair1,
+				PairCredentialRef: "cred-1",
+				LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume"},
+			},
+			DestDir:    recvDir1,
+			ForceRelay: true,
+		})
+	}()
+
+	// Start declining receiver (Peer 2)
+	handle2 := wire.DeriveRendezvousHandleForTime(kPair2, time.Now().UTC(), wire.DefaultRendezvousEpochWindow)
+	recvDir2 := t.TempDir()
+	recvDone2 := make(chan struct{})
+	go func() {
+		defer close(recvDone2)
+		sig2, err := wsclient.NewReconnectingSignal(ctx, wsServerURL, wsclient.DialOptions{})
+		if err != nil {
+			return
+		}
+		defer sig2.Close()
+		_, _ = transfer.Run(ctx, sig2, transfer.Spec{
+			Opaque: &rendezvous.OpaqueOptions{
+				Role:              rendezvous.RoleJoiner,
+				Handle:            handle2,
+				LocalIdentity:     idPeer2,
+				PeerDeviceID:      senderID.DeviceID,
+				PeerPublicKey:     senderID.PublicKey,
+				KPair:             kPair2,
+				PairCredentialRef: "cred-2",
+				LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume"},
+			},
+			DestDir:    recvDir2,
+			ForceRelay: true,
+			Consent: func(_ context.Context, _ transfer.ConsentRequest) (transfer.ConsentDecision, error) {
+				return transfer.ConsentDecision{Accepted: false, Reason: "declined by user"}, nil
+			},
+		})
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	var stdout, stderr bytes.Buffer
+	sendCode := executeSend([]string{
+		"--config-dir", envSender.ConfigDir,
+		"--server", wsServerURL,
+		"--relay-only",
+		"--json",
+		testFile,
+		"@accepting-peer",
+		"@declining-peer",
+	}, &stdout, &stderr)
+
+	if sendCode != 1 {
+		t.Fatalf("expected exit code 1 on mixed outcomes, got %d. stdout: %s, stderr: %s", sendCode, stdout.String(), stderr.String())
+	}
+
+	<-recvDone1
+	<-recvDone2
+
+	var res transfer.BroadcastResult
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal json: %v. Output: %s", err, stdout.String())
+	}
+
+	if res.AllOk {
+		t.Errorf("expected AllOk=false")
+	}
+	if len(res.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(res.Results))
+	}
+
+	if res.Results[0].Status != transfer.StatusOk {
+		t.Errorf("peer 1 status = %s, want ok (err: %s)", res.Results[0].Status, res.Results[0].Error)
+	}
+	if res.Results[1].Status != transfer.StatusRefused {
+		t.Errorf("peer 2 status = %s, want refused (err: %s)", res.Results[1].Status, res.Results[1].Error)
+	}
+}
+
 type codeCapturingWriter struct {
 	mu     sync.Mutex
 	buf    bytes.Buffer
@@ -481,9 +839,10 @@ func (w *codeCapturingWriter) String() string {
 }
 
 type testBlindHub struct {
-	mu    sync.Mutex
-	rooms map[int]*testHubRoom
-	next  int
+	mu          sync.Mutex
+	rooms       map[int]*testHubRoom
+	handleRooms map[string]*testHubRoom
+	next        int
 }
 
 type testHubRoom struct {
@@ -513,7 +872,10 @@ func (p *testHubPeer) forward(ctx context.Context, typ websocket.MessageType, da
 }
 
 func newTestBlindHub() *testBlindHub {
-	return &testBlindHub{rooms: make(map[int]*testHubRoom)}
+	return &testBlindHub{
+		rooms:       make(map[int]*testHubRoom),
+		handleRooms: make(map[string]*testHubRoom),
+	}
 }
 
 func (h *testBlindHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -554,6 +916,40 @@ func (h *testBlindHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		switch msg.Type {
+		case "rendezvous":
+			if msg.Handle == "" {
+				return
+			}
+			h.mu.Lock()
+			r, exists := h.handleRooms[msg.Handle]
+			if !exists {
+				r = &testHubRoom{}
+				h.handleRooms[msg.Handle] = r
+			}
+			room = r
+			var otherPeer *testHubPeer
+			if msg.Role == string(rendezvous.RoleJoiner) {
+				room.joiner = self
+				role = rendezvous.RoleJoiner
+				otherPeer = room.offerer
+			} else {
+				room.offerer = self
+				role = rendezvous.RoleOfferer
+				otherPeer = room.joiner
+			}
+			h.mu.Unlock()
+
+			if otherPeer != nil {
+				self.send(ctx, rendezvous.Message{Type: "peer-joined", Role: string(role)})
+				otherRole := rendezvous.RoleOfferer
+				if role == rendezvous.RoleOfferer {
+					otherRole = rendezvous.RoleJoiner
+				}
+				otherPeer.send(ctx, rendezvous.Message{Type: "peer-joined", Role: string(otherRole)})
+			} else {
+				self.send(ctx, rendezvous.Message{Type: "created", Handle: msg.Handle})
+			}
+
 		case "create":
 			h.mu.Lock()
 			id := h.next

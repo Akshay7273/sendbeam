@@ -329,6 +329,202 @@ func TestBroadcastResult_JSON_NoSecretsExposed(t *testing.T) {
 	}
 }
 
+func TestBroadcast_LazyDialer_BoundedConcurrency(t *testing.T) {
+	numTargets := 6
+	concurrencyLimit := 2
+
+	var dialing atomic.Int64
+	var maxDialing atomic.Int64
+	var mu sync.Mutex
+
+	targets := make([]BroadcastTarget, numTargets)
+	for i := 0; i < numTargets; i++ {
+		idx := i
+		targets[i] = BroadcastTarget{
+			ID:    fmt.Sprintf("dev-%d", idx),
+			Label: fmt.Sprintf("Dev %d", idx),
+			Dial: func(_ context.Context) (Signal, error) {
+				cur := dialing.Add(1)
+				mu.Lock()
+				if cur > maxDialing.Load() {
+					maxDialing.Store(cur)
+				}
+				mu.Unlock()
+
+				time.Sleep(40 * time.Millisecond)
+				dialing.Add(-1)
+				return nil, errors.New("dial error: connection refused")
+			},
+			Spec: Spec{
+				Session: rendezvous.Options{Role: rendezvous.RoleOfferer, Words: fmt.Sprintf("w-%d", idx)},
+			},
+		}
+	}
+
+	ctx := context.Background()
+	res := RunBroadcast(ctx, targets, BroadcastOptions{
+		Concurrency: concurrencyLimit,
+	})
+
+	if res.AllOk {
+		t.Fatal("expected AllOk=false")
+	}
+	if maxDialing.Load() > int64(concurrencyLimit) {
+		t.Fatalf("observed dialing concurrency %d exceeded limit %d", maxDialing.Load(), concurrencyLimit)
+	}
+	for _, r := range res.Results {
+		if r.Status != StatusOffline {
+			t.Errorf("target %s status = %s, want offline", r.TargetID, r.Status)
+		}
+	}
+}
+
+func TestBroadcast_LazyDialer_DialErrorIsolation(t *testing.T) {
+	payload := []byte("broadcast-lazy-dial-payload")
+	meta := wire.FileMeta{Name: "lazy.txt", Size: int64(len(payload)), Mime: "text/plain"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Target 1: Dial succeeds and transfer completes
+	hub1 := newRelay()
+	destDir1 := t.TempDir()
+	recvDone1 := make(chan struct{})
+	go func() {
+		defer close(recvDone1)
+		_, _ = Run(ctx, hub1.join, Spec{
+			Session:    rendezvous.Options{Role: rendezvous.RoleJoiner, Code: "7-lazy-pass"},
+			DestDir:    destDir1,
+			ICEServers: []webrtc.ICEServer{},
+		})
+	}()
+
+	target1 := BroadcastTarget{
+		ID:    "dev-1-pass",
+		Label: "Dev 1",
+		Dial: func(_ context.Context) (Signal, error) {
+			return hub1.off, nil
+		},
+		Spec: Spec{
+			Session:    rendezvous.Options{Role: rendezvous.RoleOfferer, Words: "lazy-pass"},
+			Source:     wire.BytesSource(payload, meta, 64*1024),
+			ICEServers: []webrtc.ICEServer{},
+		},
+	}
+
+	// Target 2: Dial returns network connection refused (offline)
+	target2 := BroadcastTarget{
+		ID:    "dev-2-conn-refused",
+		Label: "Dev 2",
+		Dial: func(_ context.Context) (Signal, error) {
+			return nil, errors.New("dial tcp 127.0.0.1:1: connect: connection refused")
+		},
+	}
+
+	// Target 3: Dial returns peer refused/revoked
+	target3 := BroadcastTarget{
+		ID:    "dev-3-refused",
+		Label: "Dev 3",
+		Dial: func(_ context.Context) (Signal, error) {
+			return nil, wire.ErrTrustedRejected
+		},
+	}
+
+	// Target 4: Missing signal and dialer
+	target4 := BroadcastTarget{
+		ID:    "dev-4-no-dialer",
+		Label: "Dev 4",
+	}
+
+	targets := []BroadcastTarget{target1, target2, target3, target4}
+	res := RunBroadcast(ctx, targets, BroadcastOptions{
+		Concurrency: 4,
+	})
+
+	if res.AllOk {
+		t.Fatal("expected AllOk=false")
+	}
+	if len(res.Results) != 4 {
+		t.Fatalf("expected 4 results, got %d", len(res.Results))
+	}
+
+	// Target 1 must succeed despite 2, 3, and 4 failing
+	if res.Results[0].Status != StatusOk {
+		t.Errorf("target 1 status = %s, want ok (err: %s)", res.Results[0].Status, res.Results[0].Error)
+	}
+	if res.Results[1].Status != StatusOffline {
+		t.Errorf("target 2 status = %s, want offline (err: %s)", res.Results[1].Status, res.Results[1].Error)
+	}
+	if res.Results[2].Status != StatusRefused {
+		t.Errorf("target 3 status = %s, want refused (err: %s)", res.Results[2].Status, res.Results[2].Error)
+	}
+	if res.Results[3].Status != StatusFailed {
+		t.Errorf("target 4 status = %s, want failed (err: %s)", res.Results[3].Status, res.Results[3].Error)
+	}
+
+	<-recvDone1
+}
+
+func TestBroadcast_TargetTimeout(t *testing.T) {
+	payload := []byte("broadcast-timeout-payload")
+	meta := wire.FileMeta{Name: "quick.txt", Size: int64(len(payload)), Mime: "text/plain"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Target 1: Quick success
+	hub1 := newRelay()
+	destDir1 := t.TempDir()
+	recvDone1 := make(chan struct{})
+	go func() {
+		defer close(recvDone1)
+		_, _ = Run(ctx, hub1.join, Spec{
+			Session:    rendezvous.Options{Role: rendezvous.RoleJoiner, Code: "7-quick-pass"},
+			DestDir:    destDir1,
+			ICEServers: []webrtc.ICEServer{},
+		})
+	}()
+
+	target1 := BroadcastTarget{
+		ID:     "dev-quick",
+		Label:  "Quick",
+		Signal: hub1.off,
+		Spec: Spec{
+			Session:    rendezvous.Options{Role: rendezvous.RoleOfferer, Words: "quick-pass"},
+			Source:     wire.BytesSource(payload, meta, 64*1024),
+			ICEServers: []webrtc.ICEServer{},
+		},
+	}
+
+	// Target 2: Dial hangs until context deadline
+	target2 := BroadcastTarget{
+		ID:    "dev-hanging",
+		Label: "Hanging",
+		Dial: func(dialCtx context.Context) (Signal, error) {
+			<-dialCtx.Done()
+			return nil, dialCtx.Err()
+		},
+	}
+
+	targets := []BroadcastTarget{target1, target2}
+	res := RunBroadcast(ctx, targets, BroadcastOptions{
+		Concurrency:   2,
+		TargetTimeout: 100 * time.Millisecond,
+	})
+
+	if res.AllOk {
+		t.Fatal("expected AllOk=false")
+	}
+	if res.Results[0].Status != StatusOk {
+		t.Errorf("target 1 status = %s, want ok", res.Results[0].Status)
+	}
+	if res.Results[1].Status != StatusOffline {
+		t.Errorf("target 2 status = %s, want offline (timeout)", res.Results[1].Status)
+	}
+
+	<-recvDone1
+}
+
 // --- Mocks for broadcast tests ---
 
 type mockClosedSignal struct{}

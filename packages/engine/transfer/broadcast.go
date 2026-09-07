@@ -28,10 +28,11 @@ const (
 
 // BroadcastTarget specifies one destination in a multi-device broadcast.
 type BroadcastTarget struct {
-	ID     string // Unique target identifier (e.g. DeviceID, label)
-	Label  string // Human-readable label (e.g. "Work Laptop")
-	Signal Signal // The adopted signaling connection for this target
-	Spec   Spec   // Transfer specification for this target
+	ID     string                                    // Unique target identifier (e.g. DeviceID, label)
+	Label  string                                    // Human-readable label (e.g. "Work Laptop")
+	Signal Signal                                    // The adopted signaling connection for this target (optional if Dial is provided)
+	Dial   func(ctx context.Context) (Signal, error) // Lazy dialer invoked within bounded concurrency
+	Spec   Spec                                      // Transfer specification for this target
 }
 
 // PublicOutcome is an allowlisted, secret-free summary of a completed transfer for public JSON serialization.
@@ -93,6 +94,8 @@ type BroadcastResult struct {
 type BroadcastOptions struct {
 	// Concurrency limits the number of parallel target transfers. Default is 4.
 	Concurrency int
+	// TargetTimeout limits the duration of an individual target transfer (dial + transfer), if > 0.
+	TargetTimeout time.Duration
 	// OnTargetStart is called when a target's transfer begins.
 	OnTargetStart func(target BroadcastTarget)
 	// OnTargetProgress reports progress for a specific target.
@@ -116,7 +119,8 @@ func ClassifyBroadcastError(err error) (BroadcastStatus, string) {
 	// Explicit device/peer refusal or revocation
 	if errors.Is(err, wire.ErrTrustedRejected) || errors.Is(err, wire.ErrTrustedPeerRevoked) ||
 		strings.Contains(lower, "transfer refused") || strings.Contains(lower, "peer refused") ||
-		strings.Contains(lower, "declined") || strings.Contains(lower, "rejected") {
+		strings.Contains(lower, "declined") || strings.Contains(lower, "rejected") ||
+		strings.Contains(lower, "canceled") || strings.Contains(lower, "cancelled") {
 		return StatusRefused, msg
 	}
 
@@ -180,8 +184,59 @@ func RunBroadcast(ctx context.Context, targets []BroadcastTarget, opts Broadcast
 			}
 			defer func() { <-sem }()
 
+			start := time.Now()
+
+			targetCtx := ctx
+			var cancelTarget context.CancelFunc
+			if opts.TargetTimeout > 0 {
+				targetCtx, cancelTarget = context.WithTimeout(ctx, opts.TargetTimeout)
+				defer cancelTarget()
+			}
+
 			if opts.OnTargetStart != nil {
 				opts.OnTargetStart(tgt)
+			}
+
+			sig := tgt.Signal
+			var closeSig func()
+			if sig == nil {
+				if tgt.Dial == nil {
+					dur := time.Since(start).Milliseconds()
+					results[idx] = TargetResult{
+						TargetID:   tgt.ID,
+						Label:      tgt.Label,
+						Status:     StatusFailed,
+						DurationMs: dur,
+						Error:      "no signal or dialer provided",
+					}
+					if opts.OnTargetComplete != nil {
+						opts.OnTargetComplete(tgt.ID, results[idx])
+					}
+					return
+				}
+				dialedSig, dialErr := tgt.Dial(targetCtx)
+				if dialErr != nil {
+					dur := time.Since(start).Milliseconds()
+					status, errMsg := ClassifyBroadcastError(dialErr)
+					results[idx] = TargetResult{
+						TargetID:   tgt.ID,
+						Label:      tgt.Label,
+						Status:     status,
+						DurationMs: dur,
+						Error:      errMsg,
+					}
+					if opts.OnTargetComplete != nil {
+						opts.OnTargetComplete(tgt.ID, results[idx])
+					}
+					return
+				}
+				sig = dialedSig
+				closeSig = func() {
+					dialedSig.Close()
+				}
+			}
+			if closeSig != nil {
+				defer closeSig()
 			}
 
 			// Wrap callbacks for target-specific progress reporting
@@ -205,8 +260,7 @@ func RunBroadcast(ctx context.Context, targets []BroadcastTarget, opts Broadcast
 				}
 			}
 
-			start := time.Now()
-			out, err := Run(ctx, tgt.Signal, specCopy)
+			out, err := Run(targetCtx, sig, specCopy)
 			dur := time.Since(start).Milliseconds()
 
 			if err == nil && out != nil {
