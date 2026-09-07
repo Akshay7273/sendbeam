@@ -44,6 +44,12 @@ declare global {
             dest: string,
           ): Promise<TrustedDeviceUI>;
         };
+        TransferService?: {
+          RespondConsent(
+            transferId: string,
+            decision: { accepted: boolean; destDir?: string; reason?: string },
+          ): Promise<void>;
+        };
       };
     };
     runtime?: {

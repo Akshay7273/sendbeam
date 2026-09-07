@@ -65,7 +65,7 @@ export interface CapsPayload {
 /** Everything a completed handshake yields — enough to run the transfer under the same key. */
 export interface RendezvousResult {
   readonly role: Role;
-  readonly room: number;
+  readonly room?: number;
   /** The full normalized invite code (`<room>-<words>`); the SPAKE2 password. */
   readonly code: string;
   /** SendBeam master key, bound to the handshake transcript. */
@@ -73,7 +73,9 @@ export interface RendezvousResult {
   /** Both directional AEAD keys + nonce salts. */
   readonly keys: TransferKeys;
   /** Raw SPAKE2 output, retained for the SDP/ICE MAC keys (KcA/KcB). */
-  readonly spake2: Spake2Output;
+  readonly spake2?: Spake2Output;
+  /** Directional authentication keys for SDP/ICE signaling (used in sendbeam/3 opaque rendezvous). */
+  readonly authKeys?: { sign: Uint8Array; verify: Uint8Array };
   readonly localCaps: CapsPayload;
   readonly remoteCaps: CapsPayload;
   /**

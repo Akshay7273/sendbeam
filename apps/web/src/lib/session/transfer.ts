@@ -148,11 +148,19 @@ export function runReceive(
   rendezvous: RendezvousResult,
   signaling: SignalChannel,
   destination: ReceiveDestinationSpec = { kind: 'auto' },
-  opts: { iceServers?: RTCIceServer[]; resumeAttempt?: HostResumeAttempt } = {},
+  opts: {
+    iceServers?: RTCIceServer[];
+    resumeAttempt?: HostResumeAttempt;
+    onConsent?: (manifest: {
+      files: Array<{ name: string; size: number }>;
+      totalSize: number;
+    }) => Promise<boolean> | boolean;
+  } = {},
 ): TransferController {
   return run(rendezvous, signaling, {
     role: 'receive',
     ...(opts.iceServers ? { iceServers: opts.iceServers } : {}),
+    ...(opts.onConsent ? { onConsent: opts.onConsent } : {}),
     start: async () => ({
       kind: 'start-recv',
       destination,
@@ -174,6 +182,10 @@ interface RunSpec {
   total?: number;
   /** Operator-published ICE servers for direct-path candidate gathering. */
   iceServers?: RTCIceServer[];
+  onConsent?: (manifest: {
+    files: Array<{ name: string; size: number }>;
+    totalSize: number;
+  }) => Promise<boolean> | boolean;
   start: () => Promise<HostToWorker>;
 }
 
@@ -294,11 +306,13 @@ function run(
   const gen = generation.capture();
   void (async () => {
     try {
-      const auth = SignalAuthenticator.fromSession(
-        rendezvous.role,
-        rendezvous.room,
-        rendezvous.spake2,
-      );
+      const auth = rendezvous.authKeys
+        ? new SignalAuthenticator(0, rendezvous.authKeys)
+        : SignalAuthenticator.fromSession(
+            rendezvous.role,
+            rendezvous.room ?? 0,
+            rendezvous.spake2!,
+          );
       const p = createPeer({
         role: rendezvous.role,
         auth,
@@ -350,7 +364,9 @@ function run(
       // Arm post-establishment signaling reconnect with the persistent room/role, so a signaling
       // drop on a healthy direct path re-attaches to the room and a later ICE-restart
       // renegotiation can still exchange its SDP/ICE frames (V12-PR04 signaling recovery).
-      signaling.setResume(rendezvous.room, rendezvous.role);
+      if (rendezvous.room !== undefined) {
+        signaling.setResume(rendezvous.room, rendezvous.role);
+      }
 
       const w = new Worker(new URL('../transfer/transfer.worker.ts', import.meta.url), {
         type: 'module',
@@ -459,6 +475,24 @@ function run(
           case 'manifest':
             total = msg.totalSize;
             progress.setTotal(msg.totalSize);
+            if (spec.onConsent) {
+              void Promise.resolve(
+                spec.onConsent({
+                  files: msg.files,
+                  totalSize: msg.totalSize,
+                }),
+              )
+                .then((accepted) => {
+                  if (!accepted) {
+                    fail(new Error('transfer declined by user'));
+                    worker?.postMessage({ kind: 'control', op: 'cancel' } satisfies HostToWorker);
+                  }
+                })
+                .catch((err) => {
+                  fail(err instanceof Error ? err : new Error(String(err)));
+                  worker?.postMessage({ kind: 'control', op: 'cancel' } satisfies HostToWorker);
+                });
+            }
             return;
           case 'durable':
             durableInfo = { ...msg };
