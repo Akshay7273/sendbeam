@@ -1498,7 +1498,7 @@ func (r *transferRun) runSend(ctx context.Context, server string, sources []wire
 }
 
 // runSendTargeted drives an offerer transfer targeted to a specific paired device via opaque rendezvous.
-func (r *transferRun) runSendTargeted(ctx context.Context, server string, sources []wire.FileSource, paths []string, iceServers []webrtc.ICEServer, opaqueOpts *rendezvous.OpaqueOptions, peerLabel, peerDeviceID string) {
+func (r *transferRun) runSendTargeted(ctx context.Context, server string, sources []wire.FileSource, _ []string, iceServers []webrtc.ICEServer, opaqueOpts *rendezvous.OpaqueOptions, peerLabel, peerDeviceID string) {
 	defer r.svc.remove(r)
 
 	sig, err := r.svc.dial(ctx, server, wire.RoleOfferer)

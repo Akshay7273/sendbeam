@@ -263,10 +263,14 @@ func TestDeviceService_StartPairingOffer_ValidationAndCancel(t *testing.T) {
 	}
 
 	// 3. CancelPairingOffer is safe even before any offer starts
-	svc.CancelPairingOffer()
+	if err := svc.CancelPairingOffer(); err != nil {
+		t.Fatalf("CancelPairingOffer failed: %v", err)
+	}
 
 	// 4. Repeated Cancel is safe
-	svc.CancelPairingOffer()
+	if err := svc.CancelPairingOffer(); err != nil {
+		t.Fatalf("repeated CancelPairingOffer failed: %v", err)
+	}
 }
 
 type testBlindHub struct {
