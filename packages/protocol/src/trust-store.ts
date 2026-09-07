@@ -105,10 +105,7 @@ export async function validateTrustRecord(record: TrustRecord): Promise<void> {
   }
 }
 
-import {
-  ERR_REVOCATION_SEQ_ROLLBACK,
-  ERR_REVOCATION_UNAUTHORIZED,
-} from './errors.js';
+import { ERR_REVOCATION_SEQ_ROLLBACK, ERR_REVOCATION_UNAUTHORIZED } from './errors.js';
 import { type RevocationRecord, validateRevocationRecord } from './revocation.js';
 
 /**
