@@ -1,12 +1,12 @@
 {
   "architecture": {
     "64bit": {
-      "hash": "354e23d25bcc7a696770141f0acd98d2ec1f9f96b1eb720e383d993f813cba03",
-      "url": "https://github.com/Akshay7273/sendbeam/releases/download/v1.8.0/sendbeam-cli-windows-amd64.zip"
+      "hash": "a5063a9cfeeea34376b933589f5841aa7991622fe565d40f65d9cba1a0e5fd32",
+      "url": "https://github.com/Akshay7273/sendbeam/releases/download/v1.9.0/sendbeam-cli-windows-amd64.zip"
     },
     "arm64": {
-      "hash": "101c6c5f8ba955e9003a6ad504e72f85001b7674317a11b20e9cb793c3980138",
-      "url": "https://github.com/Akshay7273/sendbeam/releases/download/v1.8.0/sendbeam-cli-windows-arm64.zip"
+      "hash": "ffa56ba894b631f30bc1cb842c93dfa326380dd74626bf5b120b6d975e7659ce",
+      "url": "https://github.com/Akshay7273/sendbeam/releases/download/v1.9.0/sendbeam-cli-windows-arm64.zip"
     }
   },
   "autoupdate": {
@@ -28,5 +28,5 @@
   "description": "Secure, direct, peer-to-peer file transfer in your browser and terminal",
   "homepage": "https://omnitrix.space",
   "license": "MIT",
-  "version": "1.8.0"
+  "version": "1.9.0"
 }
