@@ -104,8 +104,10 @@ test('mobile viewport send → receive round-trips file and renders QR prominent
     buffer: BYTES,
   });
 
-  await expect(sender.getByText(/verified by the receiver/)).toBeVisible({ timeout: 60_000 });
-  await expect(receiver.getByText(/— verified/)).toBeVisible({ timeout: 60_000 });
+  await Promise.all([
+    expect(sender.getByText(/verified by the receiver/)).toBeVisible({ timeout: 60_000 }),
+    expect(receiver.getByText(/— verified/)).toBeVisible({ timeout: 60_000 }),
+  ]);
 
   const received = await downloadReceiverFile(receiver);
   expect(received.equals(BYTES)).toBe(true);
@@ -199,8 +201,10 @@ test('large file receive stays memory-bounded and streams directly to storage', 
     buffer: largeBytes,
   });
 
-  await expect(sender.getByText(/verified by the receiver/)).toBeVisible({ timeout: 60_000 });
-  await expect(receiver.getByText(/— verified/)).toBeVisible({ timeout: 60_000 });
+  await Promise.all([
+    expect(sender.getByText(/verified by the receiver/)).toBeVisible({ timeout: 60_000 }),
+    expect(receiver.getByText(/— verified/)).toBeVisible({ timeout: 60_000 }),
+  ]);
 
   // Verify streamed-to-disk: verify file handle in OPFS without buffering whole file in JS heap
   const diskVerification = await receiver.evaluate(async () => {

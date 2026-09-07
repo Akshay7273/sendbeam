@@ -251,14 +251,14 @@ commitments, see [SECURITY.md](SECURITY.md).
 - [State Storage Locations](docs/state-storage.md) — persistent config, journals, sender records, and keychains
 - [Supply Chain Integrity](docs/supply-chain.md) — build provenance attestations, SPDX 2.3 SBOMs, checksum manifests
 - [Updater Architecture](docs/updater.md) — self-update channels, cryptographic verification, and rollback safety
-- [Distribution](docs/distribution.md) — multi-platform packaging, artifacts, and build metadata
+- [Release Gate v1.9 (Trusted Handoffs)](docs/RELEASE-v1.9.md) — v1.9 milestone criteria, forward-secret key exchange, and release checklist
 - [Release Gate v1.8.1 (Safety Patch)](docs/RELEASE-v1.8.1.md) — v1.8.1 safety patch criteria, honest capability matrix, and verification checklist
 - [Release Gate v1.8](docs/RELEASE-v1.8.md) — v1.8 milestone criteria, verification evidence, and release checklist
 - [Release Gate v1.7](docs/RELEASE-v1.7.md) — v1.7 milestone criteria, verification evidence, and release checklist
 - [Release Gate v1.6](docs/RELEASE-v1.6.md) — v1.6 milestone criteria, verification evidence, and release checklist
 - [Release Gate v1.5](docs/RELEASE-v1.5.md) — v1.5 milestone criteria, verification evidence, and release checklist
 - [Release Gate v1.4](docs/RELEASE-v1.4.md) — v1.4 milestone criteria, verification evidence, and release checklist
-- [Protocol specification](docs/protocol.md) — `sendbeam/1` & `sendbeam/2` wire protocols
+- [Protocol specification](docs/protocol.md) — `sendbeam/1`, `sendbeam/2`, & `sendbeam/3` wire protocols
 - [Threat model](docs/threat-model.md) — trust boundary, attacks, mitigations
 - [Trust & Device Identity Model](docs/trust-model.md) — device identity, trust database, pairing boundaries, and policy confinement
 - [Benchmarks](docs/BENCHMARKS.md) — throughput, memory, methodology

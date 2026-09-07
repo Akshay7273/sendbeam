@@ -219,18 +219,17 @@ and server are security-reviewed and the JS/Go dependencies audited.
 
 The following dated clarifications document exact security and privacy boundaries in the v1.8 release line:
 
-1. **Trusted Session Key Schedule (`sendbeam/2`)**:
-   - In v1.5–v1.8, session traffic keys are derived using `k_pair` (the pairwise shared secret established during pairing) and ephemeral nonces via HMAC-SHA256 and HKDF-SHA256.
-   - **Boundary:** This construction establishes mutual peer authentication, freshness, and replay resistance. However, because ephemeral parameters are authenticated under `k_pair` without an ephemeral Diffie-Hellman exchange, compromise of `k_pair` permits retroactive decryption of past session recordings (it does **not** provide forward secrecy).
-   - **Roadmap:** A reviewed, versioned authenticated ephemeral Diffie-Hellman key exchange (X25519) providing true forward secrecy is scheduled for v1.9 (V19-PR01 / V19-PR02).
+1. **Trusted Session Key Schedule (`sendbeam/2` vs `sendbeam/3`)**:
+   - In v1.5–v1.8 (`sendbeam/2`), session traffic keys were derived using `k_pair` (the pairwise shared secret established during pairing) and ephemeral nonces via HMAC-SHA256 and HKDF-SHA256. While providing mutual peer authentication and replay resistance, compromise of `k_pair` permitted retroactive decryption of past recordings.
+   - **Resolution in v1.9 (`sendbeam/3` / ADR 0010):** Implements an authenticated ephemeral Diffie-Hellman key exchange using X25519 (RFC 7748) and HKDF-SHA256 (RFC 5869). Ephemeral private scalars are zeroized in memory immediately after shared secret computation, establishing true forward secrecy. Paired devices mandatorily negotiate `sendbeam/3`; downgrades to `sendbeam/2` or `sendbeam/1` fail closed (`ErrProtocolDowngradeForbidden`).
 
 2. **Network Metadata & Presence Privacy**:
    - 15-minute epoch-rotated rendezvous handles prevent passive third parties and the signaling server from indexing or enumerating a global device directory from handle strings alone.
    - **Boundary:** Opaque handles do **not** provide transport anonymity. The signaling server and upstream network observers observe TCP/WebSocket connection metadata, source IP addresses, and message timing.
 
 3. **Wire Traffic Padding Policy**:
-   - In v1.8, wire traffic padding is an opportunistic negotiated capability (`caps.features`). `--private` advertises padding support to the remote peer, but does not abort transfers if the remote peer lacks padding support.
-   - **Boundary:** Attack Vector 14 demonstrates the policy invariant via test helpers; full production-path policy enforcement (failing closed when `--private` is requested against an unpadded peer) is scheduled for v1.9 (V19-PR11).
+   - In v1.8, wire traffic padding was an opportunistic negotiated capability (`caps.features`).
+   - **Resolution in v1.9 (V19-PR11):** Strict client-side policy enforcement (`--require-padding` / `require_padding`) fails closed (`ErrPaddingRequired`) if the remote peer lacks the padding capability, and rejects unpadded inbound frames fail closed (`ErrUnpaddedFrame`). Production attack matrix vectors (Vector 14) enforce strict padding using live engine and wire calls without test-local simulation mocks.
 
 4. **Storage & Archive Boundaries**:
    - In-browser ZIP archive fallback utilizes standard 32-bit archive structures (ZIP32) with a strict 4 GiB size ceiling. Streaming ZIP64 is scheduled for v2.0 (V20-PR05).

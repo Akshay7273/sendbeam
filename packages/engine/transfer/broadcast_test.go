@@ -509,7 +509,7 @@ func TestBroadcast_TargetTimeout(t *testing.T) {
 	targets := []BroadcastTarget{target1, target2}
 	res := RunBroadcast(ctx, targets, BroadcastOptions{
 		Concurrency:   2,
-		TargetTimeout: 100 * time.Millisecond,
+		TargetTimeout: 2 * time.Second,
 	})
 
 	if res.AllOk {

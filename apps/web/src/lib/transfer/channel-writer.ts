@@ -57,11 +57,14 @@ export class ChannelWriter {
   }
 
   /** Wait briefly for queued and SCTP-buffered bytes to drain before graceful teardown. */
-  async drain(timeoutMs = 500): Promise<void> {
+  async drain(timeoutMs = 500, postDrainGraceMs = 50): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while ((this.queue.length > 0 || this.channel.bufferedAmount > 0) && Date.now() < deadline) {
       this.flush();
       await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    if (postDrainGraceMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, postDrainGraceMs));
     }
   }
 

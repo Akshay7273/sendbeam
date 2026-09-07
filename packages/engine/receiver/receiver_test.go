@@ -3,6 +3,8 @@ package receiver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -862,6 +864,102 @@ func TestReceiverRequirePaddingRejectsUnpaddedPeer(t *testing.T) {
 	// Payload file must NOT be written
 	if _, err := os.Stat(filepath.Join(destDir, "unpadded.txt")); !os.IsNotExist(err) {
 		t.Fatalf("payload file was created despite require-padding rejection")
+	}
+}
+
+func TestReceiverRequirePaddingMutualSuccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	destDir := filepath.Join(tmpDir, "received")
+
+	idAlice, idBob, kPair, storeBob, secretsBob, tombstonesBob := setupPairedPeers(t, tmpDir)
+	handle := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	relay := newLoopbackRelay()
+
+	listener, err := NewListener(Config{
+		DestDir:        destDir,
+		Identity:       idBob,
+		TrustStore:     storeBob,
+		Secrets:        secretsBob,
+		Tombstones:     tombstonesBob,
+		AutoAccept:     true,
+		RequirePadding: true,
+		Private:        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	payload := bytes.Repeat([]byte("strict-padding-mutual-test-payload-1234567890"), 50)
+	meta := wire.FileMeta{
+		Name:         "padded_mutual.txt",
+		Size:         int64(len(payload)),
+		Mime:         "text/plain",
+		LastModified: 1700000000000,
+	}
+	src := wire.BytesSource(payload, meta, 16*1024)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	type result struct {
+		out *transfer.Outcome
+		err error
+	}
+	sendCh := make(chan result, 1)
+	recvCh := make(chan result, 1)
+
+	// Offerer (Alice) sends WITH padding and RequirePadding: true
+	go func() {
+		out, err := transfer.Run(ctx, relay.off, transfer.Spec{
+			Opaque: &rendezvous.OpaqueOptions{
+				Role:              rendezvous.RoleOfferer,
+				Handle:            handle,
+				LocalIdentity:     idAlice,
+				PeerDeviceID:      idBob.DeviceID,
+				PeerPublicKey:     idBob.PublicKey,
+				KPair:             kPair,
+				PairCredentialRef: "cred-ref-alice-bob",
+				LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume", "padding"},
+			},
+			Sources:        []wire.FileSource{src},
+			ForceRelay:     true,
+			Private:        true,
+			RequirePadding: true,
+			ICEServers:     []webrtc.ICEServer{},
+		})
+		sendCh <- result{out, err}
+	}()
+
+	// Joiner (Bob) receives with RequirePadding: true via listener
+	go func() {
+		out, err := listener.HandleIncomingSession(ctx, relay.join, idAlice.DeviceID, handle)
+		recvCh <- result{out, err}
+	}()
+
+	recv := <-recvCh
+	send := <-sendCh
+
+	if recv.err != nil {
+		t.Fatalf("receiver failed unexpectedly: %v", recv.err)
+	}
+	if send.err != nil {
+		t.Fatalf("sender failed unexpectedly: %v", send.err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(destDir, "padded_mutual.txt"))
+	if err != nil {
+		t.Fatalf("read received file: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("payload mismatch")
+	}
+
+	h := sha256.Sum256(payload)
+	expectedDigest := hex.EncodeToString(h[:])
+	if recv.out.Digest != expectedDigest {
+		t.Errorf("digest mismatch: got %s, want %s", recv.out.Digest, expectedDigest)
 	}
 }
 
