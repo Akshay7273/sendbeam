@@ -1,4 +1,5 @@
 import { FEATURE_PADDING } from './constants.js';
+import { ERR_PADDING_REQUIRED } from './errors.js';
 
 export interface StorageCapabilities {
   persistentTrust: boolean;
@@ -173,4 +174,17 @@ export function isPaddingNegotiated(
   remoteFeatures: readonly string[],
 ): boolean {
   return localFeatures.includes(FEATURE_PADDING) && remoteFeatures.includes(FEATURE_PADDING);
+}
+
+/**
+ * Validates padding policy against remote advertised features.
+ * When requirePadding is true, remote peer MUST advertise 'padding'; otherwise ERR_PADDING_REQUIRED is thrown.
+ */
+export function validatePaddingPolicy(
+  remoteFeatures: readonly string[],
+  requirePadding: boolean,
+): void {
+  if (requirePadding && !remoteFeatures.includes(FEATURE_PADDING)) {
+    throw ERR_PADDING_REQUIRED;
+  }
 }

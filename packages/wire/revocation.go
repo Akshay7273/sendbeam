@@ -35,6 +35,14 @@ var (
 	ErrRevokerUntrusted = Errorf(CodeAuth, "revocation revoker is not an active trusted peer")
 )
 
+// ValidateRevocationSeq asserts that incomingSeq is strictly greater than existingSeq.
+func ValidateRevocationSeq(existingSeq, incomingSeq uint64) error {
+	if incomingSeq <= existingSeq {
+		return ErrRevocationSeqRollback
+	}
+	return nil
+}
+
 // RevocationRecord represents a cryptographically signed statement asserting that a peer device has been revoked.
 type RevocationRecord struct {
 	RevokerDeviceID string `json:"revoker_device_id"`

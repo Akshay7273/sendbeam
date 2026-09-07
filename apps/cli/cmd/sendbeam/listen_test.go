@@ -67,3 +67,24 @@ func TestListenCommand_AutoAcceptFlag(t *testing.T) {
 		t.Errorf("expected Auto-Accept: Enabled, got: %s", stdout.String())
 	}
 }
+
+func TestListenCommand_RequirePaddingFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	code := executeListenWithContext(ctx, []string{
+		"--config-dir", tmpDir,
+		"--dest", tmpDir,
+		"--require-padding",
+		"--private",
+	}, nil, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("listen exit code %d, stderr: %s", code, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "flag provided but not defined") {
+		t.Fatalf("flag error: %s", stderr.String())
+	}
+}

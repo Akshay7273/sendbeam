@@ -16,7 +16,7 @@ import {
 } from './aead.js';
 import type { DirectionalKey } from './keyschedule.js';
 import { FrameType, type ControlOp, type FileEntry, type Manifest } from './transfer.js';
-import { DEFAULT_INFLIGHT_BLOCKS, FRAME_VERSION } from './constants.js';
+import { DEFAULT_INFLIGHT_BLOCKS, FRAME_FLAG_PADDED, FRAME_VERSION } from './constants.js';
 import { sha256 } from './webcrypto.js';
 import { bytesToHex } from './bytes.js';
 import {
@@ -106,6 +106,8 @@ export interface TransferReceiverOptions {
   resume?: ReceiverResumeState;
   /** Enables traffic padding to fixed power-of-two buckets (V17-PR03). */
   padding?: boolean;
+  /** Enforces that all inbound frames have FRAME_FLAG_PADDED set (V19-PR11). */
+  requirePadding?: boolean;
 }
 
 export class TransferReceiver {
@@ -155,6 +157,9 @@ export class TransferReceiver {
 
   constructor(opts: TransferReceiverOptions) {
     this.o = opts;
+    if (this.o.requirePadding) {
+      this.o.padding = true;
+    }
     if ((opts.sink === undefined) === (opts.destination === undefined)) {
       throw new Error('exactly one of sink or destination is required');
     }
@@ -233,6 +238,9 @@ export class TransferReceiver {
     try {
       opened = await openSequenced(this.o.recvDir, this.recvCounter, frame);
       this.recvCounter = opened.counter + 1;
+      if (this.o.requirePadding && (opened.header.flags & FRAME_FLAG_PADDED) === 0) {
+        throw new TransferError('integrity', 'unpadded frame rejected by require-padding policy');
+      }
     } catch (e) {
       if (e instanceof FrameReplayError) return;
       throw new TransferError(

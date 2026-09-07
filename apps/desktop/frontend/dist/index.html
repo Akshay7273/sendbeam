@@ -589,6 +589,11 @@
           <span>Auto-Accept Incoming Transfers (Strictly disabled by default for security)</span>
         </label>
 
+        <label style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; cursor: pointer;">
+          <input type="checkbox" id="cfg-require-padding" />
+          <span>Require Traffic Padding (Reject unpadded peers and frames fail-closed)</span>
+        </label>
+
         <div class="controls" style="margin-top: 1.25rem;">
           <button class="primary" id="save-settings">Save Settings</button>
           <button id="reset-settings">Reload</button>
@@ -691,6 +696,11 @@
         <label style="display:flex; align-items:center; gap:0.5rem; margin-top:0.5rem;">
           <input type="checkbox" id="policy-auto-accept" />
           <span>Auto-accept incoming transfers from this device</span>
+        </label>
+
+        <label style="display:flex; align-items:center; gap:0.5rem; margin-top:0.5rem;">
+          <input type="checkbox" id="policy-require-padding" />
+          <span>Require traffic padding (reject transfers if peer lacks padding)</span>
         </label>
 
         <div id="policy-dest-container" class="hidden" style="margin-top:0.75rem;">
@@ -1394,6 +1404,7 @@
         $("policy-auto-accept").checked = isAuto;
         $("policy-dest-container").classList.toggle("hidden", !isAuto);
         $("policy-dest-dir").value = (dev.policy && dev.policy.autoAcceptDestDir) || "";
+        $("policy-require-padding").checked = !!(dev.policy && (dev.policy.require_padding || dev.policy.requirePadding));
         $("policy-status").textContent = "";
       }
       function closePolicyModal() {
@@ -1415,6 +1426,7 @@
         if (!state.activeDevice) return;
         const autoAccept = $("policy-auto-accept").checked;
         const destDir = $("policy-dest-dir").value.trim();
+        const requirePadding = $("policy-require-padding").checked;
         if (autoAccept && !destDir) {
           $("policy-status").textContent = "Destination folder required when auto-accept is enabled.";
           return;
@@ -1424,6 +1436,7 @@
           await call(SV.Device + ".UpdateDevicePolicy", state.activeDevice.deviceId, {
             autoAccept: autoAccept,
             autoAcceptDestDir: destDir,
+            require_padding: requirePadding,
           });
           closePolicyModal();
           loadDevicesList();
@@ -1431,6 +1444,7 @@
           $("policy-status").textContent = String(err);
         }
       });
+
 
       // 3. RENAME MODAL
       function openRenameModal(dev) {
@@ -1656,6 +1670,7 @@
             $("cfg-ice").value = (cfg.iceServers || []).join("\n");
             $("cfg-downdir").value = cfg.downloadDir || "";
             $("cfg-auto-accept").checked = false; // Strictly false
+            $("cfg-require-padding").checked = !!cfg.requirePadding;
           }
         } catch (err) {
           $("settings-status").textContent = "Load error: " + err;
@@ -1673,11 +1688,13 @@
         const server = $("cfg-server").value.trim();
         const ice = $("cfg-ice").value.split("\n").map((s) => s.trim()).filter(Boolean);
         const downdir = $("cfg-downdir").value.trim();
+        const requirePadding = $("cfg-require-padding").checked;
         const cfg = {
           serverUrl: server,
           iceServers: ice,
           downloadDir: downdir,
           autoAccept: false,
+          requirePadding: requirePadding,
         };
         try {
           await call(SV.Transfer + ".SaveConfig", cfg);

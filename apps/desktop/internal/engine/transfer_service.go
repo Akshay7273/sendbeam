@@ -202,6 +202,28 @@ func (s *TransferService) SetPicker(p Picker) {
 	s.picker = p
 }
 
+func (s *TransferService) requirePaddingConfig() bool {
+	if s.configStore != nil {
+		if cfg, err := s.configStore.Load(); err == nil {
+			return cfg.RequirePadding
+		}
+	}
+	return false
+}
+
+func (s *TransferService) isDeviceRequirePadding(peerDeviceID string) bool {
+	s.mu.Lock()
+	ds := s.deviceService
+	s.mu.Unlock()
+	if ds != nil {
+		if dev, err := ds.GetStore().GetDevice(context.Background(), peerDeviceID); err == nil && dev != nil {
+			return dev.Policy.RequirePadding
+		}
+	}
+	return false
+}
+
+
 // NewTransferService builds the service. emit is the frontend sink (wails
 // app.Event.Emit in production, a recorder in tests); dial is the signaling
 // seam (nil uses the real wsclient).
@@ -634,13 +656,16 @@ func (s *TransferService) BroadcastSend(paths []string, deviceIDs []string, serv
 			TrustStore:        ds.GetStore(),
 		}
 
+		requirePadding := s.requirePaddingConfig() || dev.Policy.RequirePadding
 		spec := transfer.Spec{
-			Opaque:       opaqueOpts,
-			PeerDeviceID: dev.DeviceID,
-			PeerLabel:    dev.LocalLabel,
-			Sources:      sources,
-			ICEServers:   iceServers,
-			ForceRelay:   s.forceRelay,
+			Opaque:         opaqueOpts,
+			PeerDeviceID:   dev.DeviceID,
+			PeerLabel:      dev.LocalLabel,
+			Sources:        sources,
+			ICEServers:     iceServers,
+			ForceRelay:     s.forceRelay,
+			RequirePadding: requirePadding,
+			Private:        requirePadding,
 		}
 
 		targets = append(targets, transfer.BroadcastTarget{
@@ -1051,6 +1076,11 @@ func (s *TransferService) StartNativeReceiver(cfg receiver.Config) error {
 		return errors.New("native receiver already running")
 	}
 
+	if s.requirePaddingConfig() {
+		cfg.RequirePadding = true
+		cfg.Private = true
+	}
+
 	origStart := cfg.OnTransferStart
 	cfg.OnTransferStart = func(transferID string, peerDeviceID string, manifest wire.Manifest) {
 		if origStart != nil {
@@ -1399,6 +1429,8 @@ func (r *transferRun) runSend(ctx context.Context, server string, sources []wire
 		caps.Features = append(caps.Features, wire.ResumeAuthCapability)
 	}
 
+	requirePadding := r.svc.requirePaddingConfig()
+
 	spec := transfer.Spec{
 		Session: rendezvous.Options{
 			Role:      rendezvous.RoleOfferer,
@@ -1416,6 +1448,8 @@ func (r *transferRun) runSend(ctx context.Context, server string, sources []wire
 		},
 		Sources:        sources,
 		TransferID:     transferID,
+		RequirePadding: requirePadding,
+		Private:        requirePadding,
 		OnSendManifest: onSendManifest,
 		OnResumeCredential: func(manifest wire.Manifest, resumeRoot []byte) error {
 			if sstore != nil {
@@ -1521,6 +1555,8 @@ func (r *transferRun) runSendTargeted(ctx context.Context, server string, source
 		r.publish("progress")
 	}
 
+	requirePadding := r.svc.requirePaddingConfig() || r.svc.isDeviceRequirePadding(peerDeviceID)
+
 	spec := transfer.Spec{
 		Opaque:         opaqueOpts,
 		PeerDeviceID:   peerDeviceID,
@@ -1528,6 +1564,8 @@ func (r *transferRun) runSendTargeted(ctx context.Context, server string, source
 		Sources:        sources,
 		ForceRelay:     r.svc.forceRelay,
 		ICEServers:     iceServers,
+		RequirePadding: requirePadding,
+		Private:        requirePadding,
 		OnTransport:    r.onTransport,
 		OnConnect:      func() { r.publish("connect") },
 		OnFileProgress: r.onFileProgress,
@@ -1605,6 +1643,7 @@ func (r *transferRun) runReceive(ctx context.Context, code, destDir, server stri
 		lastProgress = now
 		r.publish("progress")
 	}
+	requirePadding := r.svc.requirePaddingConfig()
 	spec := transfer.Spec{
 		Session: rendezvous.Options{
 			Role: rendezvous.RoleJoiner,
@@ -1613,9 +1652,11 @@ func (r *transferRun) runReceive(ctx context.Context, code, destDir, server stri
 				r.publish("phase", func(ev *TransferEvent) { ev.Phase = string(p) })
 			},
 		},
-		DestDir:    destDir,
-		ForceRelay: r.svc.forceRelay,
-		ICEServers: iceServers,
+		DestDir:        destDir,
+		ForceRelay:     r.svc.forceRelay,
+		ICEServers:     iceServers,
+		RequirePadding: requirePadding,
+		Private:        requirePadding,
 		OnManifestSet: func(m wire.Manifest) {
 			r.mu.Lock()
 			r.files = r.files[:0]
@@ -1725,6 +1766,8 @@ func (r *transferRun) runResumeReceive(ctx context.Context, transferID, code, de
 		ResumeSecret:        secret,
 	}
 
+	requirePadding := r.svc.requirePaddingConfig()
+
 	spec := transfer.Spec{
 		Session: rendezvous.Options{
 			Role:      rendezvous.RoleJoiner,
@@ -1734,10 +1777,12 @@ func (r *transferRun) runResumeReceive(ctx context.Context, transferID, code, de
 				r.publish("phase", func(ev *TransferEvent) { ev.Phase = string(p) })
 			},
 		},
-		DestDir:    destDir,
-		ForceRelay: r.svc.forceRelay,
-		ICEServers: iceServers,
-		Resume:     resumeCtx,
+		DestDir:        destDir,
+		ForceRelay:     r.svc.forceRelay,
+		ICEServers:     iceServers,
+		RequirePadding: requirePadding,
+		Private:        requirePadding,
+		Resume:         resumeCtx,
 		OnResume: func(res transfer.ResumeResult) {
 			if res.Authenticated {
 				r.mu.Lock()

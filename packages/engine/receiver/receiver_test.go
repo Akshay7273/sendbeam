@@ -780,3 +780,89 @@ func TestListenerPendingConsentAsync(t *testing.T) {
 	}
 }
 
+func TestReceiverRequirePaddingRejectsUnpaddedPeer(t *testing.T) {
+	tmpDir := t.TempDir()
+	destDir := filepath.Join(tmpDir, "received")
+
+	idAlice, idBob, kPair, storeBob, secretsBob, tombstonesBob := setupPairedPeers(t, tmpDir)
+	handle := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	relay := newLoopbackRelay()
+
+	listener, err := NewListener(Config{
+		DestDir:        destDir,
+		Identity:       idBob,
+		TrustStore:     storeBob,
+		Secrets:        secretsBob,
+		Tombstones:     tombstonesBob,
+		AutoAccept:     true,
+		RequirePadding: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	payload := []byte("payload that requires padding")
+	src := wire.BytesSource(payload, wire.FileMeta{
+		Name:         "unpadded.txt",
+		Size:         int64(len(payload)),
+		Mime:         "text/plain",
+		LastModified: 1700000000000,
+	}, 16*1024)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	type result struct {
+		out *transfer.Outcome
+		err error
+	}
+	sendCh := make(chan result, 1)
+	recvCh := make(chan result, 1)
+
+	// Offerer (Alice) sends WITHOUT padding capability
+	go func() {
+		out, err := transfer.Run(ctx, relay.off, transfer.Spec{
+			Opaque: &rendezvous.OpaqueOptions{
+				Role:              rendezvous.RoleOfferer,
+				Handle:            handle,
+				LocalIdentity:     idAlice,
+				PeerDeviceID:      idBob.DeviceID,
+				PeerPublicKey:     idBob.PublicKey,
+				KPair:             kPair,
+				PairCredentialRef: "cred-ref-alice-bob",
+				LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume"}, // OMIT "padding"
+			},
+			Sources:    []wire.FileSource{src},
+			ForceRelay: true,
+			Private:    false, // incompatible peer
+			ICEServers: []webrtc.ICEServer{},
+		})
+		sendCh <- result{out, err}
+	}()
+
+	// Joiner (Bob) receives with RequirePadding: true
+	go func() {
+		out, err := listener.HandleIncomingSession(ctx, relay.join, idAlice.DeviceID, handle)
+		recvCh <- result{out, err}
+	}()
+
+	recv := <-recvCh
+	cancel()
+	_ = <-sendCh
+
+	if recv.err == nil {
+		t.Fatalf("expected receiver with RequirePadding to reject incompatible peer, got success")
+	}
+	if !errors.Is(recv.err, wire.ErrPaddingRequired) && wire.CodeOf(recv.err) != wire.CodeCompat {
+		t.Fatalf("expected ErrPaddingRequired or CodeCompat, got %v", recv.err)
+	}
+
+	// Payload file must NOT be written
+	if _, err := os.Stat(filepath.Join(destDir, "unpadded.txt")); !os.IsNotExist(err) {
+		t.Fatalf("payload file was created despite require-padding rejection")
+	}
+}
+
+

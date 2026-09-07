@@ -26,6 +26,20 @@ describe('sanitize() redaction', () => {
     expect(out).toContain('<code>');
   });
 
+  it('redacts 64-hex keys and secrets', () => {
+    const out = sanitize(
+      'handshake key 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef failed',
+    );
+    expect(out).not.toContain('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
+    expect(out).toContain('<secret>');
+  });
+
+  it('redacts unpadded payload length disclosures', () => {
+    const out = sanitize('rejected unpadded length 12345 exceeds padding budget');
+    expect(out).not.toContain('12345');
+    expect(out).toContain('unpadded length <redacted>');
+  });
+
   it('keeps benign text', () => {
     const out = sanitize('direct path recovery failed; relay warmed as fallback');
     expect(out).toContain('direct path recovery failed');

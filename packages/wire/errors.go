@@ -30,6 +30,12 @@ const (
 // ErrMalformedFrame indicates a frame violated wire framing constraints or padding rules.
 var ErrMalformedFrame = Errorf(CodeProtocol, "malformed frame")
 
+// ErrPaddingRequired indicates the peer does not negotiate traffic padding when required.
+var ErrPaddingRequired = Errorf(CodeCompat, "peer does not negotiate padding capability")
+
+// ErrUnpaddedFrame indicates an unpadded frame was received when padding was required.
+var ErrUnpaddedFrame = Errorf(CodeProtocol, "unpadded frame rejected by require-padding policy")
+
 // Error is an error carrying a stable machine-readable class.
 type Error struct {
 	Code ErrorCode

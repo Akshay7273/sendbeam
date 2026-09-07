@@ -36,6 +36,7 @@
   let policyModalDevice = $state<TrustedDeviceUI | null>(null);
   let policyAutoAccept = $state(false);
   let policyDestDir = $state('');
+  let policyRequirePadding = $state(false);
 
   // Pairing modal state
   let showPairModal = $state(false);
@@ -134,6 +135,7 @@
     policyModalDevice = dev;
     policyAutoAccept = dev.policy.autoAccept;
     policyDestDir = dev.policy.autoAcceptDestDir || '';
+    policyRequirePadding = dev.policy.requirePadding ?? false;
   }
 
   async function handleSavePolicy() {
@@ -142,6 +144,7 @@
       const newPolicy: TrustPolicy = {
         ...policyModalDevice.policy,
         autoAccept: policyAutoAccept,
+        requirePadding: policyRequirePadding,
       };
       if (policyAutoAccept && policyDestDir.trim()) {
         newPolicy.autoAcceptDestDir = policyDestDir.trim();
@@ -490,6 +493,13 @@
         <label>
           <input type="checkbox" bind:checked={policyAutoAccept} />
           Automatically accept incoming file transfers from this device
+        </label>
+      </div>
+
+      <div class="form-group checkbox-group">
+        <label>
+          <input type="checkbox" bind:checked={policyRequirePadding} />
+          Require traffic padding (reject transfers if peer lacks padding)
         </label>
       </div>
 

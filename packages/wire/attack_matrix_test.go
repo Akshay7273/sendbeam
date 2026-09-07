@@ -7,8 +7,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -391,19 +391,12 @@ func TestAttackMatrix_Wire(t *testing.T) {
 			}
 		}
 
-		// Session enforcing private mode fails closed if PaddingCapability was stripped
-		enforcePrivateSession := func(peerCaps []string) error {
-			if !hasPadding(peerCaps) {
-				return fmt.Errorf("downgrade rejected: peer does not negotiate %s capability for private transfer", PaddingCapability)
-			}
-			return nil
+		// Session enforcing require-padding policy fails closed with ErrPaddingRequired if PaddingCapability was stripped
+		if hasPadding(strippedCaps) {
+			t.Fatal("expected strippedCaps to omit PaddingCapability")
 		}
 
-		if err := enforcePrivateSession(strippedCaps); err == nil {
-			t.Fatal("expected enforcePrivateSession to reject stripped padding capability")
-		}
-
-		// Receiver enforcing private mode rejects unpadded frames
+		// Receiver enforcing production RequirePadding policy rejects unpadded frames fail-closed
 		key14 := sha256.Sum256([]byte("aead-key-vector-14"))
 		dir := DirectionalKey{
 			Key:  key14[:],
@@ -418,19 +411,52 @@ func TestAttackMatrix_Wire(t *testing.T) {
 			t.Fatalf("Seal failed: %v", err)
 		}
 
-		opened, err := OpenSequenced(dir, 0, unpaddedFrame)
-		if err != nil {
-			t.Fatalf("OpenSequenced failed: %v", err)
+		sink := &MemorySink{}
+		recv := NewReceiver(ReceiverOptions{
+			Sink:           sink,
+			RecvDir:        dir,
+			RequirePadding: true,
+		})
+		recv.Handle(unpaddedFrame)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		_, err = recv.Wait(ctx)
+		if err == nil {
+			t.Fatal("expected production Receiver with RequirePadding:true to reject unpadded frame fail-closed")
 		}
-		// Private policy check: FrameFlagPadded must be set
-		if opened.Header.Flags&FrameFlagPadded == 0 {
-			// Policy fails closed
-			err = errors.New("private session rejected unpadded frame")
-			if err == nil {
-				t.Fatal("expected error")
-			}
-		} else {
-			t.Fatal("expected opened frame to have FrameFlagPadded unset")
+		if !strings.Contains(err.Error(), ErrUnpaddedFrame.Error()) {
+			t.Fatalf("expected error containing %q, got %v", ErrUnpaddedFrame.Error(), err)
+		}
+
+		// Sender enforcing production RequirePadding policy also rejects unpadded inbound control frames fail-closed
+		ackPayload, err := EncodeControl(&Ack{FileIdx: 0, BlockIdx: 0})
+		if err != nil {
+			t.Fatalf("EncodeControl failed: %v", err)
+		}
+		unpaddedAck, err := Seal(dir, 0, FrameHeaderInput{
+			Version: 1,
+			Type:    FrameAck,
+			Flags:   0, // NOT padded
+		}, ackPayload)
+		if err != nil {
+			t.Fatalf("Seal unpaddedAck failed: %v", err)
+		}
+		snd := NewSender(SenderOptions{
+			File:           BytesSource([]byte("payload"), FileMeta{Name: "test.txt", Size: 7}, 16*1024),
+			Send:           func([]byte) error { return nil },
+			SendDir:        dir,
+			RecvDir:        dir,
+			RequirePadding: true,
+		})
+		snd.Handle(unpaddedAck)
+		sndCtx, sndCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer sndCancel()
+		_, sndErr := snd.Run(sndCtx)
+		if sndErr == nil {
+			t.Fatal("expected production Sender with RequirePadding:true to reject unpadded control frame fail-closed")
+		}
+		if !strings.Contains(sndErr.Error(), ErrUnpaddedFrame.Error()) {
+			t.Fatalf("expected sender error containing %q, got %v", ErrUnpaddedFrame.Error(), sndErr)
 		}
 	})
 
@@ -450,19 +476,12 @@ func TestAttackMatrix_Wire(t *testing.T) {
 			t.Fatalf("SignRevocation low failed: %v", err)
 		}
 
-		// Monotonicity assertion: incoming seq <= current seq must be rejected
+		// Monotonicity assertion: incoming seq <= current seq must be rejected via production ValidateRevocationSeq
 		currentSeq := recHigh.Seq
-		applyRevocationSeq := func(existing uint64, incoming *RevocationRecord) error {
-			if incoming.Seq <= existing {
-				return ErrRevocationSeqRollback
-			}
-			return nil
-		}
-
-		if err := applyRevocationSeq(currentSeq, recLow); !errors.Is(err, ErrRevocationSeqRollback) {
+		if err := ValidateRevocationSeq(currentSeq, recLow.Seq); !errors.Is(err, ErrRevocationSeqRollback) {
 			t.Fatalf("expected ErrRevocationSeqRollback for lower seq, got: %v", err)
 		}
-		if err := applyRevocationSeq(currentSeq, recHigh); !errors.Is(err, ErrRevocationSeqRollback) {
+		if err := ValidateRevocationSeq(currentSeq, recHigh.Seq); !errors.Is(err, ErrRevocationSeqRollback) {
 			t.Fatalf("expected ErrRevocationSeqRollback for equal seq replay, got: %v", err)
 		}
 

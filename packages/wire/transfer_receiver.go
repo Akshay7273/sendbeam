@@ -68,6 +68,9 @@ type ReceiverOptions struct {
 	OnManifest    func(file FileEntry) error
 	// Padding enables power-of-two traffic padding on all outbound control frames (V17-PR03).
 	Padding bool
+	// RequirePadding enforces that all inbound frames have FrameFlagPadded set (V19-PR11).
+	// An unpadded frame aborts the receive fail-closed.
+	RequirePadding bool
 	Resume  *ReceiverResume
 }
 
@@ -121,6 +124,9 @@ func NewReceiver(opts ReceiverOptions) *Receiver {
 	destination := opts.Destination
 	if destination == nil && opts.Sink != nil {
 		destination = SingleSinkDestination(opts.Sink)
+	}
+	if opts.RequirePadding {
+		opts.Padding = true
 	}
 	return &Receiver{
 		o:               opts,
@@ -217,6 +223,9 @@ func (r *Receiver) process(frame []byte) error {
 			return nil
 		}
 		return NewTransferError(FailIntegrity, err.Error())
+	}
+	if r.o.RequirePadding && (opened.Header.Flags&FrameFlagPadded == 0) {
+		return NewTransferError(FailIntegrity, ErrUnpaddedFrame.Error())
 	}
 	r.recvCounter = opened.Counter + 1
 	switch opened.Header.Type {

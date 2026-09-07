@@ -486,8 +486,11 @@ describe('Desktop frontend literal-text rendering', () => {
 
     const autoAccept = document.getElementById('policy-auto-accept') as HTMLInputElement;
     const destDir = document.getElementById('policy-dest-dir') as HTMLInputElement;
+    const reqPadding = document.getElementById('policy-require-padding') as HTMLInputElement;
+    expect(reqPadding).not.toBeNull();
     autoAccept.checked = true;
     destDir.value = '/home/user/vault';
+    reqPadding.checked = true;
 
     const saveBtn = document.getElementById('policy-save-btn') as HTMLButtonElement;
     saveBtn.click();
@@ -495,7 +498,7 @@ describe('Desktop frontend literal-text rendering', () => {
 
     expect(updatedPolicy).toEqual([
       'dev-policy-test',
-      { autoAccept: true, autoAcceptDestDir: '/home/user/vault' },
+      { autoAccept: true, autoAcceptDestDir: '/home/user/vault', require_padding: true },
     ]);
   });
 

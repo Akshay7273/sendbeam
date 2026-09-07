@@ -66,6 +66,10 @@ type Config struct {
 	// Private enables traffic padding negotiation (V17-PR03).
 	Private bool
 
+	// RequirePadding enforces strict traffic padding policy (V19-PR11).
+	// Incompatible peers without padding capability or unpadded frames are rejected fail-closed.
+	RequirePadding bool
+
 	// RelayJitter adds optional timing jitter for relay frames (V17-PR04).
 	RelayJitter time.Duration
 

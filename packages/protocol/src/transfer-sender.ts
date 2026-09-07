@@ -28,6 +28,7 @@ import {
   DEFAULT_FRAME_BYTES,
   DEFAULT_INFLIGHT_BLOCKS,
   FRAME_FLAG_LAST_IN_BLOCK,
+  FRAME_FLAG_PADDED,
   FRAME_VERSION,
 } from './constants.js';
 import { sha256 } from './webcrypto.js';
@@ -101,6 +102,8 @@ export interface TransferSenderOptions {
   onStateChange?(state: TransferRunState): void;
   /** Enables traffic padding to fixed power-of-two buckets (V17-PR03). */
   padding?: boolean;
+  /** Enforces that all inbound frames have FRAME_FLAG_PADDED set (V19-PR11). */
+  requirePadding?: boolean;
 }
 
 interface InflightBlock {
@@ -184,6 +187,9 @@ export class TransferSender {
 
   constructor(opts: TransferSenderOptions) {
     this.o = opts;
+    if (this.o.requirePadding) {
+      this.o.padding = true;
+    }
     if ((opts.file === undefined) === (opts.files === undefined)) {
       throw new Error('exactly one of file or files is required');
     }
@@ -421,6 +427,9 @@ export class TransferSender {
     try {
       opened = await openSequenced(this.o.recvDir, this.recvCounter, frame);
       this.recvCounter = opened.counter + 1;
+      if (this.o.requirePadding && (opened.header.flags & FRAME_FLAG_PADDED) === 0) {
+        throw new TransferError('integrity', 'unpadded frame rejected by require-padding policy');
+      }
     } catch (e) {
       if (e instanceof FrameReplayError) return;
       throw new TransferError(

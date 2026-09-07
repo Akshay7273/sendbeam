@@ -51,6 +51,7 @@ func executeSend(args []string, stdout, stderr io.Writer) int {
 	var iceServer iceServerList
 	fs.Var(&iceServer, "ice-server", "STUN server URL for direct-path candidates (repeatable; default stun:stun.l.google.com:19302)")
 	privateMode := fs.Bool("private", false, "enable negotiated traffic padding for wire privacy")
+	requirePadding := fs.Bool("require-padding", false, "mandate traffic padding; fail closed on unpadded peers or frames")
 	jitter := fs.Duration("jitter", 0, "maximum random scheduling jitter for relay frames (e.g. 15ms)")
 	jsonOutput := fs.Bool("json", false, "output structured JSON result")
 	concurrency := fs.Int("concurrency", 4, "maximum concurrent target transfers")
@@ -74,13 +75,13 @@ func executeSend(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(toDevices) == 0 {
-		return runSingleInteractiveSend(filePaths, *server, *insecure, *words, *relayOnly, iceServer, *privateMode, *jitter, *jsonOutput, stdout, stderr)
+		return runSingleInteractiveSend(filePaths, *server, *insecure, *words, *relayOnly, iceServer, *privateMode, *requirePadding, *jitter, *jsonOutput, stdout, stderr)
 	}
 
-	return runBroadcastSend(filePaths, toDevices, *server, *insecure, *relayOnly, iceServer, *privateMode, *jitter, *jsonOutput, *concurrency, *timeout, *configDir, stdout, stderr)
+	return runBroadcastSend(filePaths, toDevices, *server, *insecure, *relayOnly, iceServer, *privateMode, *requirePadding, *jitter, *jsonOutput, *concurrency, *timeout, *configDir, stdout, stderr)
 }
 
-func runSingleInteractiveSend(filePaths []string, server string, insecure bool, words int, relayOnly bool, iceServer iceServerList, privateMode bool, jitter time.Duration, jsonOutput bool, stdout, stderr io.Writer) int {
+func runSingleInteractiveSend(filePaths []string, server string, insecure bool, words int, relayOnly bool, iceServer iceServerList, privateMode bool, requirePadding bool, jitter time.Duration, jsonOutput bool, stdout, stderr io.Writer) int {
 	ice, err := iceServers(iceServer)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", err)
@@ -209,7 +210,8 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 			}
 		},
 		ForceRelay:       relayOnly,
-		Private:          privateMode,
+		Private:          privateMode || requirePadding,
+		RequirePadding:   requirePadding,
 		RelayJitter:      jitter,
 		ICEServers:       ice,
 		OnTransport:      transportPrinter,
@@ -289,7 +291,7 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 	return 0
 }
 
-func runBroadcastSend(filePaths []string, toDevices []string, server string, insecure bool, relayOnly bool, iceServer iceServerList, privateMode bool, jitter time.Duration, jsonOutput bool, concurrency int, timeout time.Duration, configDir string, stdout, stderr io.Writer) int {
+func runBroadcastSend(filePaths []string, toDevices []string, server string, insecure bool, relayOnly bool, iceServer iceServerList, privateMode bool, requirePadding bool, jitter time.Duration, jsonOutput bool, concurrency int, timeout time.Duration, configDir string, stdout, stderr io.Writer) int {
 	env, err := InitCLIEnvironment(configDir)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam send: %v\n", err)
@@ -390,15 +392,17 @@ func runBroadcastSend(filePaths []string, toDevices []string, server string, ins
 			TrustStore:        env.TrustStore,
 		}
 
+		requirePad := requirePadding || rec.Policy.RequirePadding
 		spec := transfer.Spec{
-			Opaque:       opaqueOpts,
-			PeerDeviceID: rec.DeviceID,
-			PeerLabel:    rec.LocalLabel,
-			Sources:      sources,
-			ICEServers:   ice,
-			ForceRelay:   relayOnly,
-			Private:      privateMode,
-			RelayJitter:  jitter,
+			Opaque:         opaqueOpts,
+			PeerDeviceID:   rec.DeviceID,
+			PeerLabel:      rec.LocalLabel,
+			Sources:        sources,
+			ICEServers:     ice,
+			ForceRelay:     relayOnly,
+			Private:        privateMode || requirePad,
+			RequirePadding: requirePad,
+			RelayJitter:    jitter,
 		}
 
 		targets[i] = transfer.BroadcastTarget{
