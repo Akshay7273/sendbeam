@@ -27,6 +27,7 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/sendbeam/desktop/internal/config"
 	"github.com/sendbeam/desktop/internal/lifecycle"
+	"github.com/sendbeam/engine/receiver"
 	"github.com/sendbeam/engine/rendezvous"
 	"github.com/sendbeam/engine/transfer"
 	"github.com/sendbeam/engine/wsclient"
@@ -38,6 +39,9 @@ import (
 // transfer update. The payload is a TransferEvent snapshot; the frontend
 // re-renders from the latest snapshot per transfer id.
 const TransferEventName = "sendbeam:transfer"
+
+// ConsentEventName is emitted to the frontend when incoming transfer consent is requested.
+const ConsentEventName = "sendbeam:consent"
 
 // DefaultServer mirrors the CLI's default signaling server, so a desktop peer
 // pairs with CLI and browser peers of the same deployment out of the box.
@@ -170,6 +174,9 @@ type TransferService struct {
 	senderStore           *transfer.SenderStore
 	durableStoreFn        func(outDir string) (*transfer.DurableStore, error)
 	completedDestinations map[string]completedDestination
+
+	nativeReceiver       *receiver.Listener
+	nativeReceiverCancel context.CancelFunc
 }
 
 // SetPicker sets the native dialog picker provider (e.g. Wails dialogs).
@@ -808,7 +815,184 @@ func (s *TransferService) Shutdown(timeout time.Duration) error {
 		time.Sleep(20 * time.Millisecond)
 	}
 
+	s.mu.Lock()
+	nativeRecv := s.nativeReceiver
+	nativeCancel := s.nativeReceiverCancel
+	s.nativeReceiver = nil
+	s.nativeReceiverCancel = nil
+	s.mu.Unlock()
+
+	if nativeCancel != nil {
+		nativeCancel()
+	}
+	if nativeRecv != nil {
+		_ = nativeRecv.Close()
+	}
+
 	return nil
+}
+
+// StartNativeReceiver starts the background listener using the shared native receiver package.
+func (s *TransferService) StartNativeReceiver(cfg receiver.Config) error {
+	s.mu.Lock()
+	if s.nativeReceiver != nil {
+		s.mu.Unlock()
+		return errors.New("native receiver already running")
+	}
+
+	origStart := cfg.OnTransferStart
+	cfg.OnTransferStart = func(transferID string, peerDeviceID string, manifest wire.Manifest) {
+		if origStart != nil {
+			origStart(transferID, peerDeviceID, manifest)
+		}
+		files := make([]FileInfo, len(manifest.Files))
+		for i, f := range manifest.Files {
+			files[i] = FileInfo{Name: f.Name, Size: f.Size}
+		}
+		if s.emit != nil {
+			s.emit(TransferEventName, TransferEvent{
+				ID:         transferID,
+				Kind:       "manifest",
+				Files:      files,
+				TotalBytes: manifest.TotalSize,
+				FilesTotal: len(manifest.Files),
+				State:      "running",
+			})
+		}
+	}
+
+	origProgress := cfg.OnFileProgress
+	cfg.OnFileProgress = func(peerDeviceID string, fileIdx int, fileBytes, ackBytes int64) {
+		if origProgress != nil {
+			origProgress(peerDeviceID, fileIdx, fileBytes, ackBytes)
+		}
+	}
+
+	origComplete := cfg.OnTransferComplete
+	cfg.OnTransferComplete = func(peerDeviceID string, outcome *transfer.Outcome) {
+		if origComplete != nil {
+			origComplete(peerDeviceID, outcome)
+		}
+		if outcome != nil {
+			s.recordCompleted(outcome.TransferID, completedDestination{
+				Path: outcome.Path,
+				Root: cfg.DestDir,
+			})
+			if s.emit != nil {
+				s.emit(TransferEventName, TransferEvent{
+					ID:        outcome.TransferID,
+					Kind:      "done",
+					Digest:    outcome.Digest,
+					OutDir:    cfg.DestDir,
+					OutPath:   outcome.Path,
+					State:     "completed",
+					Percent:   100,
+					DoneBytes: outcome.Size,
+				})
+			}
+			if s.notifier != nil {
+				s.notifier.NotifySuccess("Transfer Complete", fmt.Sprintf("Received %s", outcome.Name), outcome.Path)
+			}
+		}
+	}
+
+	origErr := cfg.OnTransferError
+	cfg.OnTransferError = func(peerDeviceID string, err error) {
+		if origErr != nil {
+			origErr(peerDeviceID, err)
+		}
+		if s.emit != nil {
+			s.emit(TransferEventName, TransferEvent{
+				Kind:   "error",
+				Error:  err.Error(),
+				State:  "error",
+				Failed: true,
+			})
+		}
+	}
+
+	origConsentReq := cfg.OnConsentRequested
+	cfg.OnConsentRequested = func(req receiver.ConsentRequest) {
+		if origConsentReq != nil {
+			origConsentReq(req)
+		}
+		if s.emit != nil {
+			s.emit(ConsentEventName, req)
+			s.emit(TransferEventName, TransferEvent{
+				ID:         req.TransferID,
+				Kind:       "consent_requested",
+				TotalBytes: req.TotalSize,
+				OutDir:     req.DestDir,
+				State:      "waiting_consent",
+			})
+		}
+	}
+
+	listener, err := receiver.NewListener(cfg)
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.nativeReceiver = listener
+	s.nativeReceiverCancel = cancel
+	s.mu.Unlock()
+
+	go func() {
+		_ = listener.Start(ctx)
+	}()
+
+	return nil
+}
+
+// StopNativeReceiver stops the background listener.
+func (s *TransferService) StopNativeReceiver() error {
+	s.mu.Lock()
+	listener := s.nativeReceiver
+	cancel := s.nativeReceiverCancel
+	s.nativeReceiver = nil
+	s.nativeReceiverCancel = nil
+	s.mu.Unlock()
+
+	if listener == nil {
+		return nil
+	}
+	if cancel != nil {
+		cancel()
+	}
+	return listener.Close()
+}
+
+// NativeReceiver returns the active native receiver instance or nil.
+func (s *TransferService) NativeReceiver() *receiver.Listener {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nativeReceiver
+}
+
+// RespondConsent resolves a pending incoming transfer consent request.
+func (s *TransferService) RespondConsent(transferID string, decision receiver.ConsentDecision) error {
+	s.mu.Lock()
+	listener := s.nativeReceiver
+	s.mu.Unlock()
+
+	if listener == nil {
+		return errors.New("native receiver is not running")
+	}
+	return listener.RespondConsent(transferID, decision)
+}
+
+// PendingConsents returns all currently pending consent requests awaiting user decision.
+func (s *TransferService) PendingConsents() []receiver.ConsentRequest {
+	s.mu.Lock()
+	listener := s.nativeReceiver
+	s.mu.Unlock()
+
+	if listener == nil {
+		return nil
+	}
+	return listener.PendingConsent()
 }
 
 // control looks up the live Controls for id and applies fn.

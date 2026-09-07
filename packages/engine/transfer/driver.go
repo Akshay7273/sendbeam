@@ -51,6 +51,17 @@ type Controls interface {
 // Source; a receiving (joiner) spec sets DestDir.
 type Spec struct {
 	Session rendezvous.Options
+	// Opaque, when set, drives a sendbeam/3 authenticated forward-secret session over opaque handles.
+	// When non-nil, Session is ignored and Opaque is used instead.
+	Opaque *rendezvous.OpaqueOptions
+	// Consent, when set, is invoked on the receiver when a manifest arrives to decide whether
+	// to accept or decline the transfer and optionally override the destination directory.
+	// If it returns Accepted: false or an error, the transfer aborts cleanly without writing data.
+	Consent ConsentHandler
+	// PeerDeviceID is the authenticated peer's device ID for consent and logging.
+	PeerDeviceID string
+	// PeerLabel is the human-readable peer label for consent prompts.
+	PeerLabel string
 	// Source is the file to send; required for an offerer, ignored for a joiner.
 	Source wire.FileSource
 	// Sources is an ordered multi-file/folder set. Set either Source or Sources.
@@ -143,12 +154,13 @@ type ResumeResult struct {
 
 // Outcome is the result of a completed transfer.
 type Outcome struct {
-	Handshake *rendezvous.Result `json:"-"`
-	Name      string             `json:"name"`
-	Size      int64              `json:"size"`
-	Digest    string             `json:"digest"`         // whole-file SHA-256 (hex); identical on both peers
-	Path      string             `json:"path,omitempty"` // receiver: the written file; empty for a sender
-	Files     []FileOutcome      `json:"files,omitempty"`
+	Handshake  *rendezvous.Result `json:"-"`
+	TransferID string             `json:"transferId,omitempty"`
+	Name       string             `json:"name"`
+	Size       int64              `json:"size"`
+	Digest     string             `json:"digest"`         // whole-file SHA-256 (hex); identical on both peers
+	Path       string             `json:"path,omitempty"` // receiver: the written file; empty for a sender
+	Files      []FileOutcome      `json:"files,omitempty"`
 }
 
 // FileOutcome is one source or received destination within an Outcome.
@@ -175,8 +187,10 @@ type driver struct {
 	sig  Signal
 	spec Spec
 
-	mu   sync.Mutex // serializes every socket write (session, sendOffer, pion's ICE goroutine)
-	sess *rendezvous.Session
+	mu           sync.Mutex // serializes every socket write (session, sendOffer, pion's ICE goroutine)
+	sess         *rendezvous.Session
+	opaqueSess   *rendezvous.OpaqueSession
+	opaqueResult *rendezvous.OpaqueResult
 
 	// peer and res are set once, by the read-loop goroutine, at establishment; peerCh publishes
 	// the peer to run once it exists.
@@ -218,33 +232,49 @@ func (d *driver) SendBinary(frame []byte) error {
 }
 
 func (d *driver) run(ctx context.Context) (*Outcome, error) {
-	opts := d.spec.Session
-	opts.Transport = d
-	if d.spec.Private {
-		var localCaps rendezvous.Caps
-		if opts.LocalCaps != nil {
-			localCaps = *opts.LocalCaps
-		} else {
-			localCaps = rendezvous.DefaultCaps()
+	if d.spec.Opaque != nil {
+		opts := *d.spec.Opaque
+		opts.Transport = d
+		d.opaqueSess = rendezvous.NewOpaqueSession(opts)
+		go func() {
+			<-d.opaqueSess.Done()
+			if _, err := d.opaqueSess.Result(); err != nil {
+				d.sig.Close()
+			}
+		}()
+	} else {
+		opts := d.spec.Session
+		opts.Transport = d
+		if d.spec.Private {
+			var localCaps rendezvous.Caps
+			if opts.LocalCaps != nil {
+				localCaps = *opts.LocalCaps
+			} else {
+				localCaps = rendezvous.DefaultCaps()
+			}
+			padded := localCaps.WithPadding()
+			opts.LocalCaps = &padded
 		}
-		padded := localCaps.WithPadding()
-		opts.LocalCaps = &padded
+		d.sess = rendezvous.New(opts)
+		go func() {
+			<-d.sess.Done()
+			if _, err := d.sess.Result(); err != nil {
+				d.sig.Close()
+			}
+		}()
 	}
-	d.sess = rendezvous.New(opts)
-
-	// On a handshake failure, close the socket so the read loop unblocks; on success keep it
-	// open — WebRTC signaling still needs it.
-	go func() {
-		<-d.sess.Done()
-		if _, err := d.sess.Result(); err != nil {
-			d.sig.Close()
-		}
-	}()
 
 	readErr := make(chan error, 1)
 	go func() { readErr <- d.sig.Run(ctx, d.route, d.routeBinary) }()
 
-	d.sess.Start()
+	if d.opaqueSess != nil {
+		if err := d.opaqueSess.Start(); err != nil {
+			d.sig.Close()
+			return nil, err
+		}
+	} else {
+		d.sess.Start()
+	}
 
 	var peer *rtc.Peer
 	select {
@@ -252,15 +282,25 @@ func (d *driver) run(ctx context.Context) (*Outcome, error) {
 	case err := <-readErr:
 		// The socket ended before the peer was built: surface the handshake failure, or a raw
 		// transport error if it dropped mid-handshake.
-		if _, herr := d.sess.Result(); herr != nil {
-			return nil, herr
+		if d.opaqueSess != nil {
+			if _, herr := d.opaqueSess.Result(); herr != nil {
+				return nil, herr
+			}
+		} else {
+			if _, herr := d.sess.Result(); herr != nil {
+				return nil, herr
+			}
 		}
 		if err == nil {
 			err = wire.Errorf(wire.CodeConnection, "transfer: signaling closed before the channel opened")
 		}
 		return nil, err
 	case <-ctx.Done():
-		d.sess.Abort("cancelled")
+		if d.opaqueSess != nil {
+			d.sig.Close()
+		} else {
+			d.sess.Abort("cancelled")
+		}
 		return nil, ctx.Err()
 	}
 
@@ -492,6 +532,102 @@ func (d *driver) route(m rendezvous.Message) {
 		if d.peer != nil {
 			d.peer.Accept(m)
 		}
+		return
+	}
+	if d.opaqueSess != nil {
+		select {
+		case <-d.opaqueSess.Done():
+		default:
+			_ = d.opaqueSess.Handle(m)
+		}
+		if d.res != nil {
+			return
+		}
+		select {
+		case <-d.opaqueSess.Done():
+		default:
+			return // still handshaking
+		}
+		ores, err := d.opaqueSess.Result()
+		if err != nil {
+			return // handshake failed; watcher goroutine closes socket
+		}
+		d.mu.Lock()
+		if d.res != nil {
+			d.mu.Unlock()
+			return
+		}
+		d.opaqueResult = ores
+		keys, err := wire.DeriveTransferKeys(ores.Master)
+		if err != nil {
+			d.mu.Unlock()
+			d.sig.Close()
+			return
+		}
+		caps := rendezvous.DefaultCaps()
+		if containsString(ores.NegotiatedCaps, wire.PaddingCapability) {
+			caps = caps.WithPadding()
+		}
+		res := &rendezvous.Result{
+			Role:        ores.Role,
+			Master:      ores.Master,
+			Keys:        keys,
+			LocalCaps:   caps,
+			RemoteCaps:  caps,
+			SendCounter: 0,
+			RecvCounter: 0,
+		}
+		d.res = res
+		d.mu.Unlock()
+
+		var peer *rtc.Peer
+		if !d.spec.ForceRelay {
+			authKeys := wire.SignalAuthKeys{
+				Sign:   ores.SendKey,
+				Verify: ores.RecvKey,
+			}
+			var perr error
+			d.pol = NewAdaptivePolicy(0)
+			peer, perr = rtc.NewPeer(rtc.PeerOptions{
+				Role:       ores.Role,
+				Auth:       rtc.NewSignalAuthenticator(0, authKeys),
+				Send:       d.Send,
+				ICEServers: d.spec.ICEServers,
+				OnICEState: func(s rtc.ICEState) {
+					ev := AdaptiveEvent{
+						Gathering:          adaptiveGathering(s.Gathering.String()),
+						Connection:         adaptiveConnection(s.Connection.String()),
+						HasServerReflexive: s.HasServerReflexive,
+						HasAnyCandidate:    s.HasAnyCandidate,
+					}
+					if d.pol.Observe(ev) == DecisionWarmRelay {
+						select {
+						case d.warmSignal <- struct{}{}:
+						default:
+						}
+					}
+				},
+				OnRecovering: func(rec bool) { d.reportRecovering(rec) },
+				OnRecoverFailed: func() {
+					d.mu.Lock()
+					ad := d.adaptive
+					d.mu.Unlock()
+					if ad != nil {
+						ad.FallbackToRelay()
+					}
+				},
+			})
+			if perr != nil {
+				d.sig.Close()
+				return
+			}
+		}
+		d.relay = relaytransport.New(d)
+		if d.spec.RelayJitter > 0 {
+			d.relay.SetJitter(d.spec.RelayJitter)
+		}
+		d.peer = peer
+		d.peerCh <- peer
 		return
 	}
 	d.sess.Handle(m)
@@ -775,6 +911,7 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 		}
 	}
 	paddingNegotiated := containsString(res.LocalCaps.Features, wire.PaddingCapability) && containsString(res.RemoteCaps.Features, wire.PaddingCapability)
+	var sentTransferID string
 	sender := wire.NewSender(wire.SenderOptions{
 		Files:            sources,
 		Send:             conn.Send,
@@ -793,6 +930,7 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 		TransferID:    d.spec.TransferID,
 		NewTransferID: newTransferID,
 		OnManifest: func(manifest wire.Manifest) error {
+			sentTransferID = manifest.TransferID
 			// The record (stable id + source identity) is persisted first; only then is the
 			// resume credential attached — both strictly before the manifest frame goes out.
 			if onManifest != nil {
@@ -831,7 +969,7 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 		files[i] = FileOutcome{Name: meta.Name, Size: meta.Size}
 		total += meta.Size
 	}
-	return &Outcome{Name: files[0].Name, Size: total, Digest: digest, Files: files}, nil
+	return &Outcome{TransferID: sentTransferID, Name: files[0].Name, Size: total, Digest: digest, Files: files}, nil
 }
 
 func containsString(values []string, want string) bool {
@@ -844,10 +982,37 @@ func containsString(values []string, want string) bool {
 }
 
 func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supervisor, res *rendezvous.Result, sendDir, recvDir wire.DirectionalKey, sendStart, recvStart uint64, preamble *wire.ResumePreamble) (*Outcome, error) {
-	destination, err := NewDurableDestination(d.spec.DestDir)
-	if err != nil {
-		return nil, wire.NewTransferError(wire.FailSinkError, err.Error())
+	var destination interface {
+		wire.Destination
+		ResumeStateFor(manifest wire.Manifest) (*wire.ReceiverResume, error)
+		AttachResumeSecret(manifest wire.Manifest, resumeRoot []byte) error
+		Path(fileIdx int) string
+		ExpectResume(transferID string)
+		SetResumeAuthorized()
 	}
+
+	if d.spec.Consent != nil {
+		peerID := d.spec.PeerDeviceID
+		if peerID == "" && d.opaqueResult != nil {
+			peerID = d.opaqueResult.PeerDeviceID
+		}
+		destWrapper := &consentDestination{
+			ctx:          ctx,
+			specDestDir:  d.spec.DestDir,
+			consent:      d.spec.Consent,
+			peerDeviceID: peerID,
+			peerLabel:    d.spec.PeerLabel,
+			resumeCtx:    d.spec.Resume,
+		}
+		destination = destWrapper
+	} else {
+		actual, err := NewDurableDestination(d.spec.DestDir)
+		if err != nil {
+			return nil, wire.NewTransferError(wire.FailSinkError, err.Error())
+		}
+		destination = actual
+	}
+
 	// V13-PR08: an explicit resume attempt pre-selects its interrupted journal locally; its
 	// verified progress is reused only after resume-auth succeeds in this session.
 	if d.spec.Resume != nil {
@@ -879,6 +1044,7 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 	// documents for ReceiverResume.
 	var sharedResume wire.ReceiverResume
 	paddingNegotiated := containsString(res.LocalCaps.Features, wire.PaddingCapability) && containsString(res.RemoteCaps.Features, wire.PaddingCapability)
+	var receivedTransferID string
 	receiver := wire.NewReceiver(wire.ReceiverOptions{
 		Send:             conn.Send,
 		SendDir:          sendDir,
@@ -893,6 +1059,7 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 		OnResume:         d.spec.OnResumeProgress,
 		OnStateChange:    d.spec.OnStateChange,
 		OnManifestSet: func(manifest wire.Manifest) error {
+			receivedTransferID = manifest.TransferID
 			if d.spec.OnManifestSet != nil {
 				d.spec.OnManifestSet(manifest)
 			}
@@ -945,6 +1112,7 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 		files[i] = FileOutcome{Name: file.Name, Size: file.Size, Digest: result.Digests[i], Path: destination.Path(file.Idx)}
 	}
 	return &Outcome{
+		TransferID: receivedTransferID,
 		Name: result.File.Name, Size: result.TotalSize, Digest: result.Digest,
 		Path: destination.Path(result.File.Idx), Files: files,
 	}, nil

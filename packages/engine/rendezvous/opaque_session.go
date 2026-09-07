@@ -88,6 +88,11 @@ func NewOpaqueSession(opts OpaqueOptions) *OpaqueSession {
 	}
 }
 
+// Done returns a channel that is closed when the session settles (established or failed).
+func (s *OpaqueSession) Done() <-chan struct{} {
+	return s.done
+}
+
 // Phase returns the session's current phase.
 func (s *OpaqueSession) Phase() OpaquePhase {
 	s.mu.Lock()
