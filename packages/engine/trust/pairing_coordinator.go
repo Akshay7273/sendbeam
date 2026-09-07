@@ -46,9 +46,10 @@ type PairingResult struct {
 
 // PairingCoordinator drives the multi-step pairing ceremony on both initiator and responder sides.
 type PairingCoordinator struct {
-	idMgr     *IdentityManager
-	store     Store
-	credStore CredentialStore
+	idMgr      *IdentityManager
+	store      Store
+	credStore  CredentialStore
+	tombstones TombstoneStore
 }
 
 // NewPairingCoordinator creates a new PairingCoordinator.
@@ -57,6 +58,11 @@ func NewPairingCoordinator(idMgr *IdentityManager, store Store) *PairingCoordina
 		idMgr: idMgr,
 		store: store,
 	}
+}
+
+// SetTombstoneStore sets the TombstoneStore for persistent tombstone checking (ADR 0010 §4.5).
+func (p *PairingCoordinator) SetTombstoneStore(tombstones TombstoneStore) {
+	p.tombstones = tombstones
 }
 
 // NewPairingCoordinatorWithCredentials creates a PairingCoordinator that atomically manages both device trust and credentials.
@@ -339,8 +345,16 @@ func (p *PairingCoordinator) AcceptPairing(ctx context.Context, transport Pairin
 }
 
 func (p *PairingCoordinator) checkConflict(ctx context.Context, deviceID, deviceName string, pubKey ed25519.PublicKey) error {
+	// ADR 0010 §4.5: If the peer has an active tombstone record, reject pairing fail-closed
+	if p.tombstones != nil && p.tombstones.HasTombstone(ctx, deviceID) {
+		return wire.ErrTrustedPeerRevoked
+	}
+
 	existing, err := p.store.GetDevice(ctx, deviceID)
 	if err == nil && existing != nil {
+		if existing.Revoked {
+			return wire.ErrTrustedPeerRevoked
+		}
 		existingPub, err := hex.DecodeString(existing.PublicKey)
 		if err == nil && !bytes.Equal(existingPub, pubKey) {
 			return ErrKeyConflict

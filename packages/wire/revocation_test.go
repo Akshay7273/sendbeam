@@ -96,10 +96,28 @@ func TestRevocationRecord_ValidationAndErrors(t *testing.T) {
 		t.Fatalf("VerifyRevocation failed: %v", err)
 	}
 
-	// Self-revocation attempt rejected
-	_, err = SignRevocation(id, id.DeviceID, 1, now)
-	if err == nil {
-		t.Fatal("expected SignRevocation to reject self-revocation")
+	// Self-tombstone (ADR 0010 §4.2) succeeds and validates
+	selfTomb, err := SignRevocation(id, id.DeviceID, 1, now)
+	if err != nil {
+		t.Fatalf("expected SignRevocation to permit self-tombstone: %v", err)
+	}
+	if !selfTomb.IsSelfTombstone() {
+		t.Fatal("expected selfTomb.IsSelfTombstone() to be true")
+	}
+	if err := selfTomb.Validate(); err != nil {
+		t.Fatalf("expected self-tombstone Validate to succeed: %v", err)
+	}
+	if err := VerifyRevocation(selfTomb, id.PublicKey, 5*time.Minute, now); err != nil {
+		t.Fatalf("expected VerifyRevocation to succeed for self-tombstone: %v", err)
+	}
+
+	// SignSelfTombstone convenience helper
+	selfTomb2, err := SignSelfTombstone(id, 2, now)
+	if err != nil {
+		t.Fatalf("SignSelfTombstone failed: %v", err)
+	}
+	if !selfTomb2.IsSelfTombstone() || selfTomb2.Seq != 2 {
+		t.Fatalf("unexpected selfTomb2: %+v", selfTomb2)
 	}
 
 	// Seq = 0 rejected

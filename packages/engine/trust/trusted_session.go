@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/sendbeam/wire"
@@ -51,10 +52,11 @@ type TrustedSessionConfig struct {
 	Capabilities []string
 }
 
-// TrustedSessionResult contains the authenticated peer's trust record and derived directional keys.
+// TrustedSessionResult contains the authenticated peer's trust record, derived directional keys, and session lifecycle guard.
 type TrustedSessionResult struct {
 	PeerRecord *wire.TrustRecord
 	Keys       *wire.TrustedSessionKeys
+	Unregister func()
 }
 
 // TrustedSessionCoordinator manages mutual challenge-response authentication between paired devices.
@@ -62,7 +64,14 @@ type TrustedSessionCoordinator struct {
 	idMgr       *IdentityManager
 	store       Store
 	resolver    SecretResolver
+	credStore   CredentialStore
+	tombstones  TombstoneStore
+	clusterID   string
 	replayCache *wire.NonceReplayCache
+
+	activeMu       sync.Mutex
+	activeSessions map[string]map[int64]context.CancelFunc
+	nextSessionID  int64
 }
 
 // NewTrustedSessionCoordinator creates a new TrustedSessionCoordinator.
@@ -75,6 +84,78 @@ func NewTrustedSessionCoordinator(idMgr *IdentityManager, store Store, resolver 
 	}
 }
 
+// SetTombstoneStore sets the TombstoneStore for persistent tombstone checking (ADR 0010 §4.5).
+func (c *TrustedSessionCoordinator) SetTombstoneStore(tombstones TombstoneStore) {
+	c.tombstones = tombstones
+}
+
+// SetCredentialStore sets the CredentialStore for pair secret lifecycle management (ADR 0010 §4).
+func (c *TrustedSessionCoordinator) SetCredentialStore(credStore CredentialStore) {
+	c.credStore = credStore
+}
+
+// SetClusterID sets the local owner cluster ID for transitive mesh authorization checks (ADR 0010 §4.2).
+func (c *TrustedSessionCoordinator) SetClusterID(clusterID string) {
+	c.clusterID = clusterID
+}
+
+// RegisterActiveSession registers an active in-flight session with a peer device.
+// Returns an unregister function that must be called when the session terminates.
+func (c *TrustedSessionCoordinator) RegisterActiveSession(peerDeviceID string, cancel context.CancelFunc) func() {
+	c.activeMu.Lock()
+	defer c.activeMu.Unlock()
+
+	if c.activeSessions == nil {
+		c.activeSessions = make(map[string]map[int64]context.CancelFunc)
+	}
+
+	c.nextSessionID++
+	id := c.nextSessionID
+
+	if c.activeSessions[peerDeviceID] == nil {
+		c.activeSessions[peerDeviceID] = make(map[int64]context.CancelFunc)
+	}
+	c.activeSessions[peerDeviceID][id] = cancel
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			c.activeMu.Lock()
+			defer c.activeMu.Unlock()
+			if m, ok := c.activeSessions[peerDeviceID]; ok {
+				delete(m, id)
+				if len(m) == 0 {
+					delete(c.activeSessions, peerDeviceID)
+				}
+			}
+		})
+	}
+}
+
+// AbortActiveSessions immediately invokes the cancel functions for all in-flight sessions
+// registered for the specified target device ID, returning the number of aborted sessions (ADR 0010 §4.4 rule 10).
+func (c *TrustedSessionCoordinator) AbortActiveSessions(targetDeviceID string) int {
+	c.activeMu.Lock()
+	m, ok := c.activeSessions[targetDeviceID]
+	if !ok || len(m) == 0 {
+		c.activeMu.Unlock()
+		return 0
+	}
+	delete(c.activeSessions, targetDeviceID)
+	cancels := make([]context.CancelFunc, 0, len(m))
+	for _, fn := range m {
+		if fn != nil {
+			cancels = append(cancels, fn)
+		}
+	}
+	c.activeMu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return len(cancels)
+}
+
 // InitiateTrustedSession executes the initiator role of the trusted-session authentication handshake.
 func (c *TrustedSessionCoordinator) InitiateTrustedSession(ctx context.Context, transport PairingTransport, cfg TrustedSessionConfig) (*TrustedSessionResult, error) {
 	if transport == nil {
@@ -82,6 +163,11 @@ func (c *TrustedSessionCoordinator) InitiateTrustedSession(ctx context.Context, 
 	}
 	if cfg.PeerDeviceID == "" {
 		return nil, errors.New("peer device ID required")
+	}
+
+	// ADR 0010 §4.5: Check if peer has an active tombstone
+	if c.tombstones != nil && c.tombstones.HasTombstone(ctx, cfg.PeerDeviceID) {
+		return nil, wire.ErrTrustedPeerRevoked
 	}
 
 	record, err := c.store.GetDevice(ctx, cfg.PeerDeviceID)
@@ -252,6 +338,12 @@ func (c *TrustedSessionCoordinator) AcceptTrustedSession(ctx context.Context, tr
 		return nil, errors.New("expected trusted auth init message")
 	}
 
+	// ADR 0010 §4.5: Check if initiator has an active tombstone
+	if c.tombstones != nil && c.tombstones.HasTombstone(ctx, initMsg.InitiatorDeviceID) {
+		_ = c.sendRejection(ctx, transport, "revoked")
+		return nil, wire.ErrTrustedPeerRevoked
+	}
+
 	record, err := c.store.GetDevice(ctx, initMsg.InitiatorDeviceID)
 	if err != nil {
 		_ = c.sendRejection(ctx, transport, "rejected")
@@ -394,7 +486,8 @@ func (c *TrustedSessionCoordinator) sendRejection(ctx context.Context, transport
 	return transport.SendMessage(ctx, data)
 }
 
-// RevokeDevice explicitly revokes trust for a peer, creates a signed RevocationRecord, and updates the local trust store.
+// RevokeDevice explicitly revokes trust for a peer, creates a signed RevocationRecord, updates the local trust store,
+// stores a tombstone, removes pair credentials, and terminates active sessions (ADR 0010 §4).
 func (c *TrustedSessionCoordinator) RevokeDevice(ctx context.Context, targetDeviceID string) error {
 	id, err := c.idMgr.GetOrCreateIdentity()
 	if err != nil {
@@ -416,43 +509,154 @@ func (c *TrustedSessionCoordinator) RevokeDevice(ctx context.Context, targetDevi
 		return fmt.Errorf("sign revocation record: %w", err)
 	}
 
-	return c.store.RevokeDeviceWithRecord(ctx, rec)
+	if err := c.store.RevokeDeviceWithRecord(ctx, rec); err != nil {
+		return err
+	}
+
+	if c.tombstones != nil {
+		_ = c.tombstones.StoreTombstone(ctx, rec)
+	}
+
+	if c.credStore != nil {
+		_ = c.credStore.DeletePairSecret(ctx, targetDeviceID)
+	}
+
+	c.AbortActiveSessions(targetDeviceID)
+
+	return nil
+}
+
+// RevokeSelf creates, signs, and records a self-tombstone announcing that this local device is retired or compromised (ADR 0010 §4.2).
+func (c *TrustedSessionCoordinator) RevokeSelf(ctx context.Context) (*wire.RevocationRecord, error) {
+	id, err := c.idMgr.GetOrCreateIdentity()
+	if err != nil {
+		return nil, fmt.Errorf("get local identity: %w", err)
+	}
+
+	rec, err := wire.SignSelfTombstone(id, 1, time.Now().UTC())
+	if err != nil {
+		return nil, fmt.Errorf("sign self-tombstone: %w", err)
+	}
+
+	if c.tombstones != nil {
+		_ = c.tombstones.StoreTombstone(ctx, rec)
+	}
+
+	c.AbortActiveSessions(id.DeviceID)
+
+	return rec, nil
+}
+
+// IngestRevocationRecord validates, checks authorization, and applies a signed RevocationRecord
+// in strict adherence to ADR 0010 §4.4 (10-step ingestion algorithm).
+func (c *TrustedSessionCoordinator) IngestRevocationRecord(ctx context.Context, record *wire.RevocationRecord) error {
+	if record == nil {
+		return wire.ErrInvalidRevocationRecord
+	}
+
+	// 1. Parse and validate record syntax and sequence (Seq > 0)
+	if err := record.Validate(); err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	isSelf := record.IsSelfTombstone()
+	var isLocal bool
+	var revokerPubBytes []byte
+	if c.idMgr != nil {
+		if localID, err := c.idMgr.GetOrCreateIdentity(); err == nil && localID != nil {
+			if record.RevokerDeviceID == localID.DeviceID {
+				isLocal = true
+				revokerPubBytes = localID.PublicKey
+			}
+		}
+	}
+
+	// 2. Retrieve Revoker A
+	if !isLocal {
+		revoker, err := c.store.GetDevice(ctx, record.RevokerDeviceID)
+		if err != nil || revoker == nil {
+			if isSelf {
+				// Case 2a: Self-tombstone for unknown device:
+				// Record in persistent tombstone cache to prevent future pairing.
+				if c.tombstones != nil {
+					_ = c.tombstones.StoreTombstone(ctx, record)
+				}
+				return nil
+			}
+			// Unknown revoker for third-party device -> fail-closed
+			return wire.ErrRevokerUntrusted
+		}
+
+		// 3. Check if Revoker A is already revoked locally
+		if revoker.Revoked {
+			return wire.ErrRevokerUntrusted
+		}
+
+		// 4. AUTHORIZATION CHECK (ADR 0010 §4.2 / §4.4)
+		if !isSelf {
+			// External contact attempting third-party revocation -> rejected fail-closed
+			if revoker.Relationship != wire.RelationshipClusterMember && revoker.Relationship != wire.RelationshipClusterOwner {
+				return wire.ErrRevocationUnauthorized
+			}
+			if revoker.ClusterID == "" {
+				return wire.ErrRevocationUnauthorized
+			}
+			if c.clusterID != "" && revoker.ClusterID != c.clusterID {
+				return wire.ErrRevocationUnauthorized
+			}
+		}
+
+		pub, err := hex.DecodeString(revoker.PublicKey)
+		if err != nil || len(pub) != ed25519.PublicKeySize {
+			return wire.ErrRevocationSignatureFailed
+		}
+		revokerPubBytes = pub
+	}
+
+	// 5. Retrieve Target B from local trust store
+	target, err := c.store.GetDevice(ctx, record.RevokedDeviceID)
+	if err != nil || target == nil {
+		// Target B is not in local trust store:
+		// Record tombstone in persistent deny-list to prevent future pairing.
+		if c.tombstones != nil {
+			_ = c.tombstones.StoreTombstone(ctx, record)
+		}
+		return nil
+	}
+
+	// 6. Verify Ed25519 signature of A over Challenge_Revoke
+	if err := wire.VerifyRevocation(record, revokerPubBytes, wire.MaxRevocationTimestampSkew, now); err != nil {
+		return err
+	}
+
+	// 7. Sequence monotonicity check
+	if target.Revoked && target.RevocationSeq > 0 && record.Seq <= target.RevocationSeq {
+		return wire.ErrRevocationSeqRollback
+	}
+
+	// 9. Apply revocation to B in trust store
+	if err := c.store.RevokeDeviceWithRecord(ctx, record); err != nil {
+		return err
+	}
+
+	if c.tombstones != nil {
+		_ = c.tombstones.StoreTombstone(ctx, record)
+	}
+
+	if c.credStore != nil {
+		_ = c.credStore.DeletePairSecret(ctx, record.RevokedDeviceID)
+	}
+
+	// 10. Abort any active in-flight transfer sessions with Target B
+	c.AbortActiveSessions(record.RevokedDeviceID)
+
+	return nil
 }
 
 // processIncomingRevocations parses, authenticates, and applies signed RevocationRecords from trusted peers.
 func (c *TrustedSessionCoordinator) processIncomingRevocations(ctx context.Context, revocations []wire.RevocationRecord, _ string) {
-	if len(revocations) == 0 {
-		return
-	}
-	now := time.Now().UTC()
-	for _, rec := range revocations {
-		// 1. Structure validation
-		if err := rec.Validate(); err != nil {
-			continue
-		}
-
-		// 2. Direct pairing prerequisite: Revoker must exist in local trust store
-		revokerRec, err := c.store.GetDevice(ctx, rec.RevokerDeviceID)
-		if err != nil || revokerRec == nil {
-			continue // ignore claims from revokers we have never directly paired with
-		}
-
-		// 3. Revoker must be active (not revoked)
-		if revokerRec.Revoked {
-			continue // revoked devices cannot submit revocations
-		}
-
-		// 4. Verify signature against stored revoker public key
-		pubKey, err := hex.DecodeString(revokerRec.PublicKey)
-		if err != nil || len(pubKey) != ed25519.PublicKeySize {
-			continue
-		}
-
-		if err := wire.VerifyRevocation(&rec, pubKey, wire.MaxRevocationTimestampSkew, now); err != nil {
-			continue
-		}
-
-		// 5. Apply revocation to local store
-		_ = c.store.RevokeDeviceWithRecord(ctx, &rec)
+	for i := range revocations {
+		_ = c.IngestRevocationRecord(ctx, &revocations[i])
 	}
 }

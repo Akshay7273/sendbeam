@@ -173,3 +173,66 @@ func TestDeviceService_LegacyMigrationAndCredentials(t *testing.T) {
 	}
 }
 
+func TestDeviceService_UnpairTombstoneAndCredentialDeletion(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devID := wire.DeriveDeviceID(pub)
+
+	memStore := trust.NewMemoryCredentialStore()
+	svc, err := NewDeviceServiceWithCredentials(nil, tmpDir, memStore)
+	if err != nil {
+		t.Fatalf("NewDeviceServiceWithCredentials failed: %v", err)
+	}
+	defer svc.Close()
+
+	rec := &wire.TrustRecord{
+		DeviceID:          devID,
+		PublicKey:         hex.EncodeToString(pub),
+		LocalLabel:        "Canonical Peer",
+		PairCredentialRef: "cred-canonical",
+		FirstSeenAt:       time.Now().UTC(),
+		Policy:            wire.DefaultTrustPolicy(),
+	}
+	if err := svc.store.AddOrUpdateDevice(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	var secret [32]byte
+	secret[0] = 0x42
+	if err := memStore.SetPairSecret(ctx, devID, "cred-canonical", secret[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Unpair without purge (revocation path)
+	if err := svc.UnpairDevice(devID, false); err != nil {
+		t.Fatalf("UnpairDevice failed: %v", err)
+	}
+
+	// Secret must be deleted even in non-purge revocation path!
+	if _, err := memStore.ResolvePairSecret(ctx, devID, "cred-canonical"); err == nil {
+		t.Fatal("expected secret to be deleted upon non-purge revocation")
+	}
+
+	// Tombstone must be persisted
+	tombstones, err := trust.NewFileTombstoneStore(filepath.Join(tmpDir, "tombstones.json"))
+	if err != nil {
+		t.Fatalf("open tombstones: %v", err)
+	}
+	if !tombstones.HasTombstone(ctx, devID) {
+		t.Fatal("expected tombstone to be stored for revoked peer")
+	}
+
+	// Device listing must show revoked
+	views, err := svc.ListTrustedDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || !views[0].Revoked || views[0].Status != "revoked" {
+		t.Fatalf("expected 1 revoked device, got: %+v", views)
+	}
+}
+

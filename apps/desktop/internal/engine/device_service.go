@@ -52,6 +52,7 @@ type DeviceService struct {
 	store        trust.Store
 	secrets      trust.CredentialStore
 	coordinator  *trust.PairingCoordinator
+	tombstones   trust.TombstoneStore
 	lanDiscovery *discovery.LanDiscoveryService
 	activePeers  map[string]discoveredPeerInfo // deviceID -> info
 	configDir    string
@@ -105,7 +106,14 @@ func NewDeviceServiceWithCredentials(emit func(name string, data any), customCon
 		}
 	}
 
+	tombstonesPath := filepath.Join(dir, "tombstones.json")
+	tombstoneStore, err := trust.NewFileTombstoneStore(tombstonesPath)
+	if err != nil {
+		return nil, fmt.Errorf("init tombstone store: %w", err)
+	}
+
 	coordinator := trust.NewPairingCoordinatorWithCredentials(idMgr, trustStore, secrets)
+	coordinator.SetTombstoneStore(tombstoneStore)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -121,6 +129,7 @@ func NewDeviceServiceWithCredentials(emit func(name string, data any), customCon
 		store:        trustStore,
 		secrets:      secrets,
 		coordinator:  coordinator,
+		tombstones:   tombstoneStore,
 		lanDiscovery: lanDiscovery,
 		activePeers:  make(map[string]discoveredPeerInfo),
 		configDir:    dir,
@@ -165,7 +174,8 @@ func (s *DeviceService) ListTrustedDevices() ([]TrustedDeviceView, error) {
 		status := "offline"
 		var directEndpoint string
 
-		if dev.Revoked {
+		isRevoked := dev.Revoked || (s.tombstones != nil && s.tombstones.HasTombstone(ctx, dev.DeviceID))
+		if isRevoked {
 			status = "revoked"
 		} else if peer, ok := s.activePeers[dev.DeviceID]; ok && now.Sub(peer.lastSeen) < 30*time.Second {
 			status = "lan_direct"
@@ -185,7 +195,7 @@ func (s *DeviceService) ListTrustedDevices() ([]TrustedDeviceView, error) {
 			Fingerprint:    dev.Fingerprint(),
 			PublicKey:      dev.PublicKey,
 			Status:         status,
-			Revoked:        dev.Revoked,
+			Revoked:        isRevoked,
 			LastSeenAt:     lastSeen,
 			FirstSeenAt:    dev.FirstSeenAt.UTC().Format(time.RFC3339),
 			Capabilities:   dev.Capabilities,
@@ -247,17 +257,57 @@ func (s *DeviceService) UnpairDevice(deviceID string, purge bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if purge {
-		if err := s.store.UnpairDevice(ctx, deviceID); err != nil {
+	if wire.ValidateDeviceID(deviceID) {
+		id, err := s.idMgr.GetOrCreateIdentity()
+		if err != nil {
+			return fmt.Errorf("get local identity: %w", err)
+		}
+
+		dev, err := s.store.GetDevice(ctx, deviceID)
+		if err != nil && !errors.Is(err, trust.ErrDeviceNotFound) {
 			return err
 		}
-		if err := s.secrets.DeletePairSecret(ctx, deviceID); err != nil && !errors.Is(err, trust.ErrSecretStoreUnavailable) {
-			return fmt.Errorf("delete pair secret: %w", err)
+
+		seq := uint64(1)
+		if dev != nil && dev.RevocationSeq > 0 {
+			seq = dev.RevocationSeq + 1
+		}
+
+		rec, err := wire.SignRevocation(id, deviceID, seq, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("sign revocation record: %w", err)
+		}
+
+		if s.tombstones != nil {
+			if err := s.tombstones.StoreTombstone(ctx, rec); err != nil {
+				return fmt.Errorf("store tombstone: %w", err)
+			}
+		}
+
+		if purge {
+			if err := s.store.UnpairDevice(ctx, deviceID); err != nil {
+				return err
+			}
+		} else {
+			if err := s.store.RevokeDeviceWithRecord(ctx, rec); err != nil {
+				return err
+			}
 		}
 	} else {
-		if err := s.store.RevokeDevice(ctx, deviceID); err != nil {
-			return err
+		if purge {
+			if err := s.store.UnpairDevice(ctx, deviceID); err != nil {
+				return err
+			}
+		} else {
+			if err := s.store.RevokeDevice(ctx, deviceID); err != nil {
+				return err
+			}
 		}
+	}
+
+	// Deletion errors are fatal; both purge and non-purge paths delete pair credentials
+	if err := s.secrets.DeletePairSecret(ctx, deviceID); err != nil && !errors.Is(err, trust.ErrDeviceNotFound) && !errors.Is(err, trust.ErrSecretNotFound) && !errors.Is(err, trust.ErrSecretStoreUnavailable) {
+		return fmt.Errorf("delete pair secret: %w", err)
 	}
 
 	s.mu.Lock()

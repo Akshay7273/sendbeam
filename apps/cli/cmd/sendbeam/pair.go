@@ -109,6 +109,9 @@ func executePair(args []string, stdout, stderr io.Writer) int {
 	}
 
 	coordinator := trust.NewPairingCoordinator(env.IdentityMgr, env.TrustStore)
+	if env.Tombstones != nil {
+		coordinator.SetTombstoneStore(env.Tombstones)
+	}
 
 	positionals := fs.Args()
 	isJoiner := len(positionals) > 0
@@ -172,6 +175,10 @@ func executePair(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if err != nil {
+		if errors.Is(err, wire.ErrTrustedPeerRevoked) {
+			_, _ = fmt.Fprintln(stderr, "pairing error: device has been revoked or tombstoned")
+			return 1
+		}
 		if errors.Is(err, trust.ErrKeyConflict) {
 			_, _ = fmt.Fprintln(stderr, "pairing error: device ID already exists with a different public key")
 			return 1

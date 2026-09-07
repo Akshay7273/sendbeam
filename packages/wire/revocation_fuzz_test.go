@@ -61,8 +61,8 @@ func FuzzRevocationRecord(f *testing.F) {
 			if !ValidateDeviceID(rec.RevokedDeviceID) {
 				t.Fatalf("Validate() passed with invalid revoked device ID %q", rec.RevokedDeviceID)
 			}
-			if rec.RevokerDeviceID == rec.RevokedDeviceID {
-				t.Fatalf("Validate() passed with self-revocation %q", rec.RevokerDeviceID)
+			if rec.RevokerDeviceID == rec.RevokedDeviceID && !rec.IsSelfTombstone() {
+				t.Fatalf("Validate() passed self-tombstone but IsSelfTombstone() is false")
 			}
 			if rec.Seq == 0 {
 				t.Fatalf("Validate() passed with Seq == 0")

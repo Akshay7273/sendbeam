@@ -71,7 +71,7 @@ var (
 	ErrTrustedPeerMismatch = errors.New("trusted-session peer device ID mismatch")
 
 	// ErrTrustedPeerRevoked indicates that the peer device has been revoked in local trust store.
-	ErrTrustedPeerRevoked = errors.New("trusted peer device is revoked")
+	ErrTrustedPeerRevoked = Errorf(CodeAuth, "trusted peer device is revoked")
 
 	// ErrTrustedRejected indicates that the peer explicitly rejected the trusted session.
 	ErrTrustedRejected = errors.New("trusted session was rejected by peer")

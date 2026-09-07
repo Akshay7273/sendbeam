@@ -17,6 +17,7 @@ const (
 	trustFileName       = "trust.json"
 	identityKeyFileName = "identity.key"
 	secretsFileName     = "secrets.json"
+	tombstonesFileName  = "tombstones.json"
 )
 
 // FileSecretResolver is an alias to trust.FileSecretStore for headless CLI environments.
@@ -27,12 +28,13 @@ func NewFileSecretResolver(path string) (*FileSecretResolver, error) {
 	return trust.NewFileSecretStore(path)
 }
 
-// CLIEnvironment provides shared access to local device identity, trust store, and secret store.
+// CLIEnvironment provides shared access to local device identity, trust store, secret store, and tombstone store.
 type CLIEnvironment struct {
 	ConfigDir   string
 	IdentityMgr *trust.IdentityManager
 	TrustStore  trust.Store
 	Secrets     *FileSecretResolver
+	Tombstones  *trust.FileTombstoneStore
 }
 
 // InitCLIEnvironment loads or creates the default CLI trust environment.
@@ -68,11 +70,18 @@ func InitCLIEnvironment(customDir string) (*CLIEnvironment, error) {
 		return nil, fmt.Errorf("init secrets store: %w", err)
 	}
 
+	tombstonesPath := filepath.Join(dir, tombstonesFileName)
+	tombstones, err := trust.NewFileTombstoneStore(tombstonesPath)
+	if err != nil {
+		return nil, fmt.Errorf("init tombstones store: %w", err)
+	}
+
 	return &CLIEnvironment{
 		ConfigDir:   dir,
 		IdentityMgr: idMgr,
 		TrustStore:  trustStore,
 		Secrets:     secrets,
+		Tombstones:  tombstones,
 	}, nil
 }
 

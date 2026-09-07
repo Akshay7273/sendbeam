@@ -6,7 +6,9 @@ import { bytesToHex, hexToBytes } from './bytes.js';
 import { createDeviceIdentityFromSeed } from './identity.js';
 import {
   buildRevocationChallenge,
+  isSelfTombstone,
   signRevocation,
+  signSelfTombstone,
   validateRevocationRecord,
   verifyRevocation,
   type RevocationRecord,
@@ -75,10 +77,17 @@ describe('Revocation Records & Cross-Language Vectors', () => {
     const valid = await verifyRevocation(rec, id.publicKey, 5 * 60 * 1000, now);
     expect(valid).toBe(true);
 
-    // Reject self-revocation
-    await expect(signRevocation(id, id.deviceId, 1, now)).rejects.toThrow(
-      'cannot revoke self in mesh sync',
-    );
+    // Self-tombstone (ADR 0010 §4.2)
+    const selfTomb = await signRevocation(id, id.deviceId, 1, now);
+    expect(selfTomb.revoker_device_id).toBe(id.deviceId);
+    expect(selfTomb.revoked_device_id).toBe(id.deviceId);
+    expect(isSelfTombstone(selfTomb)).toBe(true);
+    validateRevocationRecord(selfTomb);
+    expect(await verifyRevocation(selfTomb, id.publicKey, 5 * 60 * 1000, now)).toBe(true);
+
+    const selfTombHelper = await signSelfTombstone(id, 2, now);
+    expect(isSelfTombstone(selfTombHelper)).toBe(true);
+    expect(selfTombHelper.seq).toBe(2);
 
     // Reject tampered signature
     const tamperedSig: RevocationRecord = {

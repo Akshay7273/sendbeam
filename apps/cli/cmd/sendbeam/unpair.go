@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/sendbeam/wire"
 )
 
 type UnpairJSONView struct {
@@ -71,20 +73,60 @@ func executeUnpair(args []string, stdin io.Reader, stdout, stderr io.Writer) int
 		}
 	}
 
-	if *purge {
-		if err := env.TrustStore.UnpairDevice(ctx, dev.DeviceID); err != nil {
-			_, _ = fmt.Fprintf(stderr, "error deleting device from trust store: %v\n", err)
+	if wire.ValidateDeviceID(dev.DeviceID) {
+		id, err := env.IdentityMgr.GetOrCreateIdentity()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error getting local identity: %v\n", err)
 			return 1
 		}
-		if err := env.Secrets.DeleteSecret(dev.DeviceID); err != nil {
-			_, _ = fmt.Fprintf(stderr, "error deleting device secret: %v\n", err)
+
+		seq := dev.RevocationSeq + 1
+		if seq == 1 && dev.RevocationSeq == 0 {
+			seq = 1
+		}
+
+		rec, err := wire.SignRevocation(id, dev.DeviceID, seq, time.Now().UTC())
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error signing revocation record: %v\n", err)
 			return 1
+		}
+
+		if env.Tombstones != nil {
+			if err := env.Tombstones.StoreTombstone(ctx, rec); err != nil {
+				_, _ = fmt.Fprintf(stderr, "error storing tombstone: %v\n", err)
+				return 1
+			}
+		}
+
+		if *purge {
+			if err := env.TrustStore.UnpairDevice(ctx, dev.DeviceID); err != nil {
+				_, _ = fmt.Fprintf(stderr, "error deleting device from trust store: %v\n", err)
+				return 1
+			}
+		} else {
+			if err := env.TrustStore.RevokeDeviceWithRecord(ctx, rec); err != nil {
+				_, _ = fmt.Fprintf(stderr, "error revoking device in trust store: %v\n", err)
+				return 1
+			}
 		}
 	} else {
-		if err := env.TrustStore.RevokeDevice(ctx, dev.DeviceID); err != nil {
-			_, _ = fmt.Fprintf(stderr, "error revoking device in trust store: %v\n", err)
-			return 1
+		if *purge {
+			if err := env.TrustStore.UnpairDevice(ctx, dev.DeviceID); err != nil {
+				_, _ = fmt.Fprintf(stderr, "error deleting device from trust store: %v\n", err)
+				return 1
+			}
+		} else {
+			if err := env.TrustStore.RevokeDevice(ctx, dev.DeviceID); err != nil {
+				_, _ = fmt.Fprintf(stderr, "error revoking device in trust store: %v\n", err)
+				return 1
+			}
 		}
+	}
+
+	// Always delete pairwise secrets upon revocation/unpairing to prevent re-authentication
+	if err := env.Secrets.DeleteSecret(dev.DeviceID); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error deleting device secret: %v\n", err)
+		return 1
 	}
 
 	if *jsonOutput {
