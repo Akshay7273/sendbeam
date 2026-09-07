@@ -9,8 +9,14 @@ import {
   deriveRendezvousHandle,
   deriveRendezvousHandlesWithSkew,
   matchLanBeaconTag,
+  matchRendezvousHandle,
+  validateRendezvousHandle,
   verifyPresenceProof,
+  PresenceCoordinator,
 } from './presence.js';
+import { MemoryTrustStore, defaultTrustPolicy } from './trust-store.js';
+import { MemorySecretResolver } from './indexeddb-secret-store.js';
+import { createDeviceIdentityFromSeed } from './identity.js';
 
 interface PresenceVector {
   name: string;
@@ -94,5 +100,125 @@ describe('Presence and LAN discovery cross-language vector validation (sendbeam/
       bytesToHex(new Uint8Array(32)),
     );
     expect(proofValid).toBe(false);
+  });
+
+  describe('validateRendezvousHandle', () => {
+    it('accepts valid 64-char lowercase hex handles', () => {
+      expect(
+        validateRendezvousHandle(
+          '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        ),
+      ).toBe(true);
+    });
+
+    it('rejects invalid handles', () => {
+      expect(validateRendezvousHandle('')).toBe(false);
+      expect(validateRendezvousHandle('short')).toBe(false);
+      expect(
+        validateRendezvousHandle(
+          '0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef',
+        ),
+      ).toBe(false); // uppercase
+      expect(
+        validateRendezvousHandle(
+          '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg',
+        ),
+      ).toBe(false); // non-hex
+      expect(
+        validateRendezvousHandle(
+          '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00',
+        ),
+      ).toBe(false); // too long
+    });
+  });
+
+  describe('matchRendezvousHandle', () => {
+    it('matches handles within skew window and rejects outside window', async () => {
+      const kPair = hexToBytes('8b4c642283597de370a8313836bcc86ca6718f0d71fa4f301134d3f049da2848');
+      const now = 1700000000000;
+      const epochIndex = Math.floor(now / DEFAULT_RENDEZVOUS_EPOCH_WINDOW_MS);
+
+      const currentHandle = await deriveRendezvousHandle(kPair, epochIndex);
+      const prevHandle = await deriveRendezvousHandle(kPair, epochIndex - 1);
+      const nextHandle = await deriveRendezvousHandle(kPair, epochIndex + 1);
+      const oldHandle = await deriveRendezvousHandle(kPair, epochIndex - 5);
+
+      expect(await matchRendezvousHandle(kPair, currentHandle, now)).toBe(true);
+      expect(await matchRendezvousHandle(kPair, prevHandle, now)).toBe(true);
+      expect(await matchRendezvousHandle(kPair, nextHandle, now)).toBe(true);
+      expect(await matchRendezvousHandle(kPair, oldHandle, now)).toBe(false);
+    });
+  });
+
+  describe('PresenceCoordinator and truthful presence', () => {
+    it('manages truthful presence lifecycle and enforces epoch expiry', async () => {
+      const trustStore = new MemoryTrustStore();
+      const secretResolver = new MemorySecretResolver();
+      const coordinator = new PresenceCoordinator(trustStore, secretResolver, 30_000);
+
+      const seed = hexToBytes('4444444444444444444444444444444444444444444444444444444444444444');
+      const id = await createDeviceIdentityFromSeed(seed);
+      const deviceId = id.deviceId;
+      const kPair = hexToBytes('8b4c642283597de370a8313836bcc86ca6718f0d71fa4f301134d3f049da2848');
+      const credRef = 'cred_1';
+
+      await trustStore.addOrUpdateDevice({
+        deviceId,
+        localLabel: 'Peer 1',
+        publicKey: bytesToHex(id.publicKey),
+        pairCredentialRef: credRef,
+        pairingRole: 'offerer',
+        capabilities: ['transfer.v1'],
+        trustedAt: new Date().toISOString(),
+        firstSeenAt: new Date().toISOString(),
+        policy: defaultTrustPolicy(),
+      });
+      secretResolver.setSecret(deviceId, kPair);
+
+      const t0 = 1700000000000;
+      const activeHandlesMap = await coordinator.getActiveHandles(t0);
+      const activeHandles = activeHandlesMap.get(deviceId)!;
+      expect(activeHandles).toBeDefined();
+      expect(activeHandles.length).toBe(3);
+
+      // Initially peer is offline
+      expect(coordinator.getPeerPresence(deviceId, t0)).toBe('offline');
+
+      // Match incoming handle
+      const match = await coordinator.matchInboundPresence(
+        activeHandles[0]!,
+        undefined,
+        undefined,
+        t0,
+      );
+      expect(match).not.toBeNull();
+      expect(match!.deviceId).toBe(deviceId);
+
+      // Status should now be 'discovered'
+      expect(coordinator.getPeerPresence(deviceId, t0)).toBe('discovered');
+
+      // Check within epoch window (t0 + 15s)
+      expect(coordinator.getPeerPresence(deviceId, t0 + 15_000)).toBe('discovered');
+
+      // Truthful presence: once epoch window expires (t0 + 31s), status must be 'offline'
+      expect(coordinator.getPeerPresence(deviceId, t0 + 31_000)).toBe('offline');
+
+      // Transition to connecting
+      coordinator.setPeerConnecting(deviceId);
+      expect(coordinator.getPeerPresence(deviceId, t0 + 31_000)).toBe('connecting');
+
+      // Transition to connected
+      coordinator.setPeerConnected(deviceId);
+      expect(coordinator.getPeerPresence(deviceId, t0 + 31_000)).toBe('connected');
+
+      // Transition to disconnected
+      coordinator.setPeerDisconnected(deviceId);
+      expect(coordinator.getPeerPresence(deviceId, t0 + 31_000)).toBe('offline');
+
+      // Prune expired
+      coordinator.recordPeerDiscovered(deviceId, activeHandles[0]!, t0);
+      coordinator.pruneExpired(t0 + 31_000);
+      expect(coordinator.getPeerPresence(deviceId, t0 + 31_000)).toBe('offline');
+    });
   });
 });

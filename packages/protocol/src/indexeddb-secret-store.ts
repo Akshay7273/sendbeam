@@ -16,6 +16,28 @@ export interface SecretResolver {
   resolvePairSecret(deviceId: string, credentialRef: string): Promise<Uint8Array | null>;
 }
 
+export class MemorySecretResolver implements SecretResolver {
+  private readonly secrets = new Map<string, Uint8Array>();
+
+  setSecret(deviceId: string, secret: Uint8Array): void {
+    this.secrets.set(deviceId, new Uint8Array(secret));
+  }
+
+  async getPairSecret(deviceId: string): Promise<Uint8Array | null> {
+    const s = this.secrets.get(deviceId);
+    return s ? new Uint8Array(s) : null;
+  }
+
+  async resolvePairSecret(deviceId: string, _credentialRef: string): Promise<Uint8Array | null> {
+    void _credentialRef;
+    return this.getPairSecret(deviceId);
+  }
+
+  async deleteSecret(deviceId: string): Promise<void> {
+    this.secrets.delete(deviceId);
+  }
+}
+
 export class IndexedDBSecretStore implements SecretResolver {
   private readonly customIdb: IDBFactory | undefined;
   private dbPromise: Promise<IDBDatabase> | undefined;

@@ -24,6 +24,10 @@ func FuzzServerMessageValidation(f *testing.F) {
 		`{"type":"relay_credit","bytes":-100}`,
 		`{"type":"relay_credit","bytes":1048576}`,
 		`{"type":"bye","reason":"user"}`,
+		`{"type":"rendezvous","handle":"edb08d40e1746a31d09e8eb428f709945fc514d0d6c16107f86dc17a28fd7428"}`,
+		`{"type":"rendezvous","handle":"edb08d40e1746a31d09e8eb428f709945fc514d0d6c16107f86dc17a28fd7428","role":"joiner"}`,
+		`{"type":"join","handle":"edb08d40e1746a31d09e8eb428f709945fc514d0d6c16107f86dc17a28fd7428"}`,
+		`{"type":"resume","handle":"edb08d40e1746a31d09e8eb428f709945fc514d0d6c16107f86dc17a28fd7428","role":"offerer"}`,
 		`{}`,
 		`not-json`,
 	}
@@ -46,6 +50,10 @@ func FuzzServerMessageValidation(f *testing.F) {
 		if m.Room != nil {
 			_ = createdFrame(*m.Room)
 			_ = resumedFrame(*m.Room)
+		}
+		if m.Handle != "" {
+			_ = createdHandleFrame(m.Handle)
+			_ = resumedHandleFrame(m.Handle)
 		}
 		if m.Role != "" {
 			_ = peerJoinedFrame(m.Role)

@@ -21,11 +21,15 @@ const (
 	typeCreated       = "created"
 	typeJoin          = "join"
 	typePeerJoined    = "peer-joined"
+	typeRendezvous    = "rendezvous"
 	typePake          = "pake"
 	typeConfirm       = "confirm"
 	typeCaps          = "caps"
 	typeSDP           = "sdp"
 	typeICE           = "ice"
+	typeTrustedAuthInit    = "trusted_auth_init"
+	typeTrustedAuthResp    = "trusted_auth_response"
+	typeTrustedAuthConfirm = "trusted_auth_confirm"
 	typeRelayOpen     = "relay_open"
 	typeRelayRequired = "relay_required"
 	typeRelayReady    = "relay_ready"
@@ -51,13 +55,16 @@ const (
 )
 
 // forwardable is the set of peer→peer types the server relays without inspection.
-// SDP and ICE bodies are forwarded without being parsed.
+// SDP, ICE, and trusted_auth bodies are forwarded without being parsed.
 var forwardable = map[string]bool{
-	typePake:    true,
-	typeConfirm: true,
-	typeCaps:    true,
-	typeSDP:     true,
-	typeICE:     true,
+	typePake:               true,
+	typeConfirm:            true,
+	typeCaps:               true,
+	typeSDP:                true,
+	typeICE:                true,
+	typeTrustedAuthInit:    true,
+	typeTrustedAuthResp:    true,
+	typeTrustedAuthConfirm: true,
 }
 
 // Error codes carried in an error message's "code" field.
@@ -73,16 +80,18 @@ const (
 	errRelayNotReady = "relay_not_ready"
 	errRelayCredit   = "relay_credit"
 	errRelayLimit    = "relay_limit"
+	errInvalidHandle = "invalid_handle"
 )
 
 // clientMsg is the envelope the server parses from a client. Only type, room, and role
 // are read; the payloads of forwardable messages are relayed as raw bytes and never
 // decoded here, which is what keeps the server blind to handshake contents.
 type clientMsg struct {
-	Type  string `json:"type"`
-	Room  *int   `json:"room,omitempty"`
-	Role  string `json:"role,omitempty"`
-	Bytes int64  `json:"bytes,omitempty"`
+	Type   string `json:"type"`
+	Room   *int   `json:"room,omitempty"`
+	Handle string `json:"handle,omitempty"`
+	Role   string `json:"role,omitempty"`
+	Bytes  int64  `json:"bytes,omitempty"`
 }
 
 type relayMsg struct {
@@ -90,10 +99,11 @@ type relayMsg struct {
 	Bytes int64  `json:"bytes,omitempty"`
 }
 
-// createdMsg tells the offerer which room number the server allocated.
+// createdMsg tells the offerer which room number or handle the server allocated.
 type createdMsg struct {
-	Type string `json:"type"`
-	Room int    `json:"room"`
+	Type   string `json:"type"`
+	Room   *int   `json:"room,omitempty"`
+	Handle string `json:"handle,omitempty"`
 }
 
 // peerJoinedMsg notifies a socket that its room is now paired, with its own role.
@@ -110,8 +120,9 @@ type byeMsg struct {
 
 // resumedMsg confirms a peer re-attached to a lingering room's vacated slot.
 type resumedMsg struct {
-	Type string `json:"type"`
-	Room int    `json:"room"`
+	Type   string `json:"type"`
+	Room   *int   `json:"room,omitempty"`
+	Handle string `json:"handle,omitempty"`
 }
 
 // peerLeftMsg tells the surviving peer its partner's socket dropped. resumable reports
@@ -139,7 +150,11 @@ func mustJSON(v any) []byte {
 }
 
 func createdFrame(room int) []byte {
-	return mustJSON(createdMsg{Type: typeCreated, Room: room})
+	return mustJSON(createdMsg{Type: typeCreated, Room: &room})
+}
+
+func createdHandleFrame(handle string) []byte {
+	return mustJSON(createdMsg{Type: typeCreated, Handle: handle})
 }
 
 func peerJoinedFrame(role string) []byte {
@@ -151,7 +166,11 @@ func byeFrame(reason string) []byte {
 }
 
 func resumedFrame(room int) []byte {
-	return mustJSON(resumedMsg{Type: typeResumed, Room: room})
+	return mustJSON(resumedMsg{Type: typeResumed, Room: &room})
+}
+
+func resumedHandleFrame(handle string) []byte {
+	return mustJSON(resumedMsg{Type: typeResumed, Handle: handle})
 }
 
 func peerLeftFrame(resumable bool) []byte {
@@ -196,9 +215,11 @@ type Config struct {
 	// MaxRooms caps the global number of concurrent signaling rooms.
 	MaxRooms int
 
-	// IdleTimeout closes a socket that sends nothing for this long, and bounds how
-	// long an unpaired room lingers before the reaper frees it.
+	// IdleTimeout closes a socket that sends nothing for this long.
 	IdleTimeout time.Duration
+
+	// UnpairedTimeout bounds how long an unpaired room or handle registration lingers before the reaper frees it.
+	UnpairedTimeout time.Duration
 
 	// DrainTimeout is the maximum duration to wait for active transfers to drain during shutdown.
 	DrainTimeout time.Duration
@@ -241,6 +262,7 @@ func DefaultConfig() Config {
 		MaxConnsPerIP:        32,
 		MaxRooms:             5000,
 		IdleTimeout:          10 * time.Minute,
+		UnpairedTimeout:      5 * time.Minute,
 		DrainTimeout:         15 * time.Second,
 		MaxMessageBytes:      64 * 1024,
 		MsgBurst:             32,
@@ -291,6 +313,9 @@ func ConfigFromEnv() Config {
 	}
 	if d, ok := envDuration("SENDBEAM_SIGNAL_IDLE_TIMEOUT"); ok {
 		cfg.IdleTimeout = d
+	}
+	if d, ok := envDuration("SENDBEAM_SIGNAL_UNPAIRED_TIMEOUT"); ok {
+		cfg.UnpairedTimeout = d
 	}
 	if d, ok := envDuration("SENDBEAM_DRAIN_TIMEOUT"); ok {
 		cfg.DrainTimeout = d

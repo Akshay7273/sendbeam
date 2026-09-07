@@ -565,12 +565,220 @@ func TestRelayZeroPerFrameLoggingAndMetricsAudit(t *testing.T) {
 	}
 
 	// Audit aggregate byte accounting
-	hub.mu.Lock()
-	totalRelayed := hub.relayBytes
-	hub.mu.Unlock()
-
 	expectedBytes := int64(256 + 512 + 1024)
+	deadline := time.Now().Add(time.Second)
+	var totalRelayed int64
+	for time.Now().Before(deadline) {
+		hub.mu.Lock()
+		totalRelayed = hub.relayBytes
+		hub.mu.Unlock()
+		if totalRelayed == expectedBytes {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if totalRelayed != expectedBytes {
 		t.Fatalf("aggregate relay bytes = %d, want %d", totalRelayed, expectedBytes)
 	}
 }
+
+func TestOpaqueHandleRendezvousAndTrustedAuth(t *testing.T) {
+	url := testServer(t, DefaultConfig())
+	offerer := mustDial(t, url)
+	joiner := mustDial(t, url)
+
+	handle := "edb08d40e1746a31d09e8eb428f709945fc514d0d6c16107f86dc17a28fd7428"
+
+	// 1. Offerer registers handle
+	offerer.send(map[string]any{
+		"type":   "rendezvous",
+		"handle": handle,
+		"role":   "offerer",
+	})
+	created := offerer.recv()
+	if created["type"] != "created" || created["handle"] != handle {
+		t.Fatalf("unexpected created response: %v", created)
+	}
+
+	// 2. Joiner pairs via same handle
+	joiner.send(map[string]any{
+		"type":   "rendezvous",
+		"handle": handle,
+		"role":   "joiner",
+	})
+
+	offJoined := offerer.recv()
+	if offJoined["type"] != "peer-joined" || offJoined["role"] != "offerer" {
+		t.Fatalf("offerer expected peer-joined, got %v", offJoined)
+	}
+
+	joinJoined := joiner.recv()
+	if joinJoined["type"] != "peer-joined" || joinJoined["role"] != "joiner" {
+		t.Fatalf("joiner expected peer-joined, got %v", joinJoined)
+	}
+
+	// 3. Forward trusted authentication frames peer-to-peer blindly
+	authInit := map[string]any{
+		"type":                "trusted_auth_init",
+		"protocol_version":    "sendbeam/3",
+		"initiator_device_id": "sb-dev-alice",
+		"responder_device_id": "sb-dev-bob",
+		"ephemeral_pub":       "deadbeef",
+		"nonce":               "cafebabe",
+		"capabilities":        []any{"padding", "resume"},
+	}
+	offerer.send(authInit)
+	gotInit := joiner.recv()
+	if gotInit["type"] != "trusted_auth_init" || gotInit["initiator_device_id"] != "sb-dev-alice" {
+		t.Fatalf("joiner received corrupt trusted_auth_init: %v", gotInit)
+	}
+
+	authResp := map[string]any{
+		"type":                "trusted_auth_response",
+		"protocol_version":    "sendbeam/3",
+		"status":              "accepted",
+		"responder_device_id": "sb-dev-bob",
+		"ephemeral_pub":       "feedface",
+		"nonce":               "baadf00d",
+	}
+	joiner.send(authResp)
+	gotResp := offerer.recv()
+	if gotResp["type"] != "trusted_auth_response" || gotResp["status"] != "accepted" {
+		t.Fatalf("offerer received corrupt trusted_auth_response: %v", gotResp)
+	}
+
+	authConfirm := map[string]any{
+		"type":     "trusted_auth_confirm",
+		"status":   "ready",
+		"auth_tag": "0102030405060708",
+	}
+	offerer.send(authConfirm)
+	gotConfirm := joiner.recv()
+	if gotConfirm["type"] != "trusted_auth_confirm" || gotConfirm["auth_tag"] != "0102030405060708" {
+		t.Fatalf("joiner received corrupt trusted_auth_confirm: %v", gotConfirm)
+	}
+}
+
+func TestOpaqueHandleRoomFullOnThirdPeer(t *testing.T) {
+	url := testServer(t, DefaultConfig())
+	c1 := mustDial(t, url)
+	c2 := mustDial(t, url)
+	c3 := mustDial(t, url)
+
+	handle := "edb08d40e1746a31d09e8eb428f709945fc514d0d6c16107f86dc17a28fd7428"
+
+	c1.send(map[string]any{"type": "rendezvous", "handle": handle})
+	_ = c1.recv() // created
+
+	c2.send(map[string]any{"type": "rendezvous", "handle": handle})
+	_ = c1.recv() // peer-joined
+	_ = c2.recv() // peer-joined
+
+	// Third peer attempts to join the same handle
+	c3.send(map[string]any{"type": "rendezvous", "handle": handle})
+	errResp := c3.recv()
+	if errResp["type"] != "error" || errResp["code"] != "room_full" {
+		t.Fatalf("expected room_full error, got %v", errResp)
+	}
+}
+
+func TestOpaqueHandleInvalidHandleRejection(t *testing.T) {
+	url := testServer(t, DefaultConfig())
+	c := mustDial(t, url)
+
+	// Short handle
+	c.send(map[string]any{"type": "rendezvous", "handle": "short-handle"})
+	errResp := c.recv()
+	if errResp["type"] != "error" || errResp["code"] != "invalid_handle" {
+		t.Fatalf("expected invalid_handle error for short handle, got %v", errResp)
+	}
+
+	// Upper-case hex handle
+	c2 := mustDial(t, url)
+	c2.send(map[string]any{"type": "rendezvous", "handle": "EDB08D40E1746A31D09E8EB428F709945FC514D0D6C16107F86DC17A28FD7428"})
+	errResp2 := c2.recv()
+	if errResp2["type"] != "error" || errResp2["code"] != "invalid_handle" {
+		t.Fatalf("expected invalid_handle error for uppercase handle, got %v", errResp2)
+	}
+}
+
+func TestOpaqueHandleResumeAndReconnect(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.IdleTimeout = 5 * time.Second
+	url := testServer(t, cfg)
+
+	offerer := mustDial(t, url)
+	joiner := mustDial(t, url)
+	handle := "edb08d40e1746a31d09e8eb428f709945fc514d0d6c16107f86dc17a28fd7428"
+
+	offerer.send(map[string]any{"type": "rendezvous", "handle": handle, "role": "offerer"})
+	_ = offerer.recv() // created
+
+	joiner.send(map[string]any{"type": "rendezvous", "handle": handle, "role": "joiner"})
+	_ = offerer.recv() // peer-joined
+	_ = joiner.recv()  // peer-joined
+
+	// Offerer socket drops unexpectedly
+	_ = offerer.conn.Close(websocket.StatusGoingAway, "network drop")
+
+	// Joiner should receive peer_left with resumable == true
+	left := joiner.recv()
+	if left["type"] != "peer_left" || left["resumable"] != true {
+		t.Fatalf("joiner expected peer_left resumable=true, got %v", left)
+	}
+
+	// Reconnecting offerer resumes into the handle room
+	reoff := mustDial(t, url)
+	reoff.send(map[string]any{
+		"type":   "resume",
+		"handle": handle,
+		"role":   "offerer",
+	})
+
+	resumed := reoff.recv()
+	if resumed["type"] != "resumed" || resumed["handle"] != handle {
+		t.Fatalf("reoff expected resumed with handle, got %v", resumed)
+	}
+
+	rejoined := joiner.recv()
+	if rejoined["type"] != "peer_rejoined" {
+		t.Fatalf("joiner expected peer_rejoined, got %v", rejoined)
+	}
+}
+
+func TestOpaqueHandleUnpairedExpiry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := DefaultConfig()
+	cfg.UnpairedTimeout = 50 * time.Millisecond
+	cfg.IdleTimeout = 50 * time.Millisecond
+	hub := NewHub(ctx, cfg, nil)
+	srv := httptest.NewServer(hub.Handler(ctx))
+	defer srv.Close()
+	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+
+	client := mustDial(t, url)
+	handle := "edb08d40e1746a31d09e8eb428f709945fc514d0d6c16107f86dc17a28fd7428"
+	client.send(map[string]any{"type": "rendezvous", "handle": handle})
+	_ = client.recv() // created
+
+	if hub.roomCount() != 1 {
+		t.Fatalf("roomCount = %d, want 1", hub.roomCount())
+	}
+
+	// Wait for reaper to sweep expired unpaired handle room
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hub.reapOnce(time.Now())
+		if hub.roomCount() == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if hub.roomCount() != 0 {
+		t.Fatalf("unpaired handle room was not reaped; count = %d", hub.roomCount())
+	}
+}
+

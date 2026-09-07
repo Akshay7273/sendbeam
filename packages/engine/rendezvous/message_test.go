@@ -89,6 +89,27 @@ func TestRelayControlWireShapes(t *testing.T) {
 	}
 }
 
+func TestOpaqueHandleWireShapes(t *testing.T) {
+	handle := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	rend, err := MarshalMessage(NewRendezvous(handle, "offerer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRend := `{"type":"rendezvous","role":"offerer","handle":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}`
+	if string(rend) != wantRend {
+		t.Fatalf("rendezvous wire shape = %s, want %s", string(rend), wantRend)
+	}
+
+	res, err := MarshalMessage(NewResume(handle, "joiner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRes := `{"type":"resume","role":"joiner","handle":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}`
+	if string(res) != wantRes {
+		t.Fatalf("resume wire shape = %s, want %s", string(res), wantRes)
+	}
+}
+
 // TestMessageRoundTrip confirms an sdp message survives marshal→unmarshal intact,
 // including the pointer seq.
 func TestMessageRoundTrip(t *testing.T) {
