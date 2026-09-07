@@ -28,6 +28,7 @@ import (
 	"github.com/sendbeam/desktop/internal/config"
 	"github.com/sendbeam/desktop/internal/engine"
 	"github.com/sendbeam/desktop/internal/lifecycle"
+	"github.com/sendbeam/engine/receiver"
 )
 
 //go:embed all:frontend/dist
@@ -97,6 +98,29 @@ func main() {
 	}
 	if deviceSvc != nil {
 		defer deviceSvc.Close()
+		transferSvc.SetDeviceService(deviceSvc)
+		if id, err := deviceSvc.GetIdentityManager().GetOrCreateIdentity(); err == nil {
+			downloadDir := cfg.DownloadDir
+			if downloadDir == "" {
+				downloadDir = "."
+			}
+			serverURL := cfg.ServerURL
+			if serverURL == "" {
+				serverURL = engine.DefaultServer
+			}
+			if err := transferSvc.StartNativeReceiver(receiver.Config{
+				Server:     serverURL,
+				DestDir:    downloadDir,
+				AutoAccept: false,
+				Identity:   id,
+				TrustStore: deviceSvc.GetStore(),
+				Secrets:    deviceSvc.GetCredentialStore(),
+				Tombstones: deviceSvc.GetTombstoneStore(),
+				Port:       0, // LAN discovery handled by deviceSvc
+			}); err != nil {
+				log.Printf("SendBeam Desktop: native receiver failed to start: %v", err)
+			}
+		}
 	}
 
 	updateSvc := engine.NewUpdateService(

@@ -5,11 +5,17 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/sendbeam/engine/rendezvous"
 	"github.com/sendbeam/engine/trust"
 	"github.com/sendbeam/wire"
 )
@@ -235,4 +241,213 @@ func TestDeviceService_UnpairTombstoneAndCredentialDeletion(t *testing.T) {
 		t.Fatalf("expected 1 revoked device, got: %+v", views)
 	}
 }
+
+func TestDeviceService_StartPairingOffer_ValidationAndCancel(t *testing.T) {
+	tmpDir := t.TempDir()
+	svc, err := NewDeviceService(nil, tmpDir)
+	if err != nil {
+		t.Fatalf("NewDeviceService failed: %v", err)
+	}
+	defer svc.Close()
+
+	// 1. AutoAccept with relative path must fail
+	_, err = svc.StartPairingOffer("", "", true, "relative/dir")
+	if err == nil {
+		t.Fatal("expected error for relative destDir with autoAccept")
+	}
+
+	// 2. AutoAccept with empty path must fail
+	_, err = svc.StartPairingOffer("", "", true, "")
+	if err == nil {
+		t.Fatal("expected error for empty destDir with autoAccept")
+	}
+
+	// 3. CancelPairingOffer is safe even before any offer starts
+	if err := svc.CancelPairingOffer(); err != nil {
+		t.Fatalf("CancelPairingOffer failed: %v", err)
+	}
+
+	// 4. Repeated Cancel is safe
+	if err := svc.CancelPairingOffer(); err != nil {
+		t.Fatalf("repeated CancelPairingOffer failed: %v", err)
+	}
+}
+
+type testBlindHub struct {
+	mu    sync.Mutex
+	rooms map[int]*testHubRoom
+	next  int
+}
+
+type testHubRoom struct {
+	offerer, joiner *testHubPeer
+}
+
+type testHubPeer struct {
+	conn *websocket.Conn
+	wmu  sync.Mutex
+}
+
+func (p *testHubPeer) send(ctx context.Context, m rendezvous.Message) {
+	data, err := rendezvous.MarshalMessage(m)
+	if err != nil {
+		return
+	}
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
+	_ = p.conn.Write(ctx, websocket.MessageText, data)
+}
+
+func (p *testHubPeer) forward(ctx context.Context, data []byte) {
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
+	_ = p.conn.Write(ctx, websocket.MessageText, data)
+}
+
+func (h *testBlindHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.CloseNow() }()
+	ctx := r.Context()
+	self := &testHubPeer{conn: conn}
+
+	var room *testHubRoom
+	var role rendezvous.Role
+	for {
+		typ, data, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		if typ != websocket.MessageText {
+			return
+		}
+		msg, err := rendezvous.UnmarshalMessage(data)
+		if err != nil {
+			return
+		}
+
+		switch msg.Type {
+		case "create":
+			h.mu.Lock()
+			id := h.next
+			h.next++
+			room = &testHubRoom{offerer: self}
+			h.rooms[id] = room
+			h.mu.Unlock()
+			role = rendezvous.RoleOfferer
+			self.send(ctx, rendezvous.Message{Type: "created", Room: &id})
+
+		case "join":
+			if msg.Room == nil {
+				return
+			}
+			h.mu.Lock()
+			room = h.rooms[*msg.Room]
+			h.mu.Unlock()
+			if room == nil {
+				return
+			}
+			room.joiner = self
+			role = rendezvous.RoleJoiner
+			self.send(ctx, rendezvous.Message{Type: "peer-joined", Role: string(rendezvous.RoleJoiner)})
+			room.offerer.send(ctx, rendezvous.Message{Type: "peer-joined", Role: string(rendezvous.RoleOfferer)})
+
+		default:
+			other := room.joiner
+			if role == rendezvous.RoleJoiner {
+				other = room.offerer
+			}
+			if other != nil {
+				other.forward(ctx, data)
+			}
+		}
+	}
+}
+
+func TestDeviceService_StartPairingOffer_AndPairDevice_Loopback(t *testing.T) {
+	hub := &testBlindHub{rooms: make(map[int]*testHubRoom)}
+	srv := httptest.NewServer(hub)
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+
+	pairedChanA := make(chan struct{}, 1)
+	memStoreA := trust.NewMemoryCredentialStore()
+	svcA, err := NewDeviceServiceWithCredentials(func(name string, _ any) {
+		if name == "sendbeam:pairing_complete" {
+			select {
+			case pairedChanA <- struct{}{}:
+			default:
+			}
+		}
+	}, dirA, memStoreA)
+	if err != nil {
+		t.Fatalf("svcA NewDeviceServiceWithCredentials: %v", err)
+	}
+	defer svcA.Close()
+
+	memStoreB := trust.NewMemoryCredentialStore()
+	svcB, err := NewDeviceServiceWithCredentials(nil, dirB, memStoreB)
+	if err != nil {
+		t.Fatalf("svcB NewDeviceServiceWithCredentials: %v", err)
+	}
+	defer svcB.Close()
+
+	// svcA starts offer with custom label for peer as "Joiner Laptop"
+	offer, err := svcA.StartPairingOffer(wsURL, "Joiner Laptop", false, "")
+	if err != nil {
+		t.Fatalf("StartPairingOffer failed: %v", err)
+	}
+	if offer.Code == "" {
+		t.Fatal("expected non-empty invite code")
+	}
+	if !strings.HasPrefix(offer.QR, "data:image/png;base64,") {
+		t.Fatalf("expected data:image/png;base64 QR, got: %s", offer.QR)
+	}
+
+	// svcB joins using offer.Code and custom label for peer as "Offerer Workstation"
+	viewB, err := svcB.PairDevice(wsURL, offer.Code, "Offerer Workstation", true, dirB)
+	if err != nil {
+		t.Fatalf("svcB PairDevice failed: %v", err)
+	}
+	if viewB.DeviceID == "" {
+		t.Fatal("expected viewB to have DeviceID")
+	}
+
+	// Wait for svcA to complete pairing
+	select {
+	case <-pairedChanA:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for svcA pairing_complete event")
+	}
+
+	// Check trusted devices on both sides
+	devsA, err := svcA.ListTrustedDevices()
+	if err != nil {
+		t.Fatalf("svcA ListTrustedDevices: %v", err)
+	}
+	if len(devsA) != 1 {
+		t.Fatalf("expected 1 trusted device on svcA, got %d", len(devsA))
+	}
+	if devsA[0].LocalLabel != "Joiner Laptop" {
+		t.Fatalf("expected svcA trusted device label 'Joiner Laptop', got %q", devsA[0].LocalLabel)
+	}
+
+	devsB, err := svcB.ListTrustedDevices()
+	if err != nil {
+		t.Fatalf("svcB ListTrustedDevices: %v", err)
+	}
+	if len(devsB) != 1 {
+		t.Fatalf("expected 1 trusted device on svcB, got %d", len(devsB))
+	}
+	if devsB[0].LocalLabel != "Offerer Workstation" {
+		t.Fatalf("expected svcB trusted device label 'Offerer Workstation', got %q", devsB[0].LocalLabel)
+	}
+}
+
 

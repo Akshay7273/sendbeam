@@ -246,4 +246,400 @@ describe('Desktop frontend literal-text rendering', () => {
     });
     expect(qrImg.src).toBe(validDataUrl);
   });
+
+  it('renders trusted devices list with literal text and status badges without injecting HTML', async () => {
+    const maliciousLabel = '<script id="xss-dev-label">alert(1)</script>Workstation';
+    const maliciousFp = '<b id="xss-dev-fp">deadbeefcafe1234</b>';
+
+    const { document } = setupDesktopDOM({
+      onCall: (name) => {
+        if (name.includes('ListTrustedDevices')) {
+          return Promise.resolve([
+            {
+              deviceId: 'dev-lan-1',
+              localLabel: maliciousLabel,
+              fingerprint: maliciousFp,
+              status: 'lan_direct',
+              revoked: false,
+              policy: { autoAccept: true, autoAcceptDestDir: '/tmp/incoming' },
+              lastSeen: 1710000000,
+            },
+            {
+              deviceId: 'dev-online-2',
+              localLabel: 'Phone',
+              fingerprint: '1122334455667788',
+              status: 'online',
+              revoked: false,
+              policy: { autoAccept: false },
+              lastSeen: 0,
+            },
+            {
+              deviceId: 'dev-revoked-3',
+              localLabel: 'Old Laptop',
+              fingerprint: '9988776655443322',
+              status: 'offline',
+              revoked: true,
+              policy: { autoAccept: false },
+              lastSeen: 1709000000,
+            },
+          ]);
+        }
+        return Promise.resolve({});
+      },
+    });
+
+    const tab = document.getElementById('tab-devices') as HTMLButtonElement;
+    tab.click();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(document.querySelector('#xss-dev-label')).toBeNull();
+    expect(document.querySelector('#xss-dev-fp')).toBeNull();
+
+    const tbody = document.getElementById('devices-tbody');
+    expect(tbody).not.toBeNull();
+    const rows = tbody?.querySelectorAll('tr');
+    expect(rows?.length).toBe(3);
+
+    // Verify row 1 (lan_direct)
+    const row1 = rows?.[0];
+    expect(row1?.textContent).toContain(maliciousLabel);
+    expect(row1?.textContent).toContain(maliciousFp);
+    expect(row1?.querySelector('.badge-lan')?.textContent).toBe('LAN Direct');
+    expect(row1?.textContent).toContain('Yes (/tmp/incoming)');
+
+    // Verify row 2 (online)
+    const row2 = rows?.[1];
+    expect(row2?.querySelector('.badge-online')?.textContent).toBe('Online');
+    expect(row2?.textContent).toContain('No');
+
+    // Verify row 3 (revoked takes precedence)
+    const row3 = rows?.[2];
+    expect(row3?.querySelector('.badge-revoked')?.textContent).toBe('Revoked');
+
+    // Action buttons must exist
+    expect(row1?.querySelector('button[data-action="policy"]')).not.toBeNull();
+    expect(row1?.querySelector('button[data-action="rename"]')).not.toBeNull();
+    expect(row1?.querySelector('button[data-action="unpair"]')).not.toBeNull();
+  });
+
+  it('updates send recipient dropdown with trusted devices and broadcast option', async () => {
+    const { document } = setupDesktopDOM({
+      onCall: (name) => {
+        if (name.includes('ListTrustedDevices')) {
+          return Promise.resolve([
+            {
+              deviceId: 'dev-100',
+              localLabel: '<script id="xss-opt">alert(1)</script>Tablet',
+              fingerprint: 'aabbccddeeff0011',
+              status: 'online',
+              revoked: false,
+            },
+            {
+              deviceId: 'dev-200',
+              localLabel: 'Desktop PC',
+              fingerprint: '3344556677889900',
+              status: 'lan_direct',
+              revoked: false,
+            },
+            {
+              deviceId: 'dev-revoked',
+              localLabel: 'Old Phone',
+              fingerprint: '1100ffeeddccbbaa',
+              status: 'offline',
+              revoked: true,
+            },
+          ]);
+        }
+        return Promise.resolve({});
+      },
+    });
+
+    const tab = document.getElementById('tab-devices') as HTMLButtonElement;
+    tab.click();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const recipientSelect = document.getElementById('send-recipient') as HTMLSelectElement;
+    expect(recipientSelect).not.toBeNull();
+    expect(document.querySelector('#xss-opt')).toBeNull();
+
+    const options = Array.from(recipientSelect.options);
+    expect(options.some((opt) => opt.value === 'code')).toBe(true);
+    expect(options.some((opt) => opt.value === 'broadcast:all')).toBe(true);
+    const tabletOpt = options.find((opt) => opt.value === 'dev-100');
+    expect(tabletOpt).toBeDefined();
+    expect(tabletOpt?.textContent).toContain('<script id="xss-opt">alert(1)</script>Tablet');
+    // Revoked device should not appear in active recipients
+    expect(options.some((opt) => opt.value === 'dev-revoked')).toBe(false);
+  });
+
+  it('handles pairing modal offer and join flows securely', async () => {
+    let pairingOfferCalled = false;
+    let cancelPairingOfferCalled = false;
+    let pairDevicePayload: unknown[] | null = null;
+
+    const { document } = setupDesktopDOM({
+      onCall: (name, ...args) => {
+        if (name.includes('StartPairingOffer')) {
+          pairingOfferCalled = true;
+          return Promise.resolve({
+            code: 'test-pair-code',
+            qr: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          });
+        }
+        if (name.includes('CancelPairingOffer')) {
+          cancelPairingOfferCalled = true;
+          return Promise.resolve({});
+        }
+        if (name.includes('PairDevice')) {
+          pairDevicePayload = args;
+          return Promise.resolve({});
+        }
+        if (name.includes('ListTrustedDevices')) {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve({});
+      },
+    });
+
+    const pairBtn = document.getElementById('open-pair-btn') as HTMLButtonElement;
+    pairBtn.click();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const modalPair = document.getElementById('modal-pair');
+    expect(modalPair?.classList.contains('hidden')).toBe(false);
+    expect(pairingOfferCalled).toBe(true);
+    expect(document.getElementById('pair-offer-code')?.textContent).toBe('test-pair-code');
+    const qrImg = document.getElementById('pair-offer-qr') as HTMLImageElement;
+    expect(qrImg.src).toContain('data:image/png;base64');
+
+    // Switch to Join tab
+    const joinTab = document.getElementById('pair-tab-join') as HTMLButtonElement;
+    joinTab.click();
+    expect(document.getElementById('pair-join-view')?.classList.contains('hidden')).toBe(false);
+
+    // Fill form and submit
+    const codeInput = document.getElementById('pair-join-code') as HTMLInputElement;
+    const labelInput = document.getElementById('pair-join-label') as HTMLInputElement;
+    const autoAccept = document.getElementById('pair-join-auto-accept') as HTMLInputElement;
+    const destDir = document.getElementById('pair-join-dest-dir') as HTMLInputElement;
+
+    codeInput.value = 'partner-code-99';
+    labelInput.value = 'My Partner';
+    autoAccept.checked = true;
+    autoAccept.dispatchEvent(
+      new (document.defaultView as unknown as { Event: typeof Event }).Event('change'),
+    );
+    destDir.value = '/tmp/partner-downloads';
+
+    const joinSubmit = document.getElementById('pair-join-submit') as HTMLButtonElement;
+    joinSubmit.click();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(pairDevicePayload).toEqual([
+      '',
+      'partner-code-99',
+      'My Partner',
+      true,
+      '/tmp/partner-downloads',
+    ]);
+
+    // Closing modal invokes cancel
+    const closeBtn = document.getElementById('pair-modal-close') as HTMLButtonElement;
+    closeBtn.click();
+    expect(cancelPairingOfferCalled).toBe(true);
+  });
+
+  it('handles policy modal editing and saving', async () => {
+    let updatedPolicy: unknown = null;
+
+    const { document } = setupDesktopDOM({
+      onCall: (name, ...args) => {
+        if (name.includes('ListTrustedDevices')) {
+          return Promise.resolve([
+            {
+              deviceId: 'dev-policy-test',
+              localLabel: 'Policy Node',
+              fingerprint: 'deadbeef1122',
+              status: 'online',
+              revoked: false,
+              policy: { autoAccept: false, autoAcceptDestDir: '' },
+            },
+          ]);
+        }
+        if (name.includes('UpdateDevicePolicy')) {
+          updatedPolicy = args;
+          return Promise.resolve({});
+        }
+        return Promise.resolve({});
+      },
+    });
+
+    const tab = document.getElementById('tab-devices') as HTMLButtonElement;
+    tab.click();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const policyBtn = document.querySelector('button[data-action="policy"]') as HTMLButtonElement;
+    policyBtn.click();
+
+    const modalPolicy = document.getElementById('modal-policy');
+    expect(modalPolicy?.classList.contains('hidden')).toBe(false);
+
+    const autoAccept = document.getElementById('policy-auto-accept') as HTMLInputElement;
+    const destDir = document.getElementById('policy-dest-dir') as HTMLInputElement;
+    autoAccept.checked = true;
+    destDir.value = '/home/user/vault';
+
+    const saveBtn = document.getElementById('policy-save-btn') as HTMLButtonElement;
+    saveBtn.click();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(updatedPolicy).toEqual([
+      'dev-policy-test',
+      { autoAccept: true, autoAcceptDestDir: '/home/user/vault' },
+    ]);
+  });
+
+  it('handles rename modal editing and saving', async () => {
+    let renameArgs: unknown = null;
+
+    const { document } = setupDesktopDOM({
+      onCall: (name, ...args) => {
+        if (name.includes('ListTrustedDevices')) {
+          return Promise.resolve([
+            {
+              deviceId: 'dev-rename-test',
+              localLabel: 'Old Name',
+              fingerprint: 'deadbeef1122',
+              status: 'online',
+              revoked: false,
+            },
+          ]);
+        }
+        if (name.includes('RenameDevice')) {
+          renameArgs = args;
+          return Promise.resolve({});
+        }
+        return Promise.resolve({});
+      },
+    });
+
+    const tab = document.getElementById('tab-devices') as HTMLButtonElement;
+    tab.click();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const renameBtn = document.querySelector('button[data-action="rename"]') as HTMLButtonElement;
+    renameBtn.click();
+
+    const modalRename = document.getElementById('modal-rename');
+    expect(modalRename?.classList.contains('hidden')).toBe(false);
+
+    const input = document.getElementById('rename-label-input') as HTMLInputElement;
+    expect(input.value).toBe('Old Name');
+    input.value = 'New Friendly Name';
+
+    const saveBtn = document.getElementById('rename-save-btn') as HTMLButtonElement;
+    saveBtn.click();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(renameArgs).toEqual(['dev-rename-test', 'New Friendly Name']);
+  });
+
+  it('handles unpair modal with purge option', async () => {
+    let unpairArgs: unknown = null;
+
+    const { document } = setupDesktopDOM({
+      onCall: (name, ...args) => {
+        if (name.includes('ListTrustedDevices')) {
+          return Promise.resolve([
+            {
+              deviceId: 'dev-unpair-test',
+              localLabel: '<b id="xss-unpair">Node</b>',
+              fingerprint: 'deadbeef1122',
+              status: 'online',
+              revoked: false,
+            },
+          ]);
+        }
+        if (name.includes('UnpairDevice')) {
+          unpairArgs = args;
+          return Promise.resolve({});
+        }
+        return Promise.resolve({});
+      },
+    });
+
+    const tab = document.getElementById('tab-devices') as HTMLButtonElement;
+    tab.click();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const unpairBtn = document.querySelector('button[data-action="unpair"]') as HTMLButtonElement;
+    unpairBtn.click();
+
+    expect(document.querySelector('#xss-unpair')).toBeNull();
+    const modalUnpair = document.getElementById('modal-unpair');
+    expect(modalUnpair?.classList.contains('hidden')).toBe(false);
+
+    // Select purge radio
+    const purgeRadio = document.querySelector(
+      'input[name="unpair-mode"][value="purge"]',
+    ) as HTMLInputElement;
+    purgeRadio.checked = true;
+
+    const confirmBtn = document.getElementById('unpair-confirm-btn') as HTMLButtonElement;
+    confirmBtn.click();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(unpairArgs).toEqual(['dev-unpair-test', true]);
+  });
+
+  it('handles incoming consent modal prompt and responses safely', async () => {
+    let consentResponse: unknown = null;
+
+    const { document, emit } = setupDesktopDOM({
+      onCall: (name, ...args) => {
+        if (name.includes('RespondConsent')) {
+          consentResponse = args;
+          return Promise.resolve({});
+        }
+        return Promise.resolve({});
+      },
+    });
+
+    const maliciousPeer = '<script id="xss-peer-name">alert(1)</script>Bob';
+    const maliciousFp = '<i id="xss-peer-fp">1234abcd</i>';
+    const maliciousFile = '<span id="xss-peer-file">report.pdf</span>';
+
+    emit('sendbeam:consent', {
+      transferId: 'tx-consent-101',
+      peerDeviceId: 'peer-device-id',
+      peerName: maliciousPeer,
+      fingerprint: maliciousFp,
+      fileName: maliciousFile,
+      totalSize: 4194304,
+      destDir: '/tmp/safe-inbox',
+    });
+
+    const modalConsent = document.getElementById('modal-consent');
+    expect(modalConsent?.classList.contains('hidden')).toBe(false);
+
+    expect(document.querySelector('#xss-peer-name')).toBeNull();
+    expect(document.querySelector('#xss-peer-fp')).toBeNull();
+    expect(document.querySelector('#xss-peer-file')).toBeNull();
+
+    expect(document.getElementById('consent-device-name')?.textContent).toBe(maliciousPeer);
+    expect(document.getElementById('consent-fingerprint')?.textContent).toBe(maliciousFp);
+    expect(document.getElementById('consent-files-summary')?.textContent).toContain(maliciousFile);
+
+    const acceptBtn = document.getElementById('consent-accept-btn') as HTMLButtonElement;
+    acceptBtn.click();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(consentResponse).toEqual([
+      'tx-consent-101',
+      {
+        accepted: true,
+        destDir: '/tmp/safe-inbox',
+      },
+    ]);
+  });
 });

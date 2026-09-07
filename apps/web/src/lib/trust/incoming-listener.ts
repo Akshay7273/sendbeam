@@ -13,6 +13,7 @@ import {
   type TrustRecord,
 } from '@sendbeam/protocol';
 import { getBrowserStores, isDesktopApp } from './devices.js';
+import { getWailsBridge } from '../wails/wails-adapter.js';
 import type { IncomingTransferRequest } from './types.js';
 import { opaqueJoin, type OpaqueRendezvousController } from '../session/opaque-rendezvous.js';
 import { runReceive, type TransferController, type TransferOutcome } from '../session/transfer.js';
@@ -44,6 +45,13 @@ export class IncomingTransferCoordinator {
     this.running = true;
 
     // Desktop app delegates listening to native engine and receives events
+    const bridge = getWailsBridge();
+    if (bridge) {
+      this.desktopConsentCleanup = bridge.events.on('sendbeam:consent', (data: unknown) => {
+        this.handleDesktopConsentEvent(data);
+      });
+      return;
+    }
     if (isDesktopApp() && typeof window !== 'undefined' && window.runtime?.EventsOn) {
       this.desktopConsentCleanup = window.runtime.EventsOn('sendbeam:consent', (data: unknown) => {
         this.handleDesktopConsentEvent(data);
@@ -83,6 +91,15 @@ export class IncomingTransferCoordinator {
   }
 
   async respondConsent(transferId: string, accepted: boolean, reason?: string): Promise<void> {
+    const bridge = getWailsBridge();
+    if (bridge) {
+      const decision = {
+        accepted,
+        ...(reason ? { reason } : {}),
+      };
+      await bridge.transfer.respondConsent(transferId, decision);
+      return;
+    }
     if (isDesktopApp() && window.go?.engine?.TransferService?.RespondConsent) {
       const decision = {
         accepted,
