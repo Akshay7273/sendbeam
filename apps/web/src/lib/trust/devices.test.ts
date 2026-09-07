@@ -4,12 +4,18 @@ import {
   renameTrustedDevice,
   updateTrustedDevicePolicy,
   unpairTrustedDevice,
+  pairTrustedDevice,
+  startPairingOffer,
+  resetBrowserStoresForTesting,
 } from './devices.js';
 import {
   generateDeviceIdentity,
   deriveDeviceId,
   formatFingerprint,
   bytesToHex,
+  MemoryTrustStore,
+  MemoryTombstoneStore,
+  MemorySecretResolver,
 } from '@sendbeam/protocol';
 
 describe('Trusted Devices Frontend Bridge', () => {
@@ -182,5 +188,128 @@ describe('Trusted Devices Frontend Bridge', () => {
     const sendable = devs.filter((d) => !d.revoked);
     expect(sendable).toHaveLength(2);
     expect(sendable.map((d) => d.localLabel)).toEqual(['Work Laptop', 'Phone']);
+  });
+
+  it('unpairs and creates authorized signed tombstone in browser mode', async () => {
+    // Inject in-memory stores for browser environment
+    const trustStore = new MemoryTrustStore();
+    const tombstoneStore = new MemoryTombstoneStore();
+    const secretStore = new MemorySecretResolver();
+    resetBrowserStoresForTesting(trustStore, secretStore, tombstoneStore);
+
+    const peerId = await generateDeviceIdentity();
+    const peerDevId = peerId.deviceId;
+    const pubHex = bytesToHex(peerId.publicKey);
+
+    // Register active peer device and pairwise secret
+    await trustStore.addOrUpdateDevice({
+      deviceId: peerDevId,
+      localLabel: 'Peer Tablet',
+      publicKey: pubHex,
+      pairCredentialRef: 'cred-peer-1',
+      capabilities: ['transfer.v1'],
+      firstSeenAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      revoked: false,
+      policy: { autoAccept: false },
+    });
+    await secretStore.setPairSecret(peerDevId, new Uint8Array(32));
+
+    // Verify peer is active and secret exists
+    expect(await trustStore.isTrusted(peerDevId)).toBe(true);
+    expect(await secretStore.getPairSecret(peerDevId)).not.toBeNull();
+
+    // Revoke peer (purge = false)
+    await unpairTrustedDevice(peerDevId, false);
+
+    // Record must be marked revoked with provenance in trustStore
+    const revokedDev = await trustStore.getDevice(peerDevId);
+    expect(revokedDev).not.toBeNull();
+    expect(revokedDev?.revoked).toBe(true);
+    expect(revokedDev?.revocationSeq).toBe(1);
+    expect(revokedDev?.revokedBy).toBeDefined();
+    expect(revokedDev?.revocationSig).toBeDefined();
+
+    // Tombstone must be created in tombstoneStore
+    const hasTomb = await tombstoneStore.hasTombstone(peerDevId);
+    expect(hasTomb).toBe(true);
+    const tomb = await tombstoneStore.getTombstone(peerDevId);
+    expect(tomb?.revoked_device_id).toBe(peerDevId);
+    expect(tomb?.seq).toBe(1);
+
+    // Secret must be purged from secretStore
+    expect(await secretStore.getPairSecret(peerDevId)).toBeNull();
+
+    // Now test purge = true
+    await unpairTrustedDevice(peerDevId, true);
+    expect(await trustStore.getDevice(peerDevId)).toBeNull();
+    // Tombstone remains intact
+    expect(await tombstoneStore.hasTombstone(peerDevId)).toBe(true);
+  });
+
+  it('validates invite code when pairing in browser mode', async () => {
+    resetBrowserStoresForTesting(
+      new MemoryTrustStore(),
+      new MemorySecretResolver(),
+      new MemoryTombstoneStore(),
+    );
+
+    await expect(pairTrustedDevice('', '', 'Laptop', false, '')).rejects.toThrow(
+      'invite code is required',
+    );
+  });
+
+  it('renames and updates policy in browser mode', async () => {
+    const trustStore = new MemoryTrustStore();
+    resetBrowserStoresForTesting(
+      trustStore,
+      new MemorySecretResolver(),
+      new MemoryTombstoneStore(),
+    );
+
+    const peerId = await generateDeviceIdentity();
+    const peerDevId = peerId.deviceId;
+
+    await trustStore.addOrUpdateDevice({
+      deviceId: peerDevId,
+      localLabel: 'Old Name',
+      publicKey: bytesToHex(peerId.publicKey),
+      pairCredentialRef: 'ref-1',
+      capabilities: ['transfer.v1'],
+      firstSeenAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      revoked: false,
+      policy: { autoAccept: false },
+    });
+
+    await renameTrustedDevice(peerDevId, 'New Renamed Device');
+    let dev = await trustStore.getDevice(peerDevId);
+    expect(dev?.localLabel).toBe('New Renamed Device');
+
+    await updateTrustedDevicePolicy(peerDevId, {
+      autoAccept: true,
+      autoAcceptDestDir: '/downloads',
+    });
+    dev = await trustStore.getDevice(peerDevId);
+    expect(dev?.policy.autoAccept).toBe(true);
+    expect(dev?.policy.autoAcceptDestDir).toBe('/downloads');
+  });
+
+  it('initiates pairing offer and allows clean cancellation in browser mode', async () => {
+    const trustStore = new MemoryTrustStore();
+    resetBrowserStoresForTesting(
+      trustStore,
+      new MemorySecretResolver(),
+      new MemoryTombstoneStore(),
+    );
+
+    const ctrl = startPairingOffer({
+      name: 'Offerer Browser',
+      autoAccept: false,
+    });
+
+    expect(typeof ctrl.cancel).toBe('function');
+    ctrl.cancel('user cancelled pairing');
+    await expect(ctrl.done).rejects.toBeDefined();
   });
 });

@@ -28,37 +28,6 @@ type PairJSONView struct {
 	Policy            wire.TrustPolicy `json:"policy"`
 }
 
-// pairingPipeTransport wraps in-memory channels for testing and scripted pairing exchanges.
-type pairingPipeTransport struct {
-	in  <-chan []byte
-	out chan<- []byte
-}
-
-func newPairingPipeTransport(in <-chan []byte, out chan<- []byte) *pairingPipeTransport {
-	return &pairingPipeTransport{in: in, out: out}
-}
-
-func (t *pairingPipeTransport) SendMessage(ctx context.Context, data []byte) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case t.out <- data:
-		return nil
-	}
-}
-
-func (t *pairingPipeTransport) ReceiveMessage(ctx context.Context) ([]byte, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case data, ok := <-t.in:
-		if !ok {
-			return nil, errors.New("pairing transport closed")
-		}
-		return data, nil
-	}
-}
-
 func runPair(args []string) int {
 	return executePair(args, os.Stdout, os.Stderr)
 }
@@ -143,35 +112,26 @@ func executePair(args []string, stdout, stderr io.Writer) int {
 		InsecureSkipVerify: *insecure,
 	}
 
-	res, err := wsclient.Rendezvous(ctx, *server, dopts, opts)
+	pairSess, err := wsclient.RendezvousPair(ctx, *server, dopts, opts)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "pairing handshake failed: %v\n", err)
 		return 1
 	}
-
-	// For in-process pairing completion over established session:
-	a2b := make(chan []byte, 4)
-	b2a := make(chan []byte, 4)
-	var transport trust.PairingTransport
-	if role == wire.RoleOfferer {
-		transport = newPairingPipeTransport(b2a, a2b)
-	} else {
-		transport = newPairingPipeTransport(a2b, b2a)
-	}
+	defer pairSess.Close()
 
 	cfg := trust.PairingSessionConfig{
 		DeviceName:   hostname,
 		Capabilities: []string{"transfer.v1", "transfer.v2", "lan_direct"},
-		MasterKey:    res.Master,
+		MasterKey:    pairSess.Result.Master,
 		AutoAccept:   *autoAccept,
 		DestDir:      *autoAcceptDest,
 	}
 
 	var pairResult *trust.PairingResult
 	if role == wire.RoleOfferer {
-		pairResult, err = coordinator.InitiatePairing(ctx, transport, cfg)
+		pairResult, err = coordinator.InitiatePairing(ctx, pairSess, cfg)
 	} else {
-		pairResult, err = coordinator.AcceptPairing(ctx, transport, cfg)
+		pairResult, err = coordinator.AcceptPairing(ctx, pairSess, cfg)
 	}
 
 	if err != nil {

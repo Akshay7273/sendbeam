@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/sendbeam/engine/rendezvous"
 	"github.com/sendbeam/engine/wsclient"
+	"github.com/sendbeam/wire"
 )
 
 // blindHub is a minimal stand-in for the SendBeam signaling server, enough to drive one
@@ -216,3 +217,93 @@ func TestJoinerCodeIsWellFormed(t *testing.T) {
 		t.Errorf("join envelope = %+v", m)
 	}
 }
+
+func TestRendezvousPairOverWebSocket(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	hub := newBlindHub()
+	srv := httptest.NewServer(hub)
+	defer srv.Close()
+
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+	codeCh := make(chan string, 1)
+
+	var (
+		offSess, joinSess *wsclient.PairingSession
+		offErr, joinErr   error
+		wg                sync.WaitGroup
+	)
+
+	dopts := wsclient.DialOptions{
+		Backoff: wsclient.BackoffOptions{Retries: 1, Base: time.Millisecond, Max: time.Millisecond, Factor: 1},
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		offSess, offErr = wsclient.RendezvousPair(ctx, url, dopts, rendezvous.Options{
+			Role:   rendezvous.RoleOfferer,
+			Words:  "quiet-panda",
+			OnCode: func(c string) { codeCh <- c },
+		})
+	}()
+
+	select {
+	case code := <-codeCh:
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			joinSess, joinErr = wsclient.RendezvousPair(ctx, url, dopts, rendezvous.Options{
+				Role: rendezvous.RoleJoiner,
+				Code: code,
+			})
+		}()
+	case <-ctx.Done():
+		t.Fatal("offerer never produced a code")
+	}
+
+	wg.Wait()
+
+	if offErr != nil {
+		t.Fatalf("offerer rendezvous failed: %v", offErr)
+	}
+	defer offSess.Close()
+
+	if joinErr != nil {
+		t.Fatalf("joiner rendezvous failed: %v", joinErr)
+	}
+	defer joinSess.Close()
+
+	if !bytes.Equal(offSess.Result.Master, joinSess.Result.Master) {
+		t.Error("master keys differ across pairing sessions")
+	}
+
+	// Exchange pairing frames over adopted WebSocket pairing transport
+	reqPayload := []byte(`{"type":"` + wire.MsgPairingRequest + `","device_name":"Initiator Node"}`)
+	if err := offSess.SendMessage(ctx, reqPayload); err != nil {
+		t.Fatalf("offSess.SendMessage failed: %v", err)
+	}
+
+	recvOnJoiner, err := joinSess.ReceiveMessage(ctx)
+	if err != nil {
+		t.Fatalf("joinSess.ReceiveMessage failed: %v", err)
+	}
+	if !bytes.Equal(recvOnJoiner, reqPayload) {
+		t.Errorf("received on joiner = %s, want = %s", string(recvOnJoiner), string(reqPayload))
+	}
+
+	respPayload := []byte(`{"type":"` + wire.MsgPairingResponse + `","device_name":"Responder Node"}`)
+	if err := joinSess.SendMessage(ctx, respPayload); err != nil {
+		t.Fatalf("joinSess.SendMessage failed: %v", err)
+	}
+
+	recvOnOfferer, err := offSess.ReceiveMessage(ctx)
+	if err != nil {
+		t.Fatalf("offSess.ReceiveMessage failed: %v", err)
+	}
+	if !bytes.Equal(recvOnOfferer, respPayload) {
+		t.Errorf("received on offerer = %s, want = %s", string(recvOnOfferer), string(respPayload))
+	}
+}
+

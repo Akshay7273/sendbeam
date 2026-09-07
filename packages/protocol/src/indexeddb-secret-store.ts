@@ -23,6 +23,10 @@ export class MemorySecretResolver implements SecretResolver {
     this.secrets.set(deviceId, new Uint8Array(secret));
   }
 
+  async setPairSecret(deviceId: string, secret: Uint8Array): Promise<void> {
+    this.secrets.set(deviceId, new Uint8Array(secret));
+  }
+
   async getPairSecret(deviceId: string): Promise<Uint8Array | null> {
     const s = this.secrets.get(deviceId);
     return s ? new Uint8Array(s) : null;
@@ -34,6 +38,10 @@ export class MemorySecretResolver implements SecretResolver {
   }
 
   async deleteSecret(deviceId: string): Promise<void> {
+    this.secrets.delete(deviceId);
+  }
+
+  async deletePairSecret(deviceId: string): Promise<void> {
     this.secrets.delete(deviceId);
   }
 }

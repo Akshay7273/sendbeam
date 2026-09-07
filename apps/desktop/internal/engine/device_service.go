@@ -348,24 +348,21 @@ func (s *DeviceService) PairDevice(serverURL, inviteCode, customLabel string, au
 		InsecureSkipVerify: true,
 	}
 
-	res, err := wsclient.Rendezvous(ctx, server, dopts, opts)
+	pairSess, err := wsclient.RendezvousPair(ctx, server, dopts, opts)
 	if err != nil {
 		return nil, fmt.Errorf("pairing handshake failed: %w", err)
 	}
-
-	a2b := make(chan []byte, 4)
-	b2a := make(chan []byte, 4)
-	transport := &desktopPairingTransport{in: a2b, out: b2a}
+	defer pairSess.Close()
 
 	cfg := trust.PairingSessionConfig{
 		DeviceName:   hostname,
 		Capabilities: []string{"transfer.v1", "transfer.v2", "lan_direct"},
-		MasterKey:    res.Master,
+		MasterKey:    pairSess.Result.Master,
 		AutoAccept:   autoAccept,
 		DestDir:      destDir,
 	}
 
-	pairResult, err := s.coordinator.AcceptPairing(ctx, transport, cfg)
+	pairResult, err := s.coordinator.AcceptPairing(ctx, pairSess, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("pairing ceremony failed: %w", err)
 	}
@@ -403,31 +400,5 @@ func (s *DeviceService) notifyDevicesChanged() {
 func (s *DeviceService) Close() {
 	if s.cancel != nil {
 		s.cancel()
-	}
-}
-
-type desktopPairingTransport struct {
-	in  <-chan []byte
-	out chan<- []byte
-}
-
-func (t *desktopPairingTransport) SendMessage(ctx context.Context, data []byte) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case t.out <- data:
-		return nil
-	}
-}
-
-func (t *desktopPairingTransport) ReceiveMessage(ctx context.Context) ([]byte, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case data, ok := <-t.in:
-		if !ok {
-			return nil, errors.New("pairing transport closed")
-		}
-		return data, nil
 	}
 }

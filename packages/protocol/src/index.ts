@@ -41,3 +41,4 @@ export * from './revocation.js';
 export * from './tombstone-store.js';
 export * from './indexeddb-tombstone-store.js';
 export * from './opaque-rendezvous.js';
+export * from './pairing-coordinator.js';

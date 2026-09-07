@@ -2,12 +2,15 @@
   import { onMount } from 'svelte';
   import type { TrustedDeviceUI } from './types.js';
   import type { TrustPolicy } from '@sendbeam/protocol';
+  import QrCode from '../QrCode.svelte';
   import {
     listTrustedDevices,
     renameTrustedDevice,
     updateTrustedDevicePolicy,
     unpairTrustedDevice,
     pairTrustedDevice,
+    startPairingOffer,
+    type PairingOfferController,
     isDesktopApp,
   } from './devices.js';
 
@@ -36,11 +39,15 @@
 
   // Pairing modal state
   let showPairModal = $state(false);
+  let pairMode = $state<'join' | 'offer'>('join');
   let pairInviteCode = $state('');
+  let pairOfferCode = $state('');
   let pairCustomName = $state('');
   let pairAutoAccept = $state(false);
   let pairDestDir = $state('');
   let pairingInProgress = $state(false);
+  let copiedOfferCode = $state(false);
+  let offerCtrl = $state<PairingOfferController | null>(null);
 
   // Unpair confirmation modal state
   let unpairConfirmDevice = $state<TrustedDeviceUI | null>(null);
@@ -160,6 +167,89 @@
     }
   }
 
+  function openPairModal() {
+    showPairModal = true;
+    pairMode = 'join';
+    pairInviteCode = '';
+    pairOfferCode = '';
+    pairCustomName = '';
+    pairAutoAccept = false;
+    pairDestDir = '';
+  }
+
+  function closePairModal() {
+    if (offerCtrl) {
+      offerCtrl.cancel('pairing modal closed');
+      offerCtrl = null;
+    }
+    showPairModal = false;
+    pairInviteCode = '';
+    pairOfferCode = '';
+    pairMode = 'join';
+    pairingInProgress = false;
+  }
+
+  function switchPairMode(mode: 'join' | 'offer') {
+    if (pairMode === mode) return;
+    if (offerCtrl) {
+      offerCtrl.cancel('switched pairing mode');
+      offerCtrl = null;
+    }
+    pairMode = mode;
+    pairOfferCode = '';
+    if (mode === 'offer') {
+      startOfferFlow();
+    } else {
+      pairingInProgress = false;
+    }
+  }
+
+  function startOfferFlow() {
+    pairingInProgress = true;
+    pairOfferCode = '';
+    try {
+      const ctrl = startPairingOffer({
+        ...(pairCustomName.trim() ? { name: pairCustomName.trim() } : {}),
+        autoAccept: pairAutoAccept,
+        ...(pairAutoAccept && pairDestDir.trim() ? { dest: pairDestDir.trim() } : {}),
+        onCode: (code) => {
+          pairOfferCode = code;
+        },
+      });
+      offerCtrl = ctrl;
+      ctrl.done
+        .then(() => {
+          closePairModal();
+          void loadDevices();
+        })
+        .catch((err: unknown) => {
+          if (offerCtrl === ctrl) {
+            errorMessage = err instanceof Error ? err.message : String(err);
+          }
+        })
+        .finally(() => {
+          if (offerCtrl === ctrl) {
+            pairingInProgress = false;
+          }
+        });
+    } catch (err: unknown) {
+      errorMessage = err instanceof Error ? err.message : String(err);
+      pairingInProgress = false;
+    }
+  }
+
+  async function copyOfferCode(code: string) {
+    try {
+      await navigator.clipboard.writeText(code);
+      copiedOfferCode = true;
+      setTimeout(() => {
+        copiedOfferCode = false;
+      }, 2000);
+    } catch {
+      // Ignore clipboard write failures
+    }
+  }
+
   async function handleStartPair() {
     if (!pairInviteCode.trim()) return;
     pairingInProgress = true;
@@ -172,11 +262,7 @@
         pairAutoAccept,
         pairAutoAccept ? pairDestDir.trim() : '',
       );
-      showPairModal = false;
-      pairInviteCode = '';
-      pairCustomName = '';
-      pairAutoAccept = false;
-      pairDestDir = '';
+      closePairModal();
       await loadDevices();
     } catch (err: unknown) {
       errorMessage = err instanceof Error ? err.message : String(err);
@@ -207,14 +293,7 @@
           <span class="device-count">{devices.length} paired</span>
         </div>
         <div class="header-actions">
-          <button
-            class="btn-pair"
-            onclick={() => {
-              showPairModal = true;
-            }}
-          >
-            + Pair Device
-          </button>
+          <button class="btn-pair" onclick={openPairModal}> + Pair Device </button>
           <button class="btn-close" onclick={onClose} aria-label="Close">✕</button>
         </div>
       </div>
@@ -251,14 +330,7 @@
               Pair your laptops, workstations, or mobile devices once to send files directly without
               entering one-time room codes.
             </p>
-            <button
-              class="btn-pair-hero"
-              onclick={() => {
-                showPairModal = true;
-              }}
-            >
-              Pair First Device
-            </button>
+            <button class="btn-pair-hero" onclick={openPairModal}> Pair First Device </button>
           </div>
         {:else}
           {#if devices.filter((d) => !d.revoked).length > 1}
@@ -446,65 +518,119 @@
   <div class="submodal-backdrop" role="dialog">
     <div class="submodal-content">
       <h3>Pair New Device</h3>
-      <p class="submodal-desc">
-        Enter the one-time invite code displayed on the device you want to pair.
-      </p>
 
-      <div class="form-group">
-        <label for="invite-code">Invite Code:</label>
-        <input
-          id="invite-code"
-          type="text"
-          placeholder="e.g. 7-acoustic-salmon-guitar"
-          bind:value={pairInviteCode}
-        />
-      </div>
-
-      <div class="form-group">
-        <label for="custom-name">Local Device Label (optional):</label>
-        <input
-          id="custom-name"
-          type="text"
-          placeholder="e.g. Work Laptop"
-          bind:value={pairCustomName}
-        />
-      </div>
-
-      <div class="form-group checkbox-group">
-        <label>
-          <input type="checkbox" bind:checked={pairAutoAccept} />
-          Auto-accept transfers from this device
-        </label>
-      </div>
-
-      {#if pairAutoAccept}
-        <div class="form-group">
-          <label for="pair-dest">Destination Directory:</label>
-          <input
-            id="pair-dest"
-            type="text"
-            placeholder="/home/user/Downloads"
-            bind:value={pairDestDir}
-          />
+      {#if !isDesktopApp()}
+        <div class="pair-mode-tabs">
+          <button
+            type="button"
+            class="mode-tab"
+            class:active={pairMode === 'join'}
+            onclick={() => switchPairMode('join')}
+          >
+            Enter Code
+          </button>
+          <button
+            type="button"
+            class="mode-tab"
+            class:active={pairMode === 'offer'}
+            onclick={() => switchPairMode('offer')}
+          >
+            Show Code
+          </button>
         </div>
       {/if}
 
-      <div class="submodal-actions">
-        <button
-          class="btn-primary"
-          disabled={pairingInProgress || !pairInviteCode.trim()}
-          onclick={() => void handleStartPair()}
-        >
-          {pairingInProgress ? 'Pairing…' : 'Pair Device'}
-        </button>
-        <button
-          class="btn-secondary"
-          disabled={pairingInProgress}
-          onclick={() => (showPairModal = false)}
-        >
-          Cancel
-        </button>
-      </div>
+      {#if pairMode === 'join'}
+        <p class="submodal-desc">
+          Enter the one-time invite code displayed on the device you want to pair.
+        </p>
+
+        <div class="form-group">
+          <label for="invite-code">Invite Code:</label>
+          <input
+            id="invite-code"
+            type="text"
+            placeholder="e.g. 7-acoustic-salmon-guitar"
+            bind:value={pairInviteCode}
+          />
+        </div>
+
+        <div class="form-group">
+          <label for="custom-name">Local Device Label (optional):</label>
+          <input
+            id="custom-name"
+            type="text"
+            placeholder="e.g. Work Laptop"
+            bind:value={pairCustomName}
+          />
+        </div>
+
+        <div class="form-group checkbox-group">
+          <label>
+            <input type="checkbox" bind:checked={pairAutoAccept} />
+            Auto-accept transfers from this device
+          </label>
+        </div>
+
+        {#if pairAutoAccept}
+          <div class="form-group">
+            <label for="pair-dest">Destination Directory:</label>
+            <input
+              id="pair-dest"
+              type="text"
+              placeholder="/home/user/Downloads"
+              bind:value={pairDestDir}
+            />
+          </div>
+        {/if}
+
+        <div class="submodal-actions">
+          <button
+            class="btn-primary"
+            disabled={pairingInProgress || !pairInviteCode.trim()}
+            onclick={() => void handleStartPair()}
+          >
+            {pairingInProgress ? 'Pairing…' : 'Pair Device'}
+          </button>
+          <button class="btn-secondary" disabled={pairingInProgress} onclick={closePairModal}>
+            Cancel
+          </button>
+        </div>
+      {:else}
+        <p class="submodal-desc">
+          Open SendBeam on the device you want to pair, choose <strong>Pair Device</strong>, and
+          enter this code:
+        </p>
+
+        <div class="offer-container">
+          {#if pairOfferCode}
+            <div class="offer-code-badge">
+              <span class="offer-code-text">{pairOfferCode}</span>
+              <button
+                type="button"
+                class="btn-copy-sm"
+                onclick={() => void copyOfferCode(pairOfferCode)}
+              >
+                {copiedOfferCode ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <div class="qr-box">
+              <QrCode data={pairOfferCode} size={150} />
+            </div>
+          {:else}
+            <div class="generating-code">Generating pairing code…</div>
+          {/if}
+
+          <div class="offer-waiting">
+            <span class="status-pulse"></span>
+            <span>Waiting for peer device to connect…</span>
+          </div>
+        </div>
+
+        <div class="submodal-actions">
+          <button type="button" class="btn-secondary" onclick={closePairModal}> Cancel </button>
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -1015,5 +1141,124 @@
   .btn-primary:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .pair-mode-tabs {
+    display: flex;
+    background: #27272a;
+    border-radius: 8px;
+    padding: 3px;
+    margin-bottom: 1.25rem;
+    gap: 4px;
+  }
+
+  .mode-tab {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: #a1a1aa;
+    padding: 0.45rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .mode-tab:hover {
+    color: #f4f4f5;
+  }
+
+  .mode-tab.active {
+    background: #3f3f46;
+    color: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  }
+
+  .offer-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem 0;
+  }
+
+  .offer-code-badge {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: #27272a;
+    border: 1px solid #3f3f46;
+    border-radius: 8px;
+    padding: 0.6rem 1rem;
+  }
+
+  .offer-code-text {
+    font-family: monospace;
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: #60a5fa;
+    letter-spacing: 0.05em;
+  }
+
+  .btn-copy-sm {
+    background: #3b82f6;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 0.25rem 0.6rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .btn-copy-sm:hover {
+    background: #2563eb;
+  }
+
+  .qr-box {
+    background: white;
+    padding: 0.75rem;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+  }
+
+  .generating-code {
+    color: #a1a1aa;
+    font-size: 0.875rem;
+    font-style: italic;
+    padding: 1rem;
+  }
+
+  .offer-waiting {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: #a1a1aa;
+    font-size: 0.8125rem;
+  }
+
+  .status-pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #10b981;
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0% {
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+    }
+    70% {
+      box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    }
   }
 </style>

@@ -171,6 +171,9 @@ function pick(opts: RendezvousControllerOptions) {
 
 /** `/ws` on the current origin, with the scheme upgraded to match http→ws / https→wss. */
 function defaultSignalingUrl(): string {
+  if (typeof window === 'undefined' || !window.location?.host) {
+    return 'ws://localhost:8080/ws';
+  }
   const { protocol, host } = window.location;
   const scheme = protocol === 'https:' ? 'wss:' : 'ws:';
   return `${scheme}//${host}/ws`;

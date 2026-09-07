@@ -72,7 +72,7 @@ export async function signRevocation(
   identity: DeviceIdentity,
   revokedDeviceId: string,
   seq: number,
-  now = new Date(),
+  now: Date | string | number = new Date(),
 ): Promise<RevocationRecord> {
   if (!identity) throw new Error('invalid identity: null or undefined');
   if (!validateDeviceId(revokedDeviceId)) {
@@ -82,7 +82,8 @@ export async function signRevocation(
     throw new Error('seq must be a positive integer > 0');
   }
 
-  const timestamp = now.toISOString();
+  const dateObj = typeof now === 'string' || typeof now === 'number' ? new Date(now) : now;
+  const timestamp = dateObj.toISOString();
   const challenge = buildRevocationChallenge(identity.deviceId, revokedDeviceId, seq, timestamp);
   const sigBytes = signDeviceMessage(identity, challenge);
 

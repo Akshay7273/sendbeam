@@ -22,6 +22,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/sendbeam/engine/rendezvous"
+	"github.com/sendbeam/wire"
 )
 
 const (
@@ -208,3 +209,106 @@ func Rendezvous(ctx context.Context, url string, dopts DialOptions, sopts rendez
 	}
 	return sess.Result()
 }
+
+// PairingSession provides an adopted WebSocket transport for device pairing ceremonies.
+// It implements trust.PairingTransport.
+type PairingSession struct {
+	Client    *Client
+	Result    *rendezvous.Result
+	inbound   chan []byte
+	runErr    chan error
+	closeOnce sync.Once
+}
+
+// SendMessage transmits a raw pairing protocol message frame as WebSocket text.
+func (p *PairingSession) SendMessage(ctx context.Context, data []byte) error {
+	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	return p.Client.ws.Write(ctx, websocket.MessageText, data)
+}
+
+// ReceiveMessage waits for the next incoming pairing protocol message frame.
+func (p *PairingSession) ReceiveMessage(ctx context.Context) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case err := <-p.runErr:
+		if err == nil {
+			err = errors.New("pairing transport closed")
+		}
+		return nil, err
+	case data, ok := <-p.inbound:
+		if !ok {
+			return nil, errors.New("pairing transport closed")
+		}
+		return data, nil
+	}
+}
+
+// Close gracefully closes the underlying signaling connection.
+func (p *PairingSession) Close() {
+	p.closeOnce.Do(func() {
+		p.Client.Close()
+	})
+}
+
+// RendezvousPair dials the server, drives the handshake session to completion, and retains
+// the live WebSocket connection wrapped in a PairingSession so pairing frames can be exchanged.
+func RendezvousPair(ctx context.Context, url string, dopts DialOptions, sopts rendezvous.Options) (*PairingSession, error) {
+	client, err := Dial(ctx, url, dopts)
+	if err != nil {
+		return nil, err
+	}
+
+	sopts.Transport = client
+	sess := rendezvous.New(sopts)
+
+	pairSess := &PairingSession{
+		Client:  client,
+		inbound: make(chan []byte, 16),
+		runErr:  make(chan error, 1),
+	}
+
+	go func() {
+		err := client.Run(ctx, func(m rendezvous.Message) {
+			if m.Type == wire.MsgPairingRequest || m.Type == wire.MsgPairingResponse || m.Type == wire.MsgPairingConfirm {
+				raw := m.Raw
+				if len(raw) == 0 {
+					raw, _ = rendezvous.MarshalMessage(m)
+				}
+				select {
+				case pairSess.inbound <- raw:
+				case <-ctx.Done():
+				}
+				return
+			}
+			sess.Handle(m)
+		}, nil)
+		if err != nil && ctx.Err() == nil {
+			select {
+			case pairSess.runErr <- err:
+			default:
+			}
+		}
+	}()
+
+	sess.Start()
+	select {
+	case <-sess.Done():
+	case err := <-pairSess.runErr:
+		client.Close()
+		return nil, fmt.Errorf("handshake failed: %w", err)
+	case <-ctx.Done():
+		client.Close()
+		return nil, ctx.Err()
+	}
+
+	res, err := sess.Result()
+	if err != nil {
+		client.Close()
+		return nil, err
+	}
+	pairSess.Result = res
+	return pairSess, nil
+}
+
