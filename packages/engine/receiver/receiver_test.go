@@ -850,7 +850,7 @@ func TestReceiverRequirePaddingRejectsUnpaddedPeer(t *testing.T) {
 
 	recv := <-recvCh
 	cancel()
-	_ = <-sendCh
+	<-sendCh
 
 	if recv.err == nil {
 		t.Fatalf("expected receiver with RequirePadding to reject incompatible peer, got success")
