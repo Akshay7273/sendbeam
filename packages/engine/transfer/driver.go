@@ -235,6 +235,9 @@ func (d *driver) run(ctx context.Context) (*Outcome, error) {
 	if d.spec.Opaque != nil {
 		opts := *d.spec.Opaque
 		opts.Transport = d
+		if d.spec.Private && !containsString(opts.LocalCaps, wire.PaddingCapability) {
+			opts.LocalCaps = append(append([]string{}, opts.LocalCaps...), wire.PaddingCapability)
+		}
 		d.opaqueSess = rendezvous.NewOpaqueSession(opts)
 		go func() {
 			<-d.opaqueSess.Done()

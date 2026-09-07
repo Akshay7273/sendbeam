@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -53,6 +54,7 @@ func executeSend(args []string, stdout, stderr io.Writer) int {
 	jitter := fs.Duration("jitter", 0, "maximum random scheduling jitter for relay frames (e.g. 15ms)")
 	jsonOutput := fs.Bool("json", false, "output structured JSON result")
 	concurrency := fs.Int("concurrency", 4, "maximum concurrent target transfers")
+	timeout := fs.Duration("timeout", 0, "per-target transfer timeout (e.g. 30s; 0 = unlimited)")
 	configDir := fs.String("config-dir", "", "path to custom configuration directory")
 
 	rawPositionals := parseArgs(fs, args)
@@ -75,7 +77,7 @@ func executeSend(args []string, stdout, stderr io.Writer) int {
 		return runSingleInteractiveSend(filePaths, *server, *insecure, *words, *relayOnly, iceServer, *privateMode, *jitter, *jsonOutput, stdout, stderr)
 	}
 
-	return runBroadcastSend(filePaths, toDevices, *server, *insecure, *relayOnly, iceServer, *privateMode, *jitter, *jsonOutput, *concurrency, *configDir, stdout, stderr)
+	return runBroadcastSend(filePaths, toDevices, *server, *insecure, *relayOnly, iceServer, *privateMode, *jitter, *jsonOutput, *concurrency, *timeout, *configDir, stdout, stderr)
 }
 
 func runSingleInteractiveSend(filePaths []string, server string, insecure bool, words int, relayOnly bool, iceServer iceServerList, privateMode bool, jitter time.Duration, jsonOutput bool, stdout, stderr io.Writer) int {
@@ -287,10 +289,16 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 	return 0
 }
 
-func runBroadcastSend(filePaths []string, toDevices []string, server string, insecure bool, relayOnly bool, iceServer iceServerList, privateMode bool, jitter time.Duration, jsonOutput bool, concurrency int, configDir string, stdout, stderr io.Writer) int {
+func runBroadcastSend(filePaths []string, toDevices []string, server string, insecure bool, relayOnly bool, iceServer iceServerList, privateMode bool, jitter time.Duration, jsonOutput bool, concurrency int, timeout time.Duration, configDir string, stdout, stderr io.Writer) int {
 	env, err := InitCLIEnvironment(configDir)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam send: %v\n", err)
+		return 1
+	}
+
+	localID, err := env.IdentityMgr.GetOrCreateIdentity()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam send: identity error: %v\n", err)
 		return 1
 	}
 
@@ -311,6 +319,8 @@ func runBroadcastSend(filePaths []string, toDevices []string, server string, ins
 	type resolvedDev struct {
 		targetName string
 		record     *wire.TrustRecord
+		kPair      []byte
+		peerPubKey ed25519.PublicKey
 	}
 	var resolved []resolvedDev
 
@@ -324,7 +334,22 @@ func runBroadcastSend(filePaths []string, toDevices []string, server string, ins
 			_, _ = fmt.Fprintf(stderr, "sendbeam send: trust for device %q is revoked\n", dev.LocalLabel)
 			return 1
 		}
-		resolved = append(resolved, resolvedDev{targetName: tName, record: dev})
+		kPair, err := env.Secrets.ResolvePairSecret(ctx, dev.DeviceID, dev.PairCredentialRef)
+		if err != nil || len(kPair) == 0 {
+			_, _ = fmt.Fprintf(stderr, "sendbeam send: failed to resolve pair secret for device %q: %v\n", dev.LocalLabel, err)
+			return 1
+		}
+		peerPubKey, err := wire.ParsePublicKeyHex(dev.PublicKey)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "sendbeam send: invalid public key for device %q: %v\n", dev.LocalLabel, err)
+			return 1
+		}
+		resolved = append(resolved, resolvedDev{
+			targetName: tName,
+			record:     dev,
+			kPair:      kPair,
+			peerPubKey: peerPubKey,
+		})
 	}
 
 	s := newStyleFromWriter(stderr)
@@ -336,37 +361,59 @@ func runBroadcastSend(filePaths []string, toDevices []string, server string, ins
 		}
 	}
 
+	dialWriter := stderr
+	if jsonOutput {
+		dialWriter = io.Discard
+	}
+
+	replayCache := wire.NewNonceReplayCache(5 * time.Minute)
+
 	targets := make([]transfer.BroadcastTarget, len(resolved))
 	for i, r := range resolved {
-		var sig transfer.Signal
-		client, err := dial(ctx, server, insecure, stderr)
-		if err != nil {
-			sig = &offlineSignal{err: fmt.Errorf("peer offline: %w", err)}
-		} else {
-			sig = client
+		rec := r.record
+		kPair := r.kPair
+		peerPubKey := r.peerPubKey
+
+		handle := wire.DeriveRendezvousHandleForTime(kPair, time.Now().UTC(), wire.DefaultRendezvousEpochWindow)
+
+		opaqueOpts := &rendezvous.OpaqueOptions{
+			Role:              rendezvous.RoleOfferer,
+			Handle:            handle,
+			LocalIdentity:     localID,
+			PeerDeviceID:      rec.DeviceID,
+			PeerPublicKey:     peerPubKey,
+			KPair:             kPair,
+			PairCredentialRef: rec.PairCredentialRef,
+			LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume"},
+			ReplayCache:       replayCache,
+			Tombstones:        env.Tombstones,
+			TrustStore:        env.TrustStore,
 		}
 
-		session := rendezvous.Options{
-			Role: rendezvous.RoleOfferer,
+		spec := transfer.Spec{
+			Opaque:       opaqueOpts,
+			PeerDeviceID: rec.DeviceID,
+			PeerLabel:    rec.LocalLabel,
+			Sources:      sources,
+			ICEServers:   ice,
+			ForceRelay:   relayOnly,
+			Private:      privateMode,
+			RelayJitter:  jitter,
 		}
 
 		targets[i] = transfer.BroadcastTarget{
-			ID:     r.record.DeviceID,
-			Label:  r.record.LocalLabel,
-			Signal: sig,
-			Spec: transfer.Spec{
-				Session:     session,
-				Sources:     sources,
-				ICEServers:  ice,
-				ForceRelay:  relayOnly,
-				Private:     privateMode,
-				RelayJitter: jitter,
+			ID:    rec.DeviceID,
+			Label: rec.LocalLabel,
+			Dial: func(dialCtx context.Context) (transfer.Signal, error) {
+				return dial(dialCtx, server, insecure, dialWriter)
 			},
+			Spec: spec,
 		}
 	}
 
 	broadcastResult := transfer.RunBroadcast(ctx, targets, transfer.BroadcastOptions{
-		Concurrency: concurrency,
+		Concurrency:   concurrency,
+		TargetTimeout: timeout,
 		OnTargetStart: func(target transfer.BroadcastTarget) {
 			if !jsonOutput {
 				_, _ = fmt.Fprintf(stderr, "[%s] Starting transfer to %s...\n", time.Now().Format("15:04:05"), s.cyan(target.Label))
@@ -446,14 +493,3 @@ func renderBroadcastTable(w io.Writer, results []transfer.TargetResult, totalSiz
 	}
 	_, _ = fmt.Fprintln(w)
 }
-
-type offlineSignal struct {
-	err error
-}
-
-func (s *offlineSignal) Send(rendezvous.Message) error { return s.err }
-func (s *offlineSignal) SendBinary([]byte) error       { return s.err }
-func (s *offlineSignal) Run(context.Context, func(rendezvous.Message), func([]byte)) error {
-	return s.err
-}
-func (s *offlineSignal) Close() {}
