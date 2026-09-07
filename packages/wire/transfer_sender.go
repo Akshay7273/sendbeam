@@ -70,6 +70,9 @@ type SenderOptions struct {
 	OnStateChange func(TransferState)
 	// Padding enables power-of-two traffic padding on all outbound frames (V17-PR03).
 	Padding bool
+	// RequirePadding enforces that all inbound frames have FrameFlagPadded set (V19-PR11).
+	// An unpadded frame aborts the send fail-closed.
+	RequirePadding bool
 	// OnManifest, when set, is called with the validated manifest immediately before its
 	// frame is transmitted. It lets the caller make sender-side state durable — the stable
 	// transfer id and canonical source identity — strictly before the manifest can
@@ -173,6 +176,9 @@ func NewSender(opts SenderOptions) *Sender {
 	files := opts.Files
 	if len(files) == 0 && opts.File != nil {
 		files = []FileSource{opts.File}
+	}
+	if opts.RequirePadding {
+		opts.Padding = true
 	}
 	s := &Sender{
 		o:             opts,
@@ -399,6 +405,10 @@ func (s *Sender) Handle(frame []byte) {
 			return
 		}
 		s.fail(NewTransferError(FailIntegrity, err.Error()))
+		return
+	}
+	if s.o.RequirePadding && (opened.Header.Flags&FrameFlagPadded == 0) {
+		s.fail(NewTransferError(FailIntegrity, ErrUnpaddedFrame.Error()))
 		return
 	}
 	s.mu.Lock()

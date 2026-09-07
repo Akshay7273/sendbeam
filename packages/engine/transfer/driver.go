@@ -99,6 +99,10 @@ type Spec struct {
 	ForceRelay bool
 	// Private enables negotiated traffic padding on the transfer (V17-PR03).
 	Private bool
+	// RequirePadding enforces traffic padding policy (V19-PR11).
+	// If the remote peer does not negotiate the "padding" capability, or transmits
+	// unpadded frames, the transfer fails closed before any payload transfer.
+	RequirePadding bool
 	// RelayJitter configures optional sender-side timing jitter for relay frames (V17-PR04).
 	RelayJitter time.Duration
 	// OnTransport reports "direct" or "relay" when the selected byte path changes.
@@ -235,7 +239,7 @@ func (d *driver) run(ctx context.Context) (*Outcome, error) {
 	if d.spec.Opaque != nil {
 		opts := *d.spec.Opaque
 		opts.Transport = d
-		if d.spec.Private && !containsString(opts.LocalCaps, wire.PaddingCapability) {
+		if (d.spec.Private || d.spec.RequirePadding) && !containsString(opts.LocalCaps, wire.PaddingCapability) {
 			opts.LocalCaps = append(append([]string{}, opts.LocalCaps...), wire.PaddingCapability)
 		}
 		d.opaqueSess = rendezvous.NewOpaqueSession(opts)
@@ -248,7 +252,7 @@ func (d *driver) run(ctx context.Context) (*Outcome, error) {
 	} else {
 		opts := d.spec.Session
 		opts.Transport = d
-		if d.spec.Private {
+		if d.spec.Private || d.spec.RequirePadding {
 			var localCaps rendezvous.Caps
 			if opts.LocalCaps != nil {
 				localCaps = *opts.LocalCaps
@@ -886,6 +890,9 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 	if needsFolders && !containsString(res.RemoteCaps.Features, "folders") {
 		return nil, wire.Errorf(wire.CodeCompat, "transfer: receiver does not support files or folders as a set")
 	}
+	if d.spec.RequirePadding && !containsString(res.RemoteCaps.Features, wire.PaddingCapability) {
+		return nil, wire.ErrPaddingRequired
+	}
 	// V13-PR07: the transfer-scoped resume credential derives from the ORIGINAL session
 	// master, so it is available only after the handshake. The driver derives the narrow
 	// resume root here and hands it to the host seam, which persists the credential into the
@@ -925,6 +932,7 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 		BlockSize:        negotiate(res.LocalCaps.BlockSize, res.RemoteCaps.BlockSize, wire.DefaultBlockBytes),
 		FrameSize:        negotiate(res.LocalCaps.MaxFrame, res.RemoteCaps.MaxFrame, wire.DefaultFrameBytes),
 		Padding:          paddingNegotiated,
+		RequirePadding:   d.spec.RequirePadding,
 		DoneTimeout:      60 * time.Second,
 		// Advertise a stable random id in the manifest so a receiver that crashes mid-file
 		// can journal its verified progress and resume it (V13-PR02); the wire layer mints
@@ -1046,6 +1054,9 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 	// value (or a TransferID mismatch) means a fresh receive, exactly as the wire layer
 	// documents for ReceiverResume.
 	var sharedResume wire.ReceiverResume
+	if d.spec.RequirePadding && !containsString(res.RemoteCaps.Features, wire.PaddingCapability) {
+		return nil, wire.ErrPaddingRequired
+	}
 	paddingNegotiated := containsString(res.LocalCaps.Features, wire.PaddingCapability) && containsString(res.RemoteCaps.Features, wire.PaddingCapability)
 	var receivedTransferID string
 	receiver := wire.NewReceiver(wire.ReceiverOptions{
@@ -1057,6 +1068,7 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 		Destination:      destination,
 		Resume:           &sharedResume,
 		Padding:          paddingNegotiated,
+		RequirePadding:   d.spec.RequirePadding,
 		OnProgress:       d.spec.OnProgress,
 		OnFileProgress:   d.spec.OnFileProgress,
 		OnResume:         d.spec.OnResumeProgress,

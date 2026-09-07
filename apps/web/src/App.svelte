@@ -6,7 +6,7 @@
     RendezvousResult,
     Role,
   } from '@sendbeam/protocol';
-  import { RendezvousError, TransferError } from '@sendbeam/protocol';
+  import { FEATURE_PADDING, RendezvousError, TransferError } from '@sendbeam/protocol';
 
   import { offer, join, type RendezvousController } from './lib/session/rendezvous.js';
   import type { SignalChannel } from './lib/signaling/client.js';
@@ -360,6 +360,7 @@
     }
     if (pickerWindow.showSaveFilePicker) sinkHints.push('direct-file');
     features.push('relay');
+    features.push(FEATURE_PADDING);
     if (opts.resume === true) features.push('resume-auth-v1');
     return { features, sinkHints };
   }

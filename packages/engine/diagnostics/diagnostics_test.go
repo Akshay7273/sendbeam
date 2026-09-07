@@ -39,6 +39,16 @@ func TestSanitizeRedactsSensitive(t *testing.T) {
 			in:   "could not write /home/me/secret.txt",
 			want: []string{"/home/me/secret.txt", "secret.txt"},
 		},
+		{
+			name: "64-hex key or secret",
+			in:   "handshake key 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef failed",
+			want: []string{"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		},
+		{
+			name: "unpadded payload length disclosure",
+			in:   "rejected unpadded length 12345 exceeds padding budget",
+			want: []string{"12345"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

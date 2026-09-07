@@ -59,10 +59,17 @@ import {
   verifyRevocation,
   signDeviceMessage,
   isPaddingNegotiated,
+  validatePaddingPolicy,
   FEATURE_PADDING,
   FRAME_FLAG_PADDED,
   FRAME_VERSION,
   FrameType,
+  TransferReceiver,
+  TransferSender,
+  encodeControl,
+  bytesSource,
+  ERR_PADDING_REQUIRED,
+  ERR_UNPADDED_FRAME,
 } from './index.js';
 
 describe('SendBeam v1.8 Attack-Matrix & Adversarial Security Campaign', () => {
@@ -450,17 +457,12 @@ describe('SendBeam v1.8 Attack-Matrix & Adversarial Security Campaign', () => {
     const strippedCaps = privatePeerCaps.filter((c) => c !== FEATURE_PADDING);
     expect(isPaddingNegotiated(localCaps, strippedCaps)).toBe(false);
 
-    // Session enforcing private mode fails closed if FEATURE_PADDING was not negotiated
-    const enforcePrivateSession = (peerCaps: string[]) => {
-      if (!isPaddingNegotiated(localCaps, peerCaps)) {
-        throw new Error(
-          `downgrade rejected: peer does not negotiate ${FEATURE_PADDING} capability`,
-        );
-      }
-    };
-    expect(() => enforcePrivateSession(strippedCaps)).toThrow(/downgrade rejected/);
+    // Session enforcing private mode fails closed if FEATURE_PADDING was not negotiated via production validatePaddingPolicy
+    expect(() => validatePaddingPolicy(strippedCaps, true)).toThrow(ERR_PADDING_REQUIRED);
+    expect(() => validatePaddingPolicy(privatePeerCaps, true)).not.toThrow();
+    expect(() => validatePaddingPolicy(publicPeerCaps, false)).not.toThrow();
 
-    // Receiver enforcing private mode rejects unpadded frames
+    // Receiver enforcing private mode rejects unpadded frames via production TransferReceiver
     const dir = {
       key: new Uint8Array(32).fill(0x02),
       salt: new Uint8Array([1, 2, 3, 4]),
@@ -482,12 +484,67 @@ describe('SendBeam v1.8 Attack-Matrix & Adversarial Security Campaign', () => {
     const opened = await openSequenced(dir, 0, unpaddedFrame);
     // Private policy verification: frame must have FRAME_FLAG_PADDED set
     expect(opened.header.flags & FRAME_FLAG_PADDED).toBe(0);
-    const enforcePaddedFrame = (flags: number) => {
-      if ((flags & FRAME_FLAG_PADDED) === 0) {
-        throw new Error('private session rejected unpadded frame');
-      }
+
+    const sink = {
+      open: async () => {},
+      writeAt: async () => {},
+      truncate: async () => {},
+      close: async () => {},
     };
-    expect(() => enforcePaddedFrame(opened.header.flags)).toThrow(/rejected unpadded frame/);
+    const recv = new TransferReceiver({
+      sink,
+      send: () => {},
+      sendDir: dir,
+      recvDir: dir,
+      sendCounterStart: 0,
+      recvCounterStart: 0,
+      createDigest: () => ({
+        update: () => {},
+        hexDigest: async () => '00'.repeat(32),
+      }),
+      requirePadding: true,
+    });
+
+    await recv.handle(unpaddedFrame);
+    await expect(recv.done).rejects.toThrow(ERR_UNPADDED_FRAME);
+
+    // Sender enforcing production requirePadding rejects unpadded inbound control frames fail-closed
+    const ackPayload = encodeControl({ type: FrameType.Ack, fileIdx: 0, blockIdx: 0 });
+    const unpaddedAck = await seal(
+      dir,
+      0,
+      {
+        version: FRAME_VERSION,
+        type: FrameType.Ack,
+        flags: 0, // Unpadded
+        fileIdx: 0,
+        blockIdx: 0,
+        frameOff: 0,
+      },
+      ackPayload,
+    );
+
+    const snd = new TransferSender({
+      file: bytesSource(new TextEncoder().encode('payload'), {
+        name: 'test.txt',
+        size: 7,
+        mime: '',
+        lastModified: 0,
+      }),
+      send: () => {},
+      sendDir: dir,
+      recvDir: dir,
+      sendCounterStart: 0,
+      recvCounterStart: 0,
+      createDigest: () => ({
+        update: () => {},
+        hexDigest: async () => '00'.repeat(32),
+      }),
+      requirePadding: true,
+    });
+
+    await snd.handle(unpaddedAck);
+    await expect(snd.run()).rejects.toThrow(ERR_UNPADDED_FRAME);
   });
 
   // Vector 15: Update-manifest replay rejection (Go native self-updater architectural boundary)

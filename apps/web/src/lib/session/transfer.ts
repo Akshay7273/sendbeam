@@ -12,6 +12,7 @@
 
 import {
   FEATURE_PADDING,
+  validatePaddingPolicy,
   decodeResumeSecretEnvelope,
   deriveResumeRoot,
   type RendezvousResult,
@@ -107,6 +108,8 @@ export interface SendOptions {
   resumeAttempt?: HostResumeAttempt;
   /** Operator-published ICE servers; omitting keeps the bundled default STUN. */
   iceServers?: RTCIceServer[];
+  /** Mandates strict traffic padding policy; fails closed on unpadded frames (V19-PR11). */
+  requirePadding?: boolean;
 }
 
 function isPaddingNegotiated(rendezvous: RendezvousResult): boolean {
@@ -122,14 +125,17 @@ export function runSend(
   signaling: SignalChannel,
   opts: SendOptions,
 ): TransferController {
+  const requirePadding = opts.requirePadding ?? false;
   return run(rendezvous, signaling, {
     role: 'send',
+    requirePadding,
     total: opts.files.reduce((total, file) => total + file.size, 0),
     ...(opts.iceServers ? { iceServers: opts.iceServers } : {}),
     start: async () => ({
       kind: 'start-send',
       files: opts.files,
-      ...(isPaddingNegotiated(rendezvous) ? { padding: true } : {}),
+      ...(isPaddingNegotiated(rendezvous) || requirePadding ? { padding: true } : {}),
+      ...(requirePadding ? { requirePadding: true } : {}),
       ...(opts.transferId !== undefined ? { transferId: opts.transferId } : {}),
       ...(opts.reattachment !== undefined ? { reattachment: opts.reattachment } : {}),
       ...(opts.resumeAttempt !== undefined
@@ -151,20 +157,24 @@ export function runReceive(
   opts: {
     iceServers?: RTCIceServer[];
     resumeAttempt?: HostResumeAttempt;
+    requirePadding?: boolean;
     onConsent?: (manifest: {
       files: Array<{ name: string; size: number }>;
       totalSize: number;
     }) => Promise<boolean> | boolean;
   } = {},
 ): TransferController {
+  const requirePadding = opts.requirePadding ?? false;
   return run(rendezvous, signaling, {
     role: 'receive',
+    requirePadding,
     ...(opts.iceServers ? { iceServers: opts.iceServers } : {}),
     ...(opts.onConsent ? { onConsent: opts.onConsent } : {}),
     start: async () => ({
       kind: 'start-recv',
       destination,
-      ...(isPaddingNegotiated(rendezvous) ? { padding: true } : {}),
+      ...(isPaddingNegotiated(rendezvous) || requirePadding ? { padding: true } : {}),
+      ...(requirePadding ? { requirePadding: true } : {}),
       ...(opts.resumeAttempt !== undefined
         ? { resumeAttempt: await hostResumeAttempt(opts.resumeAttempt) }
         : {}),
@@ -178,6 +188,7 @@ export function runReceive(
 
 interface RunSpec {
   role: 'send' | 'receive';
+  requirePadding?: boolean;
   /** Known upfront only when sending. */
   total?: number;
   /** Operator-published ICE servers for direct-path candidate gathering. */
@@ -306,6 +317,9 @@ function run(
   const gen = generation.capture();
   void (async () => {
     try {
+      if (spec.requirePadding) {
+        validatePaddingPolicy(rendezvous.remoteCaps.features, true);
+      }
       const auth = rendezvous.authKeys
         ? new SignalAuthenticator(0, rendezvous.authKeys)
         : SignalAuthenticator.fromSession(

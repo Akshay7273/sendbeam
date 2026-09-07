@@ -51,6 +51,9 @@ type TrustPolicy struct {
 
 	// AllowedMimeTypes is an optional whitelist of permitted MIME types/prefixes.
 	AllowedMimeTypes []string `json:"allowed_mime_types,omitempty"`
+
+	// RequirePadding enforces strict traffic padding for all transfers with this peer (V19-PR11).
+	RequirePadding bool `json:"require_padding,omitempty"`
 }
 
 // DefaultTrustPolicy returns the default safe trust policy (auto-accept disabled).

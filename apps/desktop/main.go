@@ -109,14 +109,16 @@ func main() {
 				serverURL = engine.DefaultServer
 			}
 			if err := transferSvc.StartNativeReceiver(receiver.Config{
-				Server:     serverURL,
-				DestDir:    downloadDir,
-				AutoAccept: false,
-				Identity:   id,
-				TrustStore: deviceSvc.GetStore(),
-				Secrets:    deviceSvc.GetCredentialStore(),
-				Tombstones: deviceSvc.GetTombstoneStore(),
-				Port:       0, // LAN discovery handled by deviceSvc
+				Server:         serverURL,
+				DestDir:        downloadDir,
+				AutoAccept:     false,
+				RequirePadding: cfg.RequirePadding,
+				Private:        cfg.RequirePadding,
+				Identity:       id,
+				TrustStore:     deviceSvc.GetStore(),
+				Secrets:        deviceSvc.GetCredentialStore(),
+				Tombstones:     deviceSvc.GetTombstoneStore(),
+				Port:           0, // LAN discovery handled by deviceSvc
 			}); err != nil {
 				log.Printf("SendBeam Desktop: native receiver failed to start: %v", err)
 			}

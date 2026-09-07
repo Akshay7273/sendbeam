@@ -97,13 +97,21 @@ func usage(w *os.File) {
 	_, _ = fmt.Fprintln(w, "  --to DEVICE              send directly to trusted device name, ID, or fingerprint (repeatable)")
 	_, _ = fmt.Fprintln(w, "  --concurrency N          max concurrent transfers for multi-device broadcast (default 4)")
 	_, _ = fmt.Fprintln(w, "  --private                enable negotiated traffic padding for wire privacy")
+	_, _ = fmt.Fprintln(w, "  --require-padding        mandate traffic padding; fail closed on unpadded peers or frames")
 	_, _ = fmt.Fprintln(w, "  --jitter DURATION        maximum random scheduling jitter for relay frames (e.g. 15ms)")
 	_, _ = fmt.Fprintln(w, "  --json                   output structured JSON result")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, s.dim("Receive flags:"))
 	_, _ = fmt.Fprintln(w, "  --out DIR                directory to write the received file into (default .)")
 	_, _ = fmt.Fprintln(w, "  --private                enable negotiated traffic padding for wire privacy")
+	_, _ = fmt.Fprintln(w, "  --require-padding        mandate traffic padding; fail closed on unpadded peers or frames")
 	_, _ = fmt.Fprintln(w, "  --jitter DURATION        maximum random scheduling jitter for relay frames (e.g. 15ms)")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, s.dim("Listen flags:"))
+	_, _ = fmt.Fprintln(w, "  --dest DIR               directory to write received files into (default .)")
+	_, _ = fmt.Fprintln(w, "  --auto-accept            automatically accept transfers from trusted devices")
+	_, _ = fmt.Fprintln(w, "  --private                enable negotiated traffic padding for wire privacy")
+	_, _ = fmt.Fprintln(w, "  --require-padding        mandate traffic padding; fail closed on unpadded peers or frames")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, s.dim("Transfers flags:"))
 	_, _ = fmt.Fprintln(w, "  --out DIR                directory whose .sendbeam durable store to manage (default .)")
@@ -116,6 +124,7 @@ func runReceive(args []string) int {
 	outDir := fs.String("out", ".", "directory to write the received file into")
 	relayOnly := fs.Bool("relay-only", false, "force the encrypted WebSocket relay")
 	privateMode := fs.Bool("private", false, "enable negotiated traffic padding for wire privacy")
+	requirePadding := fs.Bool("require-padding", false, "mandate traffic padding; fail closed on unpadded peers or frames")
 	jitter := fs.Duration("jitter", 0, "maximum random scheduling jitter for relay frames (e.g. 15ms)")
 	var iceServer iceServerList
 	fs.Var(&iceServer, "ice-server", "STUN server URL for direct-path candidates (repeatable; default stun:stun.l.google.com:19302)")
@@ -159,10 +168,11 @@ func runReceive(args []string) int {
 			Code:    code,
 			OnPhase: phasePrinter(rendezvous.RoleJoiner, os.Stderr),
 		},
-		DestDir:     *outDir,
-		ForceRelay:  *relayOnly,
-		Private:     *privateMode,
-		RelayJitter: *jitter,
+		DestDir:        *outDir,
+		ForceRelay:     *relayOnly,
+		Private:        *privateMode || *requirePadding,
+		RequirePadding: *requirePadding,
+		RelayJitter:    *jitter,
 		ICEServers:  ice,
 		OnTransport: transportPrinter,
 		OnManifestSet: func(manifest wire.Manifest) {

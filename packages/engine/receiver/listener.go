@@ -261,27 +261,35 @@ func (l *Listener) HandleIncomingSession(ctx context.Context, sig transfer.Signa
 		return nil, wire.Errorf(wire.CodeAuth, "decode peer public key: %v", err)
 	}
 
-	spec := transfer.Spec{
-		Opaque: &rendezvous.OpaqueOptions{
-			Role:              rendezvous.RoleJoiner,
-			Handle:            handle,
-			LocalIdentity:     l.cfg.Identity,
-			PeerDeviceID:      peerDeviceID,
-			PeerPublicKey:     peerPubKey,
-			KPair:             kPair,
-			PairCredentialRef: dev.PairCredentialRef,
-			LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume"},
-			ReplayCache:       l.replayCache,
-			Tombstones:        l.cfg.Tombstones,
-			TrustStore:        l.cfg.TrustStore,
-		},
-		DestDir:      l.cfg.DestDir,
-		ForceRelay:   l.cfg.ForceRelay,
-		Private:      l.cfg.Private,
-		RelayJitter:  l.cfg.RelayJitter,
-		ICEServers:   l.cfg.ICEServers,
-		PeerDeviceID: peerDeviceID,
-		PeerLabel:    dev.LocalLabel,
+		requirePadding := l.cfg.RequirePadding || dev.Policy.RequirePadding
+		privateMode := l.cfg.Private || requirePadding
+		localCaps := []string{"sendbeam/3", "rendezvous", "resume"}
+		if privateMode {
+			localCaps = append(localCaps, wire.PaddingCapability)
+		}
+
+		spec := transfer.Spec{
+			Opaque: &rendezvous.OpaqueOptions{
+				Role:              rendezvous.RoleJoiner,
+				Handle:            handle,
+				LocalIdentity:     l.cfg.Identity,
+				PeerDeviceID:      peerDeviceID,
+				PeerPublicKey:     peerPubKey,
+				KPair:             kPair,
+				PairCredentialRef: dev.PairCredentialRef,
+				LocalCaps:         localCaps,
+				ReplayCache:       l.replayCache,
+				Tombstones:        l.cfg.Tombstones,
+				TrustStore:        l.cfg.TrustStore,
+			},
+			DestDir:        l.cfg.DestDir,
+			ForceRelay:     l.cfg.ForceRelay,
+			Private:        privateMode,
+			RequirePadding: requirePadding,
+			RelayJitter:    l.cfg.RelayJitter,
+			ICEServers:     l.cfg.ICEServers,
+			PeerDeviceID:   peerDeviceID,
+			PeerLabel:      dev.LocalLabel,
 		Consent: func(cctx context.Context, req transfer.ConsentRequest) (transfer.ConsentDecision, error) {
 			return l.evaluateConsent(cctx, dev, req)
 		},

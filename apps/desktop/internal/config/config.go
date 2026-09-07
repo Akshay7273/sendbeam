@@ -45,6 +45,8 @@ type DesktopConfig struct {
 	UpdateChannel string `json:"updateChannel"`
 	// AutoCheckUpdate controls whether the app automatically checks for updates on startup.
 	AutoCheckUpdate bool `json:"autoCheckUpdate"`
+	// RequirePadding mandates traffic padding; transfers with peers lacking padding are rejected fail-closed (V19-PR11).
+	RequirePadding bool `json:"requirePadding"`
 }
 
 // DefaultConfig returns the default safe configuration.
@@ -54,6 +56,7 @@ func DefaultConfig() DesktopConfig {
 		ICEServers:      []string{"stun:stun.l.google.com:19302"},
 		DownloadDir:     "",
 		AutoAccept:      false, // strictly false by default
+		RequirePadding:  false,
 		CloseToTray:     false,
 		StartMinimized:  false,
 		Theme:           "system",
@@ -61,6 +64,7 @@ func DefaultConfig() DesktopConfig {
 		AutoCheckUpdate: true,
 	}
 }
+
 
 // Validate validates the configuration values.
 func (c *DesktopConfig) Validate() error {

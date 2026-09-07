@@ -76,10 +76,12 @@ export function sanitize(s: string): string {
       /(?:(?:\d{1,3}\.){3}\d{1,3}\b|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}\b)(?:[-:]\d{1,5})?/g,
       '<ip>',
     )
+    .replace(/\b[0-9a-fA-F]{64}\b/g, '<secret>')
     .replace(
       /\b(?:credential|token|secret|password|passwd|key|username)\s*[=:]\s*(\S+)/gi,
       '<redacted>',
     )
+    .replace(/\b(unpadded length|payload length|payload size)\s+\d+\b/gi, '$1 <redacted>')
     .replace(/\b\d+-[a-z]+(?:-[a-z]+)+\b/g, '<code>')
     .replace(/(?:\/\/?)[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)+/g, '<path>')
     .replace(/(?:[A-Za-z]:\\)[\\a-zA-Z0-9_.-]+/g, '<path>');

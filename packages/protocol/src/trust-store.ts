@@ -21,6 +21,8 @@ export interface TrustPolicy {
   maxFileSizeBytes?: number;
   /** Optional whitelist of permitted MIME types. */
   allowedMimeTypes?: string[];
+  /** Strict require-padding policy for this device (V19-PR11). */
+  requirePadding?: boolean;
 }
 
 export function defaultTrustPolicy(): TrustPolicy {

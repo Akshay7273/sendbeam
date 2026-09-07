@@ -39,6 +39,8 @@ func executeListenWithContext(ctx context.Context, args []string, stdin io.Reade
 	port := fs.Int("port", 53317, "local port for direct LAN peer discovery")
 	server := fs.String("server", "", "signaling server URL")
 	jsonOutput := fs.Bool("json", false, "output JSON format events")
+	privateMode := fs.Bool("private", false, "enable negotiated traffic padding for wire privacy")
+	requirePadding := fs.Bool("require-padding", false, "mandate traffic padding; fail closed on unpadded peers or frames")
 	configDir := fs.String("config-dir", "", "path to custom configuration directory")
 
 	if err := fs.Parse(args); err != nil {
@@ -130,6 +132,8 @@ func executeListenWithContext(ctx context.Context, args []string, stdin io.Reade
 		TrustStore:     env.TrustStore,
 		Secrets:        env.Secrets,
 		Tombstones:     tombstones,
+		RequirePadding: *requirePadding,
+		Private:        *privateMode || *requirePadding,
 		ConsentHandler: consentHandler,
 		OnPeerDiscovered: func(peer receiver.DiscoveredPeer) {
 			rec, err := env.TrustStore.GetDevice(ctx, peer.DeviceID)

@@ -247,6 +247,7 @@ export class IncomingTransferCoordinator {
         signaling,
         { kind: 'auto' },
         {
+          requirePadding: dev.policy?.requirePadding ?? false,
           ...(this.options.iceServers ? { iceServers: this.options.iceServers } : {}),
           onConsent: async (manifest) => {
             if (!consentRequired) {

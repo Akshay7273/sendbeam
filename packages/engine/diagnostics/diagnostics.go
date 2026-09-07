@@ -107,11 +107,13 @@ func (s *Snapshot) JSON() []byte {
 }
 
 // Sanitize applies the shared redaction rules to a string, returning a version with full
-// IP addresses, credentials, invite codes, and filenames/paths removed. Used for any free
+// IP addresses, credentials, 64-hex keys, unpadded payload sizes, invite codes, and filenames/paths removed. Used for any free
 // text (e.g. failure messages) before it enters a Snapshot or a failure message.
 func Sanitize(s string) string {
 	s = ipAddrRe.ReplaceAllString(s, "<ip>")
+	s = hexKeyRe.ReplaceAllString(s, "<secret>")
 	s = credRe.ReplaceAllString(s, "${1}=<redacted>")
+	s = payloadSizeRe.ReplaceAllString(s, "${1} <redacted>")
 	s = codeRe.ReplaceAllString(s, "<code>")
 	s = pathRe.ReplaceAllString(s, "<path>")
 	return s
@@ -121,6 +123,10 @@ var (
 	// ipAddrRe matches a full IPv4 or IPv6 address, optionally with a port, followed by a
 	// word boundary so a trailing ":" in an unbracketed IPv6 is still caught.
 	ipAddrRe = regexp.MustCompile(`(?:\b(?:\d{1,3}\.){3}\d{1,3}\b|\[[0-9a-fA-F:]+\]|\b(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}\b)(?:[-:]\d{1,5})?`)
+	// hexKeyRe matches 64-character hexadecimal keys or secrets (e.g. 32-byte Ed25519/AES keys, digests).
+	hexKeyRe = regexp.MustCompile(`\b[0-9a-fA-F]{64}\b`)
+	// payloadSizeRe matches explicit unpadded payload length disclosures.
+	payloadSizeRe = regexp.MustCompile(`(?i)\b(unpadded length|payload length|payload size)\s+\d+\b`)
 	// credRe matches "label=value" or "label: value" or "label value" for credential-like
 	// keys and replaces only the value (group 1 is the key, group 2 the value).
 	credRe = regexp.MustCompile(`(?i)\b(credential|token|secret|password|passwd|key|username)\s*[=:]\s*(\S+)|(?i)\b(credential|token|secret|password|passwd|key|username)\s+(\S+)`)
@@ -129,3 +135,4 @@ var (
 	// pathRe strips absolute and drive-relative filesystem paths that may embed filenames.
 	pathRe = regexp.MustCompile(`(?i)\b(?:/[a-zA-Z0-9_.\-]+)+|(?:[a-z]:\\)[\\a-zA-Z0-9_.\-]+`)
 )
+

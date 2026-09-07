@@ -138,6 +138,7 @@ export async function startTargetedSend(opts: TargetedSendOptions): Promise<Targ
 
       const ctrl = runSend(res, signaling, {
         files: opts.files,
+        requirePadding: peer.record.policy?.requirePadding ?? false,
         ...(opts.iceServers ? { iceServers: opts.iceServers } : {}),
       });
       activeTransfer = ctrl;
@@ -252,6 +253,7 @@ export async function runBroadcastSend(
 
       const transferCtrl = runSend(res, signaling, {
         files,
+        requirePadding: peer.record.policy?.requirePadding ?? false,
         ...(opts.iceServers ? { iceServers: opts.iceServers } : {}),
       });
 
