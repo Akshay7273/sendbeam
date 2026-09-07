@@ -30,11 +30,18 @@ export function defaultTrustPolicy(): TrustPolicy {
   };
 }
 
+export const RELATIONSHIP_CONTACT = 'contact';
+export const RELATIONSHIP_CLUSTER_MEMBER = 'cluster_member';
+export const RELATIONSHIP_CLUSTER_OWNER = 'cluster_owner';
+export type TrustRelationship = 'contact' | 'cluster_member' | 'cluster_owner';
+
 export interface TrustRecord {
   deviceId: string;
   publicKey: string; // 64-char lowercase hex string (32 bytes)
   localLabel: string;
   pairCredentialRef: string;
+  relationship?: TrustRelationship;
+  clusterId?: string;
   capabilities: string[];
   firstSeenAt: string; // ISO 8601 string
   lastSeenAt: string; // ISO 8601 string
@@ -66,6 +73,27 @@ export async function validateTrustRecord(record: TrustRecord): Promise<void> {
   }
   if (!record.localLabel || record.localLabel.trim() === '') {
     throw new Error('invalid trust record: local label cannot be empty');
+  }
+  if (!record.pairCredentialRef || record.pairCredentialRef.trim() === '') {
+    throw new Error('invalid trust record: pairCredentialRef cannot be empty');
+  }
+  if (record.relationship !== undefined) {
+    if (
+      record.relationship !== RELATIONSHIP_CONTACT &&
+      record.relationship !== RELATIONSHIP_CLUSTER_MEMBER &&
+      record.relationship !== RELATIONSHIP_CLUSTER_OWNER
+    ) {
+      throw new Error(`invalid trust record: invalid relationship ${record.relationship}`);
+    }
+    if (
+      (record.relationship === RELATIONSHIP_CLUSTER_MEMBER ||
+        record.relationship === RELATIONSHIP_CLUSTER_OWNER) &&
+      (!record.clusterId || record.clusterId.trim() === '')
+    ) {
+      throw new Error(
+        `invalid trust record: clusterId required for cluster relationship ${record.relationship}`,
+      );
+    }
   }
   if (!record.firstSeenAt) {
     throw new Error('invalid trust record: firstSeenAt must be set');

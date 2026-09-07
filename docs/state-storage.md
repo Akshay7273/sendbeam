@@ -40,21 +40,50 @@ This document provides a comprehensive mapping of where SendBeam stores persiste
 - **Directory:** `<DataDir>/senders` (or `~/.sendbeam/senders`)
 - **Purpose:** Stores local path key mappings to transfer IDs and resume secret envelopes so that re-sending the same files can resume an interrupted session without retransmitting already-committed blocks.
 
-### E. Native Credentials & Keychains
+### E. Native Credentials & Keychains (v1.9 Trusted Handoffs)
 
-- **macOS:** Stored in login keychain with service name `com.sendbeam.desktop`.
-- **Windows:** Encrypted with current user SID using Windows DPAPI.
-- **Linux:** Stored in default Secret Service keyring (`org.freedesktop.Secret.Generic`).
+SendBeam manages persistent device cryptographic identities and pairwise credentials (`k_pair`) with strict platform security boundaries:
+
+- **Device Identity (`identity.key`):**
+  - Stored at `<ConfigDir>/identity.key` with strict `0600` file permissions (`0700` directory).
+  - Contains the Ed25519 private key seed.
+  - **Fail-closed invariant:** If `identity.key` is zero-length, unparseable, or corrupted, SendBeam strictly refuses to overwrite or regenerate the identity. The error is raised immediately to prevent silent identity loss and unauthorized rotation.
+
+- **Trust Store (`trust.json`):**
+  - Stored at `<ConfigDir>/trust.json` (version 2 schema).
+  - Maintains paired peer device records, public keys, display labels, capabilities, trust relationships (`contact`, `cluster_member`, `cluster_owner`), cluster IDs, and auto-accept transfer policies.
+  - Migrated atomically and non-destructively from version 1 schema on startup.
+
+- **OS-Protected Credential Stores (Desktop):**
+  - **macOS:** Stored in macOS Keychain via `/usr/bin/security` under service `SendBeam` with account `sendbeam:pair:<deviceID>`.
+  - **Windows:** Encrypted at rest scoped to the logged-in user via Windows DPAPI (`ProtectedData.Protect` with `CurrentUser` scope) in `<ConfigDir>/secrets/<hash>.dpapi`.
+  - **Linux Desktop:** Stored in the freedesktop Secret Service keyring via `secret-tool` under service `SendBeam` with attribute `key=sendbeam:pair:<deviceID>`.
+  - **No Plaintext Fallback:** The desktop runtime strictly refuses silent downgrade to plaintext files if the OS protected credential store is unavailable; operations fail closed with `ErrSecretStoreUnavailable`.
+  - **Crash-Safe Legacy Migration:** On startup, if a legacy plaintext `secrets.json` file is detected, `MigrateLegacyFileSecrets` imports each secret into the protected store, verifies read-back integrity, zeroizes the plaintext file on disk, and renames it to `secrets.json.migrated`.
+
+- **Headless / CLI Credential Storage (`FileSecretStore`):**
+  - Headless environments without an active GUI session or OS secret service store credentials in `<ConfigDir>/secrets.json` with strict `0600` permissions.
+  - **Explicit Limits:** Storage is restricted solely by POSIX file permissions to the executing user account. It does not provide hardware security module (HSM), TPM, or OS keychain protection. Users requiring hardware protection must run within an OS desktop session.
 
 ---
 
 ## 3. Web Client Storage Architecture
 
-| Web Storage Primitive                 | Purpose                                                                                   | Lifetime                                                                                      |
-| :------------------------------------ | :---------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------- |
-| **IndexedDB** (`sendbeam_journals`)   | Tracks transfer progress checkpoints, transfer lease IDs, and resume credentials.         | Persistent across page reloads and browser restarts until transfer completes or is discarded. |
-| **Origin Private File System (OPFS)** | Streams and stores incoming partial file chunks (`*.part`) with block-granular integrity. | Retained during interrupted transfers; finalized atomically to user download when complete.   |
-| **SessionStorage / LocalStorage**     | Ephemeral UI states and theme preferences.                                                | Standard browser storage lifetime.                                                            |
+| Web Storage Primitive                 | Purpose                                                                                   | Lifetime                                                                                        |
+| :------------------------------------ | :---------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------- |
+| **IndexedDB** (`sendbeam_identity`)   | Stores local browser Ed25519 identity seed and public key.                                | Persistent until cleared. Corrupt seeds fail closed and strictly refuse overwrite/regeneration. |
+| **IndexedDB** (`sendbeam_trust`)      | Stores paired peer device records, labels, trust relationships, and auto-accept policy.   | Persistent across sessions. Validated on load.                                                  |
+| **IndexedDB** (`sendbeam_secrets`)    | Stores paired device pairwise secrets (`k_pair`).                                         | Persistent across sessions. Corrupt secrets fail closed and refuse parse.                       |
+| **IndexedDB** (`sendbeam_journals`)   | Tracks transfer progress checkpoints, transfer lease IDs, and resume credentials.         | Persistent across page reloads and browser restarts until transfer completes or is discarded.   |
+| **Origin Private File System (OPFS)** | Streams and stores incoming partial file chunks (`*.part`) with block-granular integrity. | Retained during interrupted transfers; finalized atomically to user download when complete.     |
+| **SessionStorage / LocalStorage**     | Ephemeral UI states and theme preferences.                                                | Standard browser storage lifetime.                                                              |
+
+### Explicit Browser Security Boundaries & Limits
+
+- **Origin Boundary:** All browser keys, trust records, and pair secrets are restricted to the origin (`omnitrix.space` or `localhost`).
+- **No Hardware Security Module / TPM:** In-browser cryptographic keys are maintained within browser IndexedDB storage and protected by browser sandbox boundaries, not OS Keychains or TPMs.
+- **Private Browsing / Incognito:** Identities and pairings established in Private/Incognito windows are ephemeral and cleared on window close.
+- **Fail-Closed on Corrupt Data:** If a stored identity seed in IndexedDB is malformed or invalid hex, the browser runtime strictly throws a descriptive error and refuses to generate a new key over the corrupt entry.
 
 ---
 

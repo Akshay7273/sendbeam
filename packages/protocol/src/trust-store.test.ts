@@ -85,7 +85,42 @@ describe('trust store & policy', () => {
         autoAccept: false,
       },
     };
-
     await expect(store.addOrUpdateDevice(badRecord)).rejects.toThrow();
+
+    // Missing pair credential ref
+    const noCredRecord: TrustRecord = {
+      deviceId: id.deviceId,
+      publicKey: bytesToHex(id.publicKey),
+      localLabel: 'No Cred Peer',
+      pairCredentialRef: '',
+      capabilities: [],
+      firstSeenAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      revoked: false,
+      policy: { autoAccept: false },
+    };
+    await expect(store.addOrUpdateDevice(noCredRecord)).rejects.toThrow(/pairCredentialRef/);
+
+    // Cluster member without cluster ID
+    const badClusterRecord: TrustRecord = {
+      deviceId: id.deviceId,
+      publicKey: bytesToHex(id.publicKey),
+      localLabel: 'Cluster Peer',
+      pairCredentialRef: 'cred-123',
+      relationship: 'cluster_member',
+      capabilities: [],
+      firstSeenAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      revoked: false,
+      policy: { autoAccept: false },
+    };
+    await expect(store.addOrUpdateDevice(badClusterRecord)).rejects.toThrow(/clusterId required/);
+
+    // Valid cluster member with cluster ID
+    const validClusterRecord: TrustRecord = {
+      ...badClusterRecord,
+      clusterId: 'sb-cluster-123',
+    };
+    await expect(store.addOrUpdateDevice(validClusterRecord)).resolves.toBeUndefined();
   });
 });

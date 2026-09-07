@@ -20,6 +20,9 @@ var (
 
 	// ErrTrustStoreClosed is returned when operating on a closed store.
 	ErrTrustStoreClosed = errors.New("trust store is closed")
+
+	// ErrCorruptTrustStore is returned when the trust database file exists but is empty or unparseable.
+	ErrCorruptTrustStore = errors.New("corrupt trust database file; refusing to overwrite")
 )
 
 // Store defines the interface for local trust management, peer policy, and revocation.
@@ -206,7 +209,7 @@ type trustFilePayload struct {
 	Devices   []*wire.TrustRecord `json:"devices"`
 }
 
-const currentTrustFileVersion = 1
+const currentTrustFileVersion = 2
 
 // NewFileTrustStore loads or initializes a FileTrustStore at the given path.
 func NewFileTrustStore(filePath string) (*FileTrustStore, error) {
@@ -221,7 +224,8 @@ func NewFileTrustStore(filePath string) (*FileTrustStore, error) {
 		devices:  make(map[string]*wire.TrustRecord),
 	}
 
-	if err := store.load(); err != nil {
+	needsMigration, err := store.load()
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// Initialize empty file
 			if err := store.saveLocked(); err != nil {
@@ -232,30 +236,45 @@ func NewFileTrustStore(filePath string) (*FileTrustStore, error) {
 		return nil, fmt.Errorf("load trust db: %w", err)
 	}
 
+	if needsMigration {
+		if err := store.saveLocked(); err != nil {
+			return nil, fmt.Errorf("migrate trust db file: %w", err)
+		}
+	}
+
 	return store, nil
 }
 
-func (f *FileTrustStore) load() error {
+func (f *FileTrustStore) load() (bool, error) {
 	data, err := os.ReadFile(f.filePath)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(data) == 0 {
-		return nil
+		return false, fmt.Errorf("%w: file exists but is empty (0 bytes)", ErrCorruptTrustStore)
 	}
 
 	var payload trustFilePayload
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return fmt.Errorf("parse trust db JSON: %w", err)
+		return false, fmt.Errorf("%w: parse trust db JSON: %v", ErrCorruptTrustStore, err)
 	}
 
+	needsMigration := payload.Version < currentTrustFileVersion
 	f.devices = make(map[string]*wire.TrustRecord)
 	for _, rec := range payload.Devices {
-		if rec != nil && rec.Validate() == nil {
-			f.devices[rec.DeviceID] = rec
+		if rec == nil {
+			continue
 		}
+		if rec.Relationship == "" {
+			rec.Relationship = wire.RelationshipContact
+			needsMigration = true
+		}
+		if err := rec.Validate(); err != nil {
+			return false, fmt.Errorf("%w: invalid trust record %q: %v", ErrCorruptTrustStore, rec.DeviceID, err)
+		}
+		f.devices[rec.DeviceID] = rec
 	}
-	return nil
+	return needsMigration, nil
 }
 
 func (f *FileTrustStore) saveLocked() error {
@@ -298,6 +317,16 @@ func (f *FileTrustStore) saveLocked() error {
 	}
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("close temp trust db: %w", err)
+	}
+
+	// Verify temporary file before replacing live database (write -> verify -> switch)
+	verifyData, err := os.ReadFile(tmpName)
+	if err != nil {
+		return fmt.Errorf("verify temp trust db: %w", err)
+	}
+	var verifyPayload trustFilePayload
+	if err := json.Unmarshal(verifyData, &verifyPayload); err != nil {
+		return fmt.Errorf("verify unmarshal temp trust db: %w", err)
 	}
 
 	if err := os.Rename(tmpName, f.filePath); err != nil {

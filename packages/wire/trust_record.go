@@ -19,6 +19,13 @@ const (
 	CapRelayFall  = "relay_fallback"
 )
 
+// Relationship constants define authorization scopes between paired devices (ADR 0010 §4.2).
+const (
+	RelationshipContact       = "contact"
+	RelationshipClusterMember = "cluster_member"
+	RelationshipClusterOwner  = "cluster_owner"
+)
+
 var (
 	// ErrInvalidTrustRecord indicates a trust record with invalid fields.
 	ErrInvalidTrustRecord = errors.New("invalid trust record")
@@ -62,6 +69,8 @@ type TrustRecord struct {
 	PublicKey         string      `json:"public_key"` // hex-encoded 32-byte Ed25519 public key
 	LocalLabel        string      `json:"local_label"`
 	PairCredentialRef string      `json:"pair_credential_ref"`
+	Relationship      string      `json:"relationship,omitempty"`
+	ClusterID         string      `json:"cluster_id,omitempty"`
 	Capabilities      []string    `json:"capabilities"`
 	FirstSeenAt       time.Time   `json:"first_seen_at"`
 	LastSeenAt        time.Time   `json:"last_seen_at"`
@@ -91,6 +100,18 @@ func (r *TrustRecord) Validate() error {
 	}
 	if strings.TrimSpace(r.LocalLabel) == "" {
 		return fmt.Errorf("%w: local label cannot be empty", ErrInvalidTrustRecord)
+	}
+	if strings.TrimSpace(r.PairCredentialRef) == "" {
+		return fmt.Errorf("%w: pair_credential_ref cannot be empty", ErrInvalidTrustRecord)
+	}
+	if r.Relationship == "" {
+		r.Relationship = RelationshipContact
+	}
+	if r.Relationship != RelationshipContact && r.Relationship != RelationshipClusterMember && r.Relationship != RelationshipClusterOwner {
+		return fmt.Errorf("%w: invalid relationship %q (must be contact, cluster_member, or cluster_owner)", ErrInvalidTrustRecord, r.Relationship)
+	}
+	if (r.Relationship == RelationshipClusterMember || r.Relationship == RelationshipClusterOwner) && strings.TrimSpace(r.ClusterID) == "" {
+		return fmt.Errorf("%w: cluster_id required for cluster relationship %q", ErrInvalidTrustRecord, r.Relationship)
 	}
 	if r.FirstSeenAt.IsZero() {
 		return fmt.Errorf("%w: first_seen_at must be set", ErrInvalidTrustRecord)

@@ -17,6 +17,10 @@ import (
 var (
 	// ErrIdentityNotFound is returned when identity key does not exist.
 	ErrIdentityNotFound = errors.New("device identity not found")
+
+	// ErrCorruptIdentityFile is returned when identity key file exists but is corrupted.
+	// Invariant: identities must NEVER be silently regenerated or overwritten after corrupt reads.
+	ErrCorruptIdentityFile = errors.New("corrupt device identity key file; refusing to overwrite or regenerate")
 )
 
 // IdentityManager manages local device cryptographic identity and seed persistence.
@@ -68,7 +72,7 @@ func (m *IdentityManager) GetOrCreateIdentity() (*wire.DeviceIdentity, error) {
 		return nil, fmt.Errorf("load device identity: %w", err)
 	}
 
-	// Generate fresh identity
+	// Generate fresh identity only if no file exists
 	id, err = wire.GenerateDeviceIdentityFromReader(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate fresh device identity: %w", err)
@@ -110,10 +114,13 @@ func (m *IdentityManager) CurrentIdentity() *wire.DeviceIdentity {
 func (m *IdentityManager) loadLocked() (*wire.DeviceIdentity, error) {
 	data, err := os.ReadFile(m.keyFilePath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrIdentityNotFound
+		}
 		return nil, err
 	}
 	if len(data) == 0 {
-		return nil, ErrIdentityNotFound
+		return nil, fmt.Errorf("%w: key file exists but is empty (0 bytes)", ErrCorruptIdentityFile)
 	}
 
 	// Seed is stored as raw 32 bytes or 64-character hex
@@ -125,7 +132,7 @@ func (m *IdentityManager) loadLocked() (*wire.DeviceIdentity, error) {
 		if err == nil && len(decoded) == ed25519.SeedSize {
 			seed = decoded
 		} else {
-			return nil, errors.New("corrupt device identity key file")
+			return nil, fmt.Errorf("%w: invalid seed data format or length (%d bytes)", ErrCorruptIdentityFile, len(data))
 		}
 	}
 

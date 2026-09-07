@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -45,84 +44,13 @@ type discoveredPeerInfo struct {
 	lastSeen time.Time
 }
 
-// desktopSecretResolver manages encrypted/file-backed persistent pair secrets with 0600 permissions.
-type desktopSecretResolver struct {
-	path string
-	mu   sync.RWMutex
-	data map[string]string // deviceID -> hex(k_pair)
-}
-
-func newDesktopSecretResolver(path string) (*desktopSecretResolver, error) {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("create secrets dir: %w", err)
-	}
-
-	r := &desktopSecretResolver{
-		path: path,
-		data: make(map[string]string),
-	}
-
-	content, err := os.ReadFile(path)
-	if err == nil && len(content) > 0 {
-		_ = json.Unmarshal(content, &r.data)
-	}
-	return r, nil
-}
-
-func (r *desktopSecretResolver) setSecret(deviceID string, secret []byte) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.data[deviceID] = hex.EncodeToString(secret)
-	data, err := json.MarshalIndent(r.data, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	tmp := fmt.Sprintf("%s.tmp.%d", r.path, os.Getpid())
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, r.path)
-}
-
-func (r *desktopSecretResolver) deleteSecret(deviceID string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	delete(r.data, deviceID)
-	data, err := json.MarshalIndent(r.data, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	tmp := fmt.Sprintf("%s.tmp.%d", r.path, os.Getpid())
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, r.path)
-}
-
-// ResolvePairSecret implements trust.SecretResolver for desktop sessions.
-func (r *desktopSecretResolver) ResolvePairSecret(_ context.Context, deviceID, _ string) ([]byte, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	hexStr, ok := r.data[deviceID]
-	if !ok || len(hexStr) == 0 {
-		return nil, errors.New("pair secret not found")
-	}
-	return hex.DecodeString(hexStr)
-}
-
 // DeviceService manages trusted device operations and background presence for the desktop UI.
 type DeviceService struct {
 	mu           sync.RWMutex
 	emit         func(name string, data any)
 	idMgr        *trust.IdentityManager
 	store        trust.Store
-	secrets      *desktopSecretResolver
+	secrets      trust.CredentialStore
 	coordinator  *trust.PairingCoordinator
 	lanDiscovery *discovery.LanDiscoveryService
 	activePeers  map[string]discoveredPeerInfo // deviceID -> info
@@ -130,8 +58,14 @@ type DeviceService struct {
 	cancel       context.CancelFunc
 }
 
-// NewDeviceService initializes the desktop device service.
+// NewDeviceService initializes the desktop device service with the default OS-protected credential store.
 func NewDeviceService(emit func(name string, data any), customConfigDir string) (*DeviceService, error) {
+	return NewDeviceServiceWithCredentials(emit, customConfigDir, nil)
+}
+
+// NewDeviceServiceWithCredentials initializes the desktop device service with a custom CredentialStore.
+// If customSecrets is nil, it uses trust.NewProtectedCredentialStore(config.DefaultSecretStore()).
+func NewDeviceServiceWithCredentials(emit func(name string, data any), customConfigDir string, customSecrets trust.CredentialStore) (*DeviceService, error) {
 	dir := customConfigDir
 	if dir == "" {
 		userConfig, err := os.UserConfigDir()
@@ -157,13 +91,21 @@ func NewDeviceService(emit func(name string, data any), customConfigDir string) 
 		return nil, fmt.Errorf("init trust store: %w", err)
 	}
 
-	secretsPath := filepath.Join(dir, "secrets.json")
-	secrets, err := newDesktopSecretResolver(secretsPath)
-	if err != nil {
-		return nil, fmt.Errorf("init secret store: %w", err)
+	secrets := customSecrets
+	if secrets == nil {
+		secStore := config.DefaultSecretStore()
+		secrets = trust.NewProtectedCredentialStore(secStore)
 	}
 
-	coordinator := trust.NewPairingCoordinator(idMgr, trustStore)
+	// Migrate legacy plaintext secrets.json if present
+	legacySecretsPath := filepath.Join(dir, "secrets.json")
+	if _, err := os.Stat(legacySecretsPath); err == nil {
+		if err := trust.MigrateLegacyFileSecrets(legacySecretsPath, secrets); err != nil {
+			return nil, fmt.Errorf("migrate legacy secrets: %w", err)
+		}
+	}
+
+	coordinator := trust.NewPairingCoordinatorWithCredentials(idMgr, trustStore, secrets)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -309,7 +251,9 @@ func (s *DeviceService) UnpairDevice(deviceID string, purge bool) error {
 		if err := s.store.UnpairDevice(ctx, deviceID); err != nil {
 			return err
 		}
-		_ = s.secrets.deleteSecret(deviceID)
+		if err := s.secrets.DeletePairSecret(ctx, deviceID); err != nil && !errors.Is(err, trust.ErrSecretStoreUnavailable) {
+			return fmt.Errorf("delete pair secret: %w", err)
+		}
 	} else {
 		if err := s.store.RevokeDevice(ctx, deviceID); err != nil {
 			return err
@@ -374,10 +318,6 @@ func (s *DeviceService) PairDevice(serverURL, inviteCode, customLabel string, au
 	pairResult, err := s.coordinator.AcceptPairing(ctx, transport, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("pairing ceremony failed: %w", err)
-	}
-
-	if err := s.secrets.setSecret(pairResult.PeerRecord.DeviceID, pairResult.KPair); err != nil {
-		return nil, fmt.Errorf("persist secret: %w", err)
 	}
 
 	s.notifyDevicesChanged()

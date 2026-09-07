@@ -46,8 +46,9 @@ type PairingResult struct {
 
 // PairingCoordinator drives the multi-step pairing ceremony on both initiator and responder sides.
 type PairingCoordinator struct {
-	idMgr *IdentityManager
-	store Store
+	idMgr     *IdentityManager
+	store     Store
+	credStore CredentialStore
 }
 
 // NewPairingCoordinator creates a new PairingCoordinator.
@@ -55,6 +56,15 @@ func NewPairingCoordinator(idMgr *IdentityManager, store Store) *PairingCoordina
 	return &PairingCoordinator{
 		idMgr: idMgr,
 		store: store,
+	}
+}
+
+// NewPairingCoordinatorWithCredentials creates a PairingCoordinator that atomically manages both device trust and credentials.
+func NewPairingCoordinatorWithCredentials(idMgr *IdentityManager, store Store, credStore CredentialStore) *PairingCoordinator {
+	return &PairingCoordinator{
+		idMgr:     idMgr,
+		store:     store,
+		credStore: credStore,
 	}
 }
 
@@ -164,6 +174,7 @@ func (p *PairingCoordinator) InitiatePairing(ctx context.Context, transport Pair
 		PublicKey:         hex.EncodeToString(peerPub),
 		LocalLabel:        resp.DeviceName,
 		PairCredentialRef: credRef,
+		Relationship:      wire.RelationshipContact,
 		Capabilities:      resp.Capabilities,
 		FirstSeenAt:       now,
 		LastSeenAt:        now,
@@ -172,7 +183,16 @@ func (p *PairingCoordinator) InitiatePairing(ctx context.Context, transport Pair
 		Policy:            policy,
 	}
 
+	if p.credStore != nil {
+		if err := p.credStore.SetPairSecret(ctx, record.DeviceID, credRef, kPair); err != nil {
+			return nil, fmt.Errorf("persist pair credential: %w", err)
+		}
+	}
+
 	if err := p.store.AddOrUpdateDevice(ctx, record); err != nil {
+		if p.credStore != nil {
+			_ = p.credStore.DeletePairSecret(ctx, record.DeviceID)
+		}
 		return nil, fmt.Errorf("save trusted device: %w", err)
 	}
 
@@ -289,6 +309,7 @@ func (p *PairingCoordinator) AcceptPairing(ctx context.Context, transport Pairin
 		PublicKey:         hex.EncodeToString(peerPub),
 		LocalLabel:        req.DeviceName,
 		PairCredentialRef: credRef,
+		Relationship:      wire.RelationshipContact,
 		Capabilities:      req.Capabilities,
 		FirstSeenAt:       now,
 		LastSeenAt:        now,
@@ -297,7 +318,16 @@ func (p *PairingCoordinator) AcceptPairing(ctx context.Context, transport Pairin
 		Policy:            policy,
 	}
 
+	if p.credStore != nil {
+		if err := p.credStore.SetPairSecret(ctx, record.DeviceID, credRef, kPair); err != nil {
+			return nil, fmt.Errorf("persist pair credential: %w", err)
+		}
+	}
+
 	if err := p.store.AddOrUpdateDevice(ctx, record); err != nil {
+		if p.credStore != nil {
+			_ = p.credStore.DeletePairSecret(ctx, record.DeviceID)
+		}
 		return nil, fmt.Errorf("save trusted device: %w", err)
 	}
 

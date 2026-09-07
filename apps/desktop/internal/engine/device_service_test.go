@@ -5,10 +5,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/sendbeam/engine/trust"
 	"github.com/sendbeam/wire"
 )
 
@@ -124,3 +126,50 @@ func TestDeviceService_LifecycleAndPolicy(t *testing.T) {
 		t.Errorf("expected emitted event %q, got %q", DeviceEventName, emittedEvent)
 	}
 }
+
+func TestDeviceService_LegacyMigrationAndCredentials(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Write legacy secrets.json
+	devID := "dev-legacy-123"
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = byte(i + 1)
+	}
+	legacyJSON := `{"dev-legacy-123":"` + hex.EncodeToString(secret) + `"}`
+	legacyPath := filepath.Join(tmpDir, "secrets.json")
+	if err := os.WriteFile(legacyPath, []byte(legacyJSON), 0600); err != nil {
+		t.Fatalf("write legacy secrets: %v", err)
+	}
+
+	memStore := trust.NewMemoryCredentialStore()
+	svc, err := NewDeviceServiceWithCredentials(nil, tmpDir, memStore)
+	if err != nil {
+		t.Fatalf("NewDeviceServiceWithCredentials failed: %v", err)
+	}
+	defer svc.Close()
+
+	// Verify legacy secrets was migrated into memStore
+	ctx := context.Background()
+	migrated, err := memStore.ResolvePairSecret(ctx, devID, "")
+	if err != nil {
+		t.Fatalf("expected secret to be migrated: %v", err)
+	}
+	if hex.EncodeToString(migrated) != hex.EncodeToString(secret) {
+		t.Fatalf("migrated secret mismatch")
+	}
+
+	// Verify original legacy file is removed or renamed
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Errorf("expected legacy secrets.json to no longer exist, err: %v", err)
+	}
+
+	// Unpair with purge should remove from memStore
+	if err := svc.UnpairDevice(devID, true); err != nil {
+		t.Fatalf("UnpairDevice purge failed: %v", err)
+	}
+	if _, err := memStore.ResolvePairSecret(ctx, devID, ""); err == nil {
+		t.Errorf("expected secret to be deleted from credential store after purge")
+	}
+}
+

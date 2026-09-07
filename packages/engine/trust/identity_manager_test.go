@@ -80,3 +80,48 @@ func TestIdentityManagerGenerationAndPersistence(t *testing.T) {
 		t.Errorf("persisted key after rotation mismatch")
 	}
 }
+
+func TestIdentityManagerCorruptFileRefusesRegeneration(t *testing.T) {
+	// 1. Empty file (0 bytes) must fail closed and NOT regenerate
+	tmpDir := t.TempDir()
+	emptyKeyPath := filepath.Join(tmpDir, "empty_identity.key")
+	if err := os.WriteFile(emptyKeyPath, []byte{}, 0600); err != nil {
+		t.Fatalf("write empty file: %v", err)
+	}
+
+	mgrEmpty, err := NewIdentityManager(emptyKeyPath)
+	if err != nil {
+		t.Fatalf("NewIdentityManager: %v", err)
+	}
+	_, err = mgrEmpty.GetOrCreateIdentity()
+	if err == nil {
+		t.Fatalf("GetOrCreateIdentity on empty file succeeded, want ErrCorruptIdentityFile")
+	}
+	// Verify file was NOT overwritten with a fresh identity
+	fi, _ := os.Stat(emptyKeyPath)
+	if fi.Size() != 0 {
+		t.Errorf("expected empty file to remain untouched (0 bytes), got size %d", fi.Size())
+	}
+
+	// 2. Corrupt data must fail closed and NOT regenerate
+	corruptKeyPath := filepath.Join(tmpDir, "corrupt_identity.key")
+	corruptData := []byte("this-is-not-a-valid-ed25519-seed-and-must-fail-closed")
+	if err := os.WriteFile(corruptKeyPath, corruptData, 0600); err != nil {
+		t.Fatalf("write corrupt file: %v", err)
+	}
+
+	mgrCorrupt, err := NewIdentityManager(corruptKeyPath)
+	if err != nil {
+		t.Fatalf("NewIdentityManager: %v", err)
+	}
+	_, err = mgrCorrupt.GetOrCreateIdentity()
+	if err == nil {
+		t.Fatalf("GetOrCreateIdentity on corrupt file succeeded, want ErrCorruptIdentityFile")
+	}
+
+	// Verify file was NOT overwritten
+	content, _ := os.ReadFile(corruptKeyPath)
+	if !bytes.Equal(content, corruptData) {
+		t.Errorf("corrupt file was modified or overwritten")
+	}
+}

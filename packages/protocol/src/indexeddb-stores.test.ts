@@ -199,4 +199,42 @@ describe('IndexedDB Trust & Secret Stores and Capability Probing', () => {
     expect(bytesToHex(id2.publicKey)).toBe(bytesToHex(id1.publicKey));
     expect(bytesToHex(id2.privateKey)).toBe(bytesToHex(id1.privateKey));
   });
+
+  it('refuses to regenerate browser node identity when stored seed is corrupt', async () => {
+    // Inject corrupt seed in the identity database
+    const db = await new Promise<IDBDatabase>((resolve) => {
+      const req = fakeIdb.open('sendbeam-identity', 1);
+      req.onsuccess = () => resolve(req.result as IDBDatabase);
+    });
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(['node_identity'], 'readwrite');
+      tx.objectStore('node_identity').put(
+        'not-a-valid-64-char-hex-seed',
+        'primary_device_identity',
+      );
+      tx.oncomplete = () => resolve();
+    });
+
+    // Must throw and refuse to regenerate
+    await expect(getOrCreateBrowserIdentity(fakeIdb as unknown as IDBFactory)).rejects.toThrow(
+      /corrupt browser device identity/,
+    );
+  });
+
+  it('rejects corrupt pair secrets on retrieval', async () => {
+    const secretStore = new IndexedDBSecretStore(fakeIdb as unknown as IDBFactory);
+
+    // Inject invalid hex into secrets store
+    const db = await new Promise<IDBDatabase>((resolve) => {
+      const req = fakeIdb.open('sendbeam-secrets', 1);
+      req.onsuccess = () => resolve(req.result as IDBDatabase);
+    });
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(['pair_secrets'], 'readwrite');
+      tx.objectStore('pair_secrets').put('this-is-not-hex', 'sb-dev-test');
+      tx.oncomplete = () => resolve();
+    });
+
+    await expect(secretStore.getPairSecret('sb-dev-test')).rejects.toThrow(/corrupt pair secret/);
+  });
 });
