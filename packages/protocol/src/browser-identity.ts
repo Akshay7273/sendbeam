@@ -55,6 +55,7 @@ export async function getOrCreateBrowserIdentity(customIdb?: IDBFactory): Promis
     } catch (err) {
       throw new Error(
         `corrupt browser device identity: ${(err as Error).message}; refusing to regenerate`,
+        { cause: err },
       );
     }
   }

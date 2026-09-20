@@ -254,7 +254,7 @@ export class ResumePreamble {
           // fall through to the rejection below
         }
       }
-      throw new Error(`resume: inbound frame rejected: ${(err as Error).message}`);
+      throw new Error(`resume: inbound frame rejected: ${(err as Error).message}`, { cause: err });
     }
     if (opened.header.type !== FrameType.ResumeAuth) {
       throw new Error(
@@ -281,12 +281,12 @@ export class ResumePreamble {
     try {
       frame = await seal(this.opts.sendDir, this.sendCounter, header, payload);
     } catch (err) {
-      throw new Error(`resume: seal preamble frame: ${(err as Error).message}`);
+      throw new Error(`resume: seal preamble frame: ${(err as Error).message}`, { cause: err });
     }
     try {
       await this.opts.send(frame);
     } catch (err) {
-      throw new Error(`resume: send preamble frame: ${(err as Error).message}`);
+      throw new Error(`resume: send preamble frame: ${(err as Error).message}`, { cause: err });
     }
     this.sendCounter++;
   }

@@ -129,8 +129,9 @@
   // V13-PR08: one-line in-flight resume note shown in the transfer block (what is reused,
   // and only after authentication).
   let resumeNote = $state('');
-  let directoryPickerAvailable = $state(false);
-  directoryPickerAvailable = typeof (window as PickerWindow).showDirectoryPicker === 'function';
+  let directoryPickerAvailable = $state(
+    typeof (window as PickerWindow).showDirectoryPicker === 'function',
+  );
 
   // Transfer state, live once the handshake settles and the socket is adopted.
   let role = $state<Role | undefined>(undefined);
@@ -1037,9 +1038,9 @@
                       ? 'Reopens the original folder'
                       : 'Re-select the original source'}
                     {#if entry.record.resumeSecret === undefined}
-                      {'\u00b7'} restart required (no credential)
+                      · restart required (no credential)
                     {/if}
-                    {'\u00b7'} interrupted {new Date(entry.record.updatedAt).toLocaleString()}
+                    · interrupted {new Date(entry.record.updatedAt).toLocaleString()}
                   </p>
                   <div class="resume-actions">
                     <button
@@ -1138,13 +1139,13 @@
                   <p class="resume-name">{entry.label}</p>
                   <p class="muted">
                     {#if entry.journal?.resumeSecret !== undefined}
-                      {humanBytes(entry.committedBytes)} of {humanBytes(entry.totalBytes)} verified
-                      {'\u00b7'} ready to resume
+                      {humanBytes(entry.committedBytes)} of {humanBytes(entry.totalBytes)} verified ·
+                      ready to resume
                     {:else}
-                      {humanBytes(entry.committedBytes)} of {humanBytes(entry.totalBytes)} verified
-                      {'\u00b7'} restart required (no credential)
+                      {humanBytes(entry.committedBytes)} of {humanBytes(entry.totalBytes)} verified ·
+                      restart required (no credential)
                     {/if}
-                    {'\u00b7'} interrupted {new Date(entry.updatedAt).toLocaleString()}
+                    · interrupted {new Date(entry.updatedAt).toLocaleString()}
                   </p>
                   <div class="resume-actions">
                     <button
@@ -1366,7 +1367,7 @@
         </div>
 
         <div class="broadcast-list">
-          {#each broadcastStates as devState}
+          {#each broadcastStates as devState (devState.deviceId)}
             <div class="broadcast-item">
               <div class="broadcast-item-head">
                 <span class="device-label"><strong>@{devState.label}</strong></span>
@@ -1615,9 +1616,9 @@
                         ? 'Reopens the original folder'
                         : 'Re-select the original source'}
                       {#if entry.record.resumeSecret === undefined}
-                        {'\u00b7'} restart required (no resume credential)
+                        · restart required (no resume credential)
                       {/if}
-                      {'\u00b7'} interrupted {new Date(entry.record.updatedAt).toLocaleString()}
+                      · interrupted {new Date(entry.record.updatedAt).toLocaleString()}
                     </p>
                     <div class="resume-actions">
                       <!-- V13-PR08 (Blocker 3): a legacy record without a credential cannot

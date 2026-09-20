@@ -101,7 +101,7 @@ async function settleResume(
   }
   const done = await sealInbound(
     keys,
-    ctr++,
+    ctr,
     FrameType.Done,
     encodeControl({ type: FrameType.Done }),
   );

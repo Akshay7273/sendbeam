@@ -161,7 +161,7 @@ describe('SPAKE2 — handshake behaviour', () => {
     tampered[tampered.length - 1] ^= 0x01;
     // A tampered but still on-curve point is astronomically unlikely; if the edited byte
     // makes an invalid point, finish rejects it. Either way the handshake cannot agree.
-    let aKe: string | null = null;
+    let aKe: string | null;
     try {
       aKe = bytesToHex((await finish('offerer', w, x, tampered)).Ke);
     } catch {

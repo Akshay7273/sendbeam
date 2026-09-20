@@ -19,13 +19,14 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1",
-    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@playwright/test": "^1.63.0",
+    "@sveltejs/vite-plugin-svelte": "^7.3.0",
+    "@types/node": "^26.2.0",
     "jsdom": "^30.0.1",
-    "svelte": "^5.16.0",
-    "svelte-check": "^4.1.1",
-    "typescript": "^5.7.2",
-    "vite": "^6.0.7",
-    "vitest": "^4.1.10"
+    "svelte": "^5.57.0",
+    "svelte-check": "^4.7.6",
+    "typescript": "^5.9.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
   }
 }

@@ -333,10 +333,10 @@ describe('TransferSender', () => {
     // With window=1 the sender blocks after its first (only) block until it is acknowledged;
     // feed a verified ack so it proceeds to Complete, then cut over before Done arrives.
     await waitFor(() => outbound.some((f) => f[9] === FrameType.BlockHash));
-    let ackCtr = 0;
+    const ackCtr = 0;
     const ackFrame = await seal(
       keys.j2o,
-      ackCtr++,
+      ackCtr,
       {
         version: FRAME_VERSION,
         type: FrameType.Ack,

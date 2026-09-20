@@ -600,7 +600,7 @@ export class TransferReceiver {
   private async attachDigestState(sink: Sink, digest: Digest): Promise<void> {
     const stateSink = sink as Sink & Partial<DigestStateSink>;
     if (typeof stateSink.setDigestState !== 'function') return;
-    let state: Uint8Array | null = null;
+    let state: Uint8Array | null;
     try {
       state = (digest as Digest & Partial<DigestState>).saveState?.() ?? null;
     } catch {

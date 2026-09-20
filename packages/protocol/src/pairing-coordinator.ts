@@ -167,7 +167,7 @@ export class PairingCoordinator {
           // ignore rollback failure
         }
       }
-      throw new Error(`save trusted device: ${(err as Error).message}`);
+      throw new Error(`save trusted device: ${(err as Error).message}`, { cause: err });
     }
 
     return {
@@ -272,7 +272,7 @@ export class PairingCoordinator {
           // ignore rollback failure
         }
       }
-      throw new Error(`save trusted device: ${(err as Error).message}`);
+      throw new Error(`save trusted device: ${(err as Error).message}`, { cause: err });
     }
 
     return {
