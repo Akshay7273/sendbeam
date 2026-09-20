@@ -385,3 +385,20 @@ func (p *PairingCoordinator) sendRejection(ctx context.Context, transport Pairin
 	data, _ := wire.EncodePairingMessage(rej)
 	return transport.SendMessage(ctx, data)
 }
+
+// UnpairDevice removes a device's trust record, used to roll back a
+// pairing that failed identity confirmation after the ceremony persisted
+// it (local offline pairing, V21-PR05). It also removes the credential.
+func (p *PairingCoordinator) UnpairDevice(ctx context.Context, deviceID string) error {
+	if p.store == nil {
+		return errors.New("pairing coordinator has no trust store")
+	}
+	if err := p.store.UnpairDevice(ctx, deviceID); err != nil {
+		return err
+	}
+	if p.credStore != nil {
+		// Best-effort: the credential is useless without the trust record.
+		_ = p.credStore.DeletePairSecret(ctx, deviceID)
+	}
+	return nil
+}
