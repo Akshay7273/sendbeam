@@ -223,7 +223,10 @@ func TestWatcherDispatchesOnNewFile(t *testing.T) {
 	fx.start(t)
 
 	writeTestFile(t, fx.root, "new.txt", "fresh payload")
-	waitFor(t, 10*time.Second, "dispatch", func() bool { return fx.eq.numCalls() == 1 })
+	// Wait for the dispatched event, not just the enqueue call: the
+	// watcher emits it after Runner.Dispatch returns, so the event
+	// implies the enqueue happened and the ledger was written.
+	waitFor(t, 10*time.Second, "dispatch", func() bool { return fx.log.hasKind(WatchEventDispatched) })
 
 	paths := fx.eq.lastPaths()
 	found := false

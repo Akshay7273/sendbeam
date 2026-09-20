@@ -260,18 +260,39 @@ func (s *Scheduler) loop() {
 // the past (a one-second floor keeps a logic bug from hot-spinning).
 func (s *Scheduler) tick() time.Time {
 	now := s.now()
+	s.mu.Lock()
 	if !now.Before(s.nextRescan) {
-		s.rescan(now)
 		s.nextRescan = now.Add(s.rescanInterval)
+		s.mu.Unlock()
+		// rescan does its own fine-grained locking: it must not run
+		// under s.mu because it emits events, and user callbacks must
+		// never be invoked while holding the scheduler lock.
+		s.rescan(now)
+	} else {
+		s.mu.Unlock()
 	}
+	// Snapshot the hosted set: processRecipe may add or drop entries,
+	// and external readers (Hosts) need a consistent view.
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.hosts))
+	for id := range s.hosts {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+
 	var earliest time.Time
-	for id, host := range s.hosts {
+	for _, id := range ids {
 		s.processRecipe(id, now)
-		if next := s.nextWakeFor(id, host); !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
-			earliest = next
+		if host, ok := s.hostFor(id); ok {
+			if next := s.nextWakeFor(id, host); !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
+				earliest = next
+			}
 		}
 	}
+
+	s.mu.Lock()
 	wake := s.nextRescan
+	s.mu.Unlock()
 	if !earliest.IsZero() && earliest.Before(wake) {
 		wake = earliest
 	}
@@ -279,6 +300,14 @@ func (s *Scheduler) tick() time.Time {
 		wake = now.Add(time.Second)
 	}
 	return wake
+}
+
+// hostFor returns the hosted record for id, if the recipe is still hosted.
+func (s *Scheduler) hostFor(id string) (scheduledHost, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h, ok := s.hosts[id]
+	return h, ok
 }
 
 // nextWakeFor returns the next occurrence after the recipe's persisted
@@ -308,13 +337,23 @@ func (s *Scheduler) rescan(now time.Time) {
 		s.emit(ScheduleEvent{Kind: ScheduleEventError, Err: err, Detail: err.Error()})
 		return
 	}
+	// Map mutations happen under s.mu at the end; store I/O, parsing
+	// and event emission stay outside the lock.
+	type addition struct {
+		id   string
+		host scheduledHost
+	}
+	var additions []addition
 	want := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		if e.Trigger != string(TriggerSchedule) {
 			continue
 		}
 		want[e.ID] = true
-		if _, ok := s.hosts[e.ID]; ok {
+		s.mu.Lock()
+		_, already := s.hosts[e.ID]
+		s.mu.Unlock()
+		if already {
 			continue
 		}
 		r, ok, err := s.store.Load(e.ID)
@@ -338,13 +377,18 @@ func (s *Scheduler) rescan(now time.Time) {
 		if tz == nil {
 			tz = time.Local
 		}
-		s.hosts[e.ID] = scheduledHost{params: sp, tz: tz}
+		additions = append(additions, addition{e.ID, scheduledHost{params: sp, tz: tz}})
+	}
+	s.mu.Lock()
+	for _, a := range additions {
+		s.hosts[a.id] = a.host
 	}
 	for id := range s.hosts {
 		if !want[id] {
 			delete(s.hosts, id)
 		}
 	}
+	s.mu.Unlock()
 }
 
 // processRecipe handles one tick for one hosted recipe: adopt the cursor
@@ -381,7 +425,9 @@ func (s *Scheduler) processRecipe(id string, now time.Time) {
 	if tz == nil {
 		tz = time.Local
 	}
+	s.mu.Lock()
 	s.hosts[id] = scheduledHost{params: sp, tz: tz}
+	s.mu.Unlock()
 
 	cursor := r.ScheduleCursor
 	if cursor == nil {
@@ -587,6 +633,8 @@ func (s *Scheduler) advanceCursor(id string, t time.Time) bool {
 
 // unhost drops a recipe from the hosted set.
 func (s *Scheduler) unhost(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.hosts, id)
 }
 
