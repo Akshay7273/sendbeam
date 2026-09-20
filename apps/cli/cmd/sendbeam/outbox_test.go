@@ -213,3 +213,107 @@ func TestOutbox_UnknownSubcommand(t *testing.T) {
 		t.Fatalf("expected exit 2 for no args, got %d", code)
 	}
 }
+
+func TestOutboxListStateFilter(t *testing.T) {
+	cfgDir := t.TempDir()
+	env, err := InitCLIEnvironment(cfgDir)
+	if err != nil {
+		t.Fatalf("init cli env: %v", err)
+	}
+	seedOutboxDevice(t, env, "laptop")
+	payload := writeOutboxFile(t, "state filter")
+
+	var stdout, stderr bytes.Buffer
+	if code := runOutbox([]string{"enqueue", "--config-dir", cfgDir, payload, "--to", "@laptop"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("enqueue exit %d: %s", code, stderr.String())
+	}
+
+	// The enqueued job is queued: the state filter must find it under queued
+	// and report nothing under completed.
+	stdout.Reset()
+	if code := runOutbox([]string{"list", "--config-dir", cfgDir, "--state", "queued"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("list --state queued exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "queued") {
+		t.Fatalf("expected queued job, got: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := runOutbox([]string{"list", "--config-dir", cfgDir, "--state", "completed"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("list --state completed exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "No jobs in state") {
+		t.Fatalf("expected empty completed group, got: %s", stdout.String())
+	}
+
+	// Unknown state is a usage error.
+	stdout.Reset()
+	if code := runOutbox([]string{"list", "--config-dir", cfgDir, "--state", "bogus"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("list --state bogus should exit 2, got %d", code)
+	}
+}
+
+func TestOutboxPruneAndForget(t *testing.T) {
+	cfgDir := t.TempDir()
+	env, err := InitCLIEnvironment(cfgDir)
+	if err != nil {
+		t.Fatalf("init cli env: %v", err)
+	}
+	seedOutboxDevice(t, env, "laptop")
+	payload := writeOutboxFile(t, "prune me")
+
+	var stdout, stderr bytes.Buffer
+	if code := runOutbox([]string{"enqueue", "--config-dir", cfgDir, payload, "--to", "@laptop"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("enqueue exit %d: %s", code, stderr.String())
+	}
+	// Find the job id from the list output.
+	stdout.Reset()
+	if code := runOutbox([]string{"list", "--config-dir", cfgDir, "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("list exit %d: %s", code, stderr.String())
+	}
+	var jobID string
+	for _, field := range strings.FieldsFunc(stdout.String(), func(r rune) bool {
+		return r == '"' || r == ':' || r == ',' || r == ' ' || r == '\n'
+	}) {
+		if len(field) == 32 {
+			if _, err := hex.DecodeString(field); err == nil {
+				jobID = field
+				break
+			}
+		}
+	}
+	if jobID == "" {
+		t.Fatalf("could not find job id in list output: %s", stdout.String())
+	}
+
+	// Forgetting a live (queued) job is refused.
+	stdout.Reset()
+	if code := runOutbox([]string{"forget", "--config-dir", cfgDir, jobID}, &stdout, &stderr); code != 1 {
+		t.Fatalf("forget of live job should exit 1, got %d: %s", code, stderr.String())
+	}
+
+	// Prune with a dry run deletes nothing; nothing is past retention anyway.
+	stdout.Reset()
+	if code := runOutbox([]string{"prune", "--config-dir", cfgDir, "--dry-run"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("prune --dry-run exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Nothing to prune") {
+		t.Fatalf("expected nothing to prune, got: %s", stdout.String())
+	}
+
+	// Cancel the job, then forget it: history is gone.
+	stdout.Reset()
+	if code := runOutbox([]string{"cancel", "--config-dir", cfgDir, jobID}, &stdout, &stderr); code != 0 {
+		t.Fatalf("cancel exit %d: %s", code, stderr.String())
+	}
+	stdout.Reset()
+	if code := runOutbox([]string{"forget", "--config-dir", cfgDir, jobID}, &stdout, &stderr); code != 0 {
+		t.Fatalf("forget exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Forgot") {
+		t.Fatalf("expected Forgot, got: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := runOutbox([]string{"show", "--config-dir", cfgDir, jobID}, &stdout, &stderr); code != 1 {
+		t.Fatalf("show of forgotten job should exit 1, got %d", code)
+	}
+}

@@ -30,6 +30,7 @@ import (
 	"github.com/sendbeam/engine/receiver"
 	"github.com/sendbeam/engine/rendezvous"
 	"github.com/sendbeam/engine/transfer"
+	"github.com/sendbeam/engine/transfercenter"
 	"github.com/sendbeam/engine/wsclient"
 	"github.com/sendbeam/wire"
 	qrcode "github.com/skip2/go-qrcode"
@@ -175,6 +176,10 @@ type TransferService struct {
 	durableStoreFn        func(outDir string) (*transfer.DurableStore, error)
 	completedDestinations map[string]completedDestination
 
+	// tcCenter is the lazily-initialized transfer center (V20-PR03) over the
+	// shared jobs store; guarded by mu.
+	tcCenter *transfercenter.Center
+
 	nativeReceiver       *receiver.Listener
 	nativeReceiverCancel context.CancelFunc
 
@@ -222,7 +227,6 @@ func (s *TransferService) isDeviceRequirePadding(peerDeviceID string) bool {
 	}
 	return false
 }
-
 
 // NewTransferService builds the service. emit is the frontend sink (wails
 // app.Event.Emit in production, a recorder in tests); dial is the signaling
