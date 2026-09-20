@@ -17,6 +17,7 @@ import (
 	"github.com/sendbeam/engine/outbox"
 	"github.com/sendbeam/engine/recipes"
 	"github.com/sendbeam/engine/trust"
+	"github.com/sendbeam/wire"
 )
 
 // RecipeService is the Wails-bound service for saved handoff recipes
@@ -96,11 +97,21 @@ func NewRecipeService(customConfigDir string, trustStore trust.Store) (*RecipeSe
 		nowFunc:  nowFunc,
 	}
 	svc.runner = recipes.NewRunner(
-		recipes.RunDeps{Store: recipeStore, Trust: trustStore, Now: nowFunc},
-		recipeOutboxEnqueuer{ob: ob},
+		recipes.RunDeps{Store: recipeStore, Trust: trustStore, Now: nowFunc, SenderLabel: desktopDeviceLabel()},
+		recipeOutboxEnqueuer{ob: ob, senderLabel: desktopDeviceLabel()},
 		recipes.RunnerOptions{},
 	)
 	return svc, nil
+}
+
+// desktopDeviceLabel is this device's own label for the routine origin
+// stamp (V22-PR06): the hostname, falling back to "Desktop Device" when
+// the hostname is unavailable.
+func desktopDeviceLabel() string {
+	if hostname, err := os.Hostname(); err == nil && hostname != "" {
+		return hostname
+	}
+	return "Desktop Device"
 }
 
 // ListRecipes returns every loadable recipe summary.
@@ -162,7 +173,7 @@ func (s *RecipeService) ApproveRecipe(id string) (recipes.Recipe, error) {
 		return recipes.Recipe{}, fmt.Errorf("recipe service: no recipe %q", id)
 	}
 	if r.Status == recipes.RecipeDisabled {
-		return recipes.Recipe{}, fmt.Errorf("recipe service: recipe %q is disabled; edit it to re-enable before approving", r.Name)
+		return recipes.Recipe{}, fmt.Errorf("recipe service: recipe %q is disabled; enable it before approving", r.Name)
 	}
 	r.Status = recipes.RecipeManual
 	if err := s.store.Save(r); err != nil {
@@ -211,6 +222,54 @@ func (s *RecipeService) RevokeAutomation(id string) (recipes.Recipe, error) {
 		return recipes.Recipe{}, fmt.Errorf("recipe service: no recipe %q", id)
 	}
 	recipes.RevokeAutomation(&r)
+	if err := s.store.Save(r); err != nil {
+		return recipes.Recipe{}, err
+	}
+	return r, nil
+}
+
+// DisableRecipe switches the routine off (V22-PR06): status "disabled",
+// so every future dispatch — watch, schedule, retry, and manual alike —
+// is refused and the watcher's dynamic reload plus the scheduler's
+// reconciliation drop it. A dispatch already admitted keeps running to
+// completion: disable stops the NEXT send, never the one already moving
+// bytes.
+func (s *RecipeService) DisableRecipe(id string) (recipes.Recipe, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok, err := s.store.Load(id)
+	if err != nil {
+		return recipes.Recipe{}, err
+	}
+	if !ok {
+		return recipes.Recipe{}, fmt.Errorf("recipe service: no recipe %q", id)
+	}
+	recipes.Disable(&r)
+	if err := s.store.Save(r); err != nil {
+		return recipes.Recipe{}, err
+	}
+	return r, nil
+}
+
+// EnableRecipe returns a disabled routine to life through the safe
+// default (V22-PR06): status "approval-required" and its automation
+// consent revoked, even if it was granted before. Nothing dispatches
+// until a person re-reviews: manual runs need ApproveRecipe first, and
+// automated dispatch needs a fresh GrantAutomation after that.
+func (s *RecipeService) EnableRecipe(id string) (recipes.Recipe, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok, err := s.store.Load(id)
+	if err != nil {
+		return recipes.Recipe{}, err
+	}
+	if !ok {
+		return recipes.Recipe{}, fmt.Errorf("recipe service: no recipe %q", id)
+	}
+	if r.Status != recipes.RecipeDisabled {
+		return recipes.Recipe{}, fmt.Errorf("recipe service: recipe %q is not disabled (status %s)", r.Name, string(r.Status))
+	}
+	recipes.Enable(&r)
 	if err := s.store.Save(r); err != nil {
 		return recipes.Recipe{}, err
 	}
@@ -351,7 +410,9 @@ func (s *RecipeService) RunRecipe(id string) (string, error) {
 		Store: s.store,
 		Trust: s.trust,
 		Now:   s.nowFunc,
-	}, recipeOutboxEnqueuer{ob: s.outbox}, id)
+		// V22-PR06: this device's own label rides the job's provenance.
+		SenderLabel: desktopDeviceLabel(),
+	}, recipeOutboxEnqueuer{ob: s.outbox, senderLabel: desktopDeviceLabel()}, id)
 	if err != nil {
 		return "", err
 	}
@@ -367,15 +428,27 @@ func (s *RecipeService) DeleteRecipe(id string) error {
 
 // recipeOutboxEnqueuer adapts the real *outbox.Outbox to the
 // recipes.Enqueuer interface: one call, one job, one attempt per
-// recipient. No second queue.
+// recipient. No second queue. The routine origin label (V22-PR06) is
+// stamped on the job via EnqueueWithProvenance; senderLabel backstops an
+// empty engine-built label so the job's provenance is never blank.
 type recipeOutboxEnqueuer struct {
-	ob *outbox.Outbox
+	ob          *outbox.Outbox
+	senderLabel string
 }
 
-func (a recipeOutboxEnqueuer) Enqueue(ctx context.Context, paths []string, recipients []recipes.EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy) (jobs.Job, error) {
+func (a recipeOutboxEnqueuer) Enqueue(ctx context.Context, paths []string, recipients []recipes.EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance) (jobs.Job, error) {
 	refs := make([]outbox.RecipientRef, len(recipients))
 	for i, r := range recipients {
 		refs[i] = outbox.RecipientRef{DeviceID: r.DeviceID, Label: r.Label}
 	}
-	return a.ob.Enqueue(ctx, paths, refs, policy, np)
+	if provenance != nil && provenance.SenderLabel == "" {
+		label := a.senderLabel
+		if label == "" {
+			label = desktopDeviceLabel()
+		}
+		cpy := *provenance
+		cpy.SenderLabel = label
+		provenance = &cpy
+	}
+	return a.ob.EnqueueWithProvenance(ctx, paths, refs, policy, np, provenance)
 }

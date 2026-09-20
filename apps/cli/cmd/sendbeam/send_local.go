@@ -49,6 +49,10 @@ type localSendParams struct {
 	// cumulative verified bytes. Both may be nil.
 	OnTransport func(string)
 	OnProgress  func(int64)
+	// Provenance is the routine origin label (V22-PR06): nil for ordinary
+	// one-off sends. The outbox local dispatcher sets it from the job; the
+	// engine stamps it on the wire manifest.
+	Provenance *wire.Provenance
 }
 
 // runLocalTransferToDevice is the shared offline send core used by the
@@ -180,6 +184,9 @@ func runLocalTransferToDevice(ctx context.Context, env *CLIEnvironment, filePath
 		Private:        params.PrivateMode,
 		OnTransport:    params.OnTransport,
 		OnProgress:     params.OnProgress,
+		// V22-PR06: the routine origin label rides the wire manifest (nil
+		// for ordinary one-off sends).
+		Provenance: params.Provenance,
 	})
 	if err != nil {
 		return fail("local-only transfer failed: %v", err)
@@ -233,7 +240,9 @@ func outboxLocalSend(ctx context.Context, env *CLIEnvironment, job jobs.Job, att
 		PeerAddr:       peerAddr,
 		RequirePadding: requirePadding,
 		PrivateMode:    privateMode,
-		OnProgress:     func(n int64) { sentBytes = n },
+		// V22-PR06: the job's routine origin label (nil for one-off sends).
+		Provenance: job.Provenance,
+		OnProgress: func(n int64) { sentBytes = n },
 	})
 	if err != nil {
 		return fail("%v", err)

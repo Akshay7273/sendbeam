@@ -89,6 +89,17 @@ func executeListenWithContext(ctx context.Context, args []string, stdin io.Reade
 			if req.ContentKind != "" {
 				evt["content_kind"] = req.ContentKind
 			}
+			// V22-PR06: the routine origin label travels with the consent
+			// request so the receiver can show where the transfer came
+			// from; absent for ordinary one-off sends.
+			if req.Provenance != nil {
+				evt["provenance"] = map[string]any{
+					"routine_id":   req.Provenance.RoutineID,
+					"routine_name": req.Provenance.RoutineName,
+					"sender_label": req.Provenance.SenderLabel,
+					"trigger":      req.Provenance.Trigger,
+				}
+			}
 			enc, _ := json.Marshal(evt)
 			_, _ = fmt.Fprintln(stdout, string(enc))
 
@@ -110,16 +121,23 @@ func executeListenWithContext(ctx context.Context, args []string, stdin io.Reade
 		}
 
 		s := newStyleFromWriter(stdout)
+		// V22-PR06: the consent surface always names the transfer's
+		// origin — the routine line for recipe dispatches, an explicit
+		// one-off marker otherwise — so the user sees where it came from
+		// before accepting.
+		origin := req.Provenance.Display()
 		if req.ContentKind != "" {
 			// V20-PR06: a handoff announces its kind, never its content, at
 			// consent time — the payload only exists after verification.
 			_, _ = fmt.Fprintf(stdout, "\n%s (%s, %s) from %s (%s):\n",
 				s.bold("Incoming "+handoffKindLabel(req.ContentKind)+" handoff"),
 				humanBytes(req.TotalSize), s.dim("encrypted"), s.bold(req.PeerLabel), req.PeerDeviceID)
+			_, _ = fmt.Fprintf(stdout, "  %s\n", s.dim(origin))
 			_, _ = fmt.Fprintf(stdout, "The %s will be shown as plain text after verification — it is never opened automatically.\n", handoffKindLabel(req.ContentKind))
 			_, _ = fmt.Fprintf(stdout, "Accept handoff? [y/N]: ")
 		} else {
 			_, _ = fmt.Fprintf(stdout, "\n%s from %s (%s):\n", s.bold("Incoming transfer"), s.bold(req.PeerLabel), req.PeerDeviceID)
+			_, _ = fmt.Fprintf(stdout, "  %s\n", s.dim(origin))
 			for _, f := range req.Files {
 				_, _ = fmt.Fprintf(stdout, "  • %s (%s)\n", f.Name, humanBytes(f.Size))
 			}
@@ -150,6 +168,10 @@ func executeListenWithContext(ctx context.Context, args []string, stdin io.Reade
 		RequirePadding: *requirePadding,
 		Private:        *privateMode || *requirePadding,
 		ConsentHandler: consentHandler,
+		// V22-PR06: the routine auto-accept policy (opt-in, default off).
+		// It is strictly narrower than --auto-accept and the per-peer
+		// policy: routine provenance + allowlisted sender required.
+		AutoAcceptPolicy: effectiveAutoAcceptPolicy(env.ConfigDir),
 		OnPeerDiscovered: func(peer receiver.DiscoveredPeer) {
 			rec, err := env.TrustStore.GetDevice(ctx, peer.DeviceID)
 			label := peer.DeviceID

@@ -39,6 +39,10 @@ type targetSendConfig struct {
 	// contentKind marks a targeted send as an encrypted text/link handoff
 	// (V20-PR06); empty for ordinary file sends.
 	contentKind string
+	// provenance is the routine origin label (V22-PR06): nil for ordinary
+	// one-off sends. The outbox dispatch sender sets it from the job; the
+	// driver stamps it on the wire manifest.
+	provenance *wire.Provenance
 }
 
 // resolveSendTargets resolves each query to a trusted device and loads the
@@ -110,6 +114,9 @@ func buildBroadcastTargets(env *CLIEnvironment, localID *wire.DeviceIdentity, re
 			Private:        cfg.privateMode || requirePad,
 			RequirePadding: requirePad,
 			RelayJitter:    cfg.jitter,
+			// V22-PR06: the routine origin label rides the wire manifest;
+			// nil for ordinary one-off sends.
+			Provenance: cfg.provenance,
 		}
 		targets[i] = transfer.BroadcastTarget{
 			ID:    rec.DeviceID,

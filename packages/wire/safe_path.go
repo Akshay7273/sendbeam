@@ -73,6 +73,12 @@ func ValidateManifest(manifest Manifest) (Manifest, error) {
 	if manifest.ContentKind != "" && !IsHandoffKind(manifest.ContentKind) {
 		return Manifest{}, Errorf(CodeProtocol, "manifest has an unknown contentKind")
 	}
+	// V22-PR06: the provenance origin label is validated so a malformed
+	// label can never pass as a routine transfer. A nil provenance is an
+	// ordinary one-off send.
+	if err := ValidateProvenance(manifest.Provenance); err != nil {
+		return Manifest{}, err
+	}
 	if len(manifest.Files) == 0 || len(manifest.Files) > MaxTransferFiles {
 		return Manifest{}, Errorf(CodeProtocol, "manifest has an invalid file count")
 	}

@@ -61,6 +61,8 @@ func main() {
 		os.Exit(runOutbox(os.Args[2:], os.Stdout, os.Stderr))
 	case "recipe":
 		os.Exit(runRecipe(os.Args[2:], os.Stdout, os.Stderr))
+	case "receive-policy":
+		os.Exit(runReceivePolicy(os.Args[2:], os.Stdout, os.Stderr))
 	case "diagnose":
 		os.Exit(runDiagnose(os.Args[2:]))
 	case "onboard":
@@ -93,7 +95,8 @@ func usage(w *os.File) {
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam listen")+" [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam transfers")+" <list|inspect|resume|discard> [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam outbox")+" <enqueue|list|show|dispatch|cancel|retry> [flags]")
-	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe")+" <list|show|create|edit|duplicate|delete|approve|preview|run|export|import> [flags]")
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe")+" <list|show|create|edit|duplicate|delete|approve|preview|run|export|import|disable|enable> [flags]")
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam receive-policy")+" <show|set> [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam diagnose")+" [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam onboard")+" [--json]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam update")+" [flags]")

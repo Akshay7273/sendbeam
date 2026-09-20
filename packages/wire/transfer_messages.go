@@ -42,9 +42,106 @@ type Manifest struct {
 	// ContentKind marks a manifest as an encrypted text/link handoff (V20-PR06):
 	// empty for ordinary file transfers, "text" or "link" for a handoff envelope.
 	// Field order matches the TypeScript twin so the JSON bytes stay identical.
-	ContentKind string      `json:"contentKind,omitempty"`
-	Files       []FileEntry `json:"files"`
-	TotalSize   int64       `json:"totalSize"`
+	ContentKind string `json:"contentKind,omitempty"`
+	// Provenance carries the sender's routine origin label (V22-PR06): which
+	// saved routine produced this transfer and what triggered it. Nil for
+	// ordinary one-off sends. Optional (omitempty): older senders omit it
+	// and older receivers ignore the unknown key, so this needs no protocol
+	// version bump. Field order matches the TypeScript twin so the JSON
+	// bytes stay identical. Provenance is advisory only — it is excluded
+	// from the manifest fingerprint and must never be treated as a trust
+	// signal (peer identity is bound by the trust store, not these labels).
+	Provenance *Provenance `json:"provenance,omitempty"`
+	Files      []FileEntry `json:"files"`
+	TotalSize  int64       `json:"totalSize"`
+}
+
+// Provenance is the advisory origin label a sender stamps on the transfer
+// manifest (V22-PR06): which saved routine produced this transfer and what
+// triggered it. It carries no secrets and no credentials — just labels —
+// and travels inside the already-authenticated session, after peer trust
+// was validated. A nil manifest provenance means an ordinary one-off send.
+type Provenance struct {
+	// RoutineID is the sender-side recipe id (32 lowercase hex).
+	RoutineID string `json:"routineId"`
+	// RoutineName is the sender-side recipe name (display label).
+	RoutineName string `json:"routineName"`
+	// SenderLabel is the sender's own device label (hostname unless the
+	// user configured a device name).
+	SenderLabel string `json:"senderLabel"`
+	// Trigger is the dispatch reason: "manual", "watch", "schedule" or
+	// "retry".
+	Trigger string `json:"trigger"`
+}
+
+// Display renders the consent-surface line the receiver shows for a
+// routine transfer: "Routine: <name> (trigger: <reason>) from <label>".
+// It never returns empty labels; zero values degrade to placeholders so
+// a hand-built provenance cannot render a blank line. A nil provenance
+// renders the explicit one-off marker.
+func (p *Provenance) Display() string {
+	if p == nil {
+		return "One-off send (not from a saved routine)"
+	}
+	name, label, trigger := p.RoutineName, p.SenderLabel, p.Trigger
+	if name == "" {
+		name = "unnamed routine"
+	}
+	if label == "" {
+		label = "unknown device"
+	}
+	if trigger == "" {
+		trigger = "manual"
+	}
+	return "Routine: " + name + " (trigger: " + trigger + ") from " + label
+}
+
+// maxProvenanceLabelLen bounds the display labels a manifest may carry:
+// long enough for any sane routine/device name, short enough that a
+// malicious peer cannot bloat the consent surface or the journal.
+const maxProvenanceLabelLen = 256
+
+// ValidProvenanceTriggers are the dispatch reasons a manifest provenance
+// may name. They mirror the recipe trigger reasons; anything else fails
+// closed at decode/validate time.
+var ValidProvenanceTriggers = []string{"manual", "watch", "schedule", "retry"}
+
+// ValidateProvenance checks a manifest provenance for shape: the routine id
+// must be a 32-lowercase-hex recipe id, the labels must be non-empty valid
+// UTF-8 within the label ceiling, and the trigger must be a known dispatch
+// reason. A nil provenance is valid (an ordinary one-off send).
+func ValidateProvenance(p *Provenance) error {
+	if p == nil {
+		return nil
+	}
+	if !isLowerHex(p.RoutineID, 32) {
+		return Errorf(CodeProtocol, "manifest provenance has an invalid routineId")
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"routineName", p.RoutineName},
+		{"senderLabel", p.SenderLabel},
+	} {
+		if field.value == "" {
+			return Errorf(CodeProtocol, "manifest provenance has an empty %s", field.name)
+		}
+		if len([]rune(field.value)) > maxProvenanceLabelLen {
+			return Errorf(CodeProtocol, "manifest provenance %s exceeds the %d-character ceiling", field.name, maxProvenanceLabelLen)
+		}
+	}
+	triggerOK := false
+	for _, t := range ValidProvenanceTriggers {
+		if p.Trigger == t {
+			triggerOK = true
+			break
+		}
+	}
+	if !triggerOK {
+		return Errorf(CodeProtocol, "manifest provenance has an unknown trigger %q", p.Trigger)
+	}
+	return nil
 }
 
 // BlockHash carries a block's SHA-256 so the receiver can verify before acking.
@@ -331,15 +428,22 @@ func decodeManifest(payload []byte) (ControlMsg, error) {
 		TransferID string `json:"transferId"`
 		// ContentKind is optional (V20-PR06); unknown kinds are rejected at decode time,
 		// mirroring the TypeScript twin, so neither peer can smuggle a future kind in.
-		ContentKind string         `json:"contentKind"`
-		Files       []rawFileEntry `json:"files"`
-		TotalSize   *int64         `json:"totalSize"`
+		ContentKind string `json:"contentKind"`
+		// Provenance is optional (V22-PR06); when present it is validated
+		// here, mirroring the TypeScript twin, so neither peer can smuggle
+		// a malformed origin label in. Absent means an ordinary one-off send.
+		Provenance *Provenance    `json:"provenance"`
+		Files      []rawFileEntry `json:"files"`
+		TotalSize  *int64         `json:"totalSize"`
 	}
 	if err := json.Unmarshal(payload, &raw); err != nil {
 		return nil, errors.New("control frame: invalid manifest")
 	}
 	if raw.ContentKind != "" && !IsHandoffKind(raw.ContentKind) {
 		return nil, fmt.Errorf("control frame: bad manifest contentKind %q", raw.ContentKind)
+	}
+	if err := ValidateProvenance(raw.Provenance); err != nil {
+		return nil, fmt.Errorf("control frame: %v", err)
 	}
 	if len(raw.Files) == 0 {
 		return nil, errors.New("control frame: manifest.files empty")
@@ -358,7 +462,7 @@ func decodeManifest(payload []byte) (ControlMsg, error) {
 		}
 		files[i] = f
 	}
-	return &Manifest{Type: FrameManifest, TransferID: raw.TransferID, ContentKind: raw.ContentKind, Files: files, TotalSize: *raw.TotalSize}, nil
+	return &Manifest{Type: FrameManifest, TransferID: raw.TransferID, ContentKind: raw.ContentKind, Provenance: raw.Provenance, Files: files, TotalSize: *raw.TotalSize}, nil
 }
 
 func decodeBlockHash(payload []byte) (ControlMsg, error) {

@@ -307,6 +307,9 @@ func (s *LocalService) consentHandler(transferID string) transfer.ConsentHandler
 			"destDir":      req.DestDir,
 			"contentKind":  req.ContentKind,
 			"local":        true,
+			// V22-PR06: the routine origin label (nil for ordinary one-off
+			// sends) so the UI can show where the transfer came from.
+			"provenance": provenanceEvent(req.Provenance),
 		})
 
 		select {
@@ -324,6 +327,22 @@ func (s *LocalService) consentHandler(transferID string) transfer.ConsentHandler
 		case <-ctx.Done():
 			return transfer.ConsentDecision{Accepted: false, Reason: "cancelled"}, ctx.Err()
 		}
+	}
+}
+
+// provenanceEvent renders the routine origin label for the consent event
+// payload (V22-PR06): nil for ordinary one-off sends so the UI can show
+// an explicit one-off marker; a small map otherwise.
+func provenanceEvent(p *wire.Provenance) map[string]any {
+	if p == nil {
+		return nil
+	}
+	return map[string]any{
+		"routineId":   p.RoutineID,
+		"routineName": p.RoutineName,
+		"senderLabel": p.SenderLabel,
+		"trigger":     p.Trigger,
+		"display":     p.Display(),
 	}
 }
 

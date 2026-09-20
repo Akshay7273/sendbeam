@@ -291,7 +291,7 @@ type blockingEnqueuer struct {
 	jobs    int32
 }
 
-func (b *blockingEnqueuer) Enqueue(ctx context.Context, _ []string, _ []EnqueueRecipient, _ jobs.RetryPolicy, _ netpolicy.Policy) (jobs.Job, error) {
+func (b *blockingEnqueuer) Enqueue(ctx context.Context, _ []string, _ []EnqueueRecipient, _ jobs.RetryPolicy, _ netpolicy.Policy, _ *wire.Provenance) (jobs.Job, error) {
 	b.mu.Lock()
 	b.cur++
 	if b.cur > b.peak {

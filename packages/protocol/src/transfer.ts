@@ -83,8 +83,36 @@ export interface Manifest {
    * Key order must match the Go struct so JSON bytes stay identical.
    */
   contentKind?: 'text' | 'link';
+  /**
+   * V22-PR06: the sender's routine origin label — which saved routine
+   * produced this transfer and what triggered it. Absent for ordinary
+   * one-off sends. Optional: older senders omit it and older receivers
+   * ignore the unknown key, so no protocol version bump is needed.
+   * Key order must match the Go struct so JSON bytes stay identical.
+   * Advisory only: excluded from the manifest fingerprint, never a
+   * trust signal.
+   */
+  provenance?: Provenance;
   files: FileEntry[];
   totalSize: number;
+}
+
+/**
+ * Provenance is the advisory origin label a sender stamps on the transfer
+ * manifest (V22-PR06). It carries no secrets and no credentials — just
+ * labels — and travels inside the already-authenticated session, after
+ * peer trust was validated. An absent provenance means an ordinary
+ * one-off send.
+ */
+export interface Provenance {
+  /** The sender-side recipe id (32 lowercase hex). */
+  routineId: string;
+  /** The sender-side recipe name (display label). */
+  routineName: string;
+  /** The sender's own device label (hostname unless configured). */
+  senderLabel: string;
+  /** The dispatch reason. */
+  trigger: 'manual' | 'watch' | 'schedule' | 'retry';
 }
 
 /** Sent at block end so the receiver can verify before acking. */

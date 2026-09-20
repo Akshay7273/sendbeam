@@ -348,17 +348,21 @@ type recordingEnqueuer struct {
 	calls      int
 	paths      []string
 	recipients []EnqueueRecipient
+	// provenance records the routine origin label the dispatch passed
+	// (V22-PR06); nil for one-off-style calls.
+	provenance *wire.Provenance
 	job        jobs.Job
 	failIfCall bool
 }
 
-func (f *recordingEnqueuer) Enqueue(_ context.Context, paths []string, recipients []EnqueueRecipient, _ jobs.RetryPolicy, _ netpolicy.Policy) (jobs.Job, error) {
+func (f *recordingEnqueuer) Enqueue(_ context.Context, paths []string, recipients []EnqueueRecipient, _ jobs.RetryPolicy, _ netpolicy.Policy, provenance *wire.Provenance) (jobs.Job, error) {
 	f.calls++
 	if f.failIfCall {
 		panic("Enqueue called during dry-run")
 	}
 	f.paths = append([]string{}, paths...)
 	f.recipients = append([]EnqueueRecipient{}, recipients...)
+	f.provenance = provenance
 	if f.job.JobID == "" {
 		f.job = jobs.Job{JobID: "test-job-1"}
 	}

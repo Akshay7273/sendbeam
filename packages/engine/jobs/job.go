@@ -144,6 +144,13 @@ type Job struct {
 	// reinterpreted as online by an older reader. The checksum covers
 	// this field, so flipping it after the fact also fails closed.
 	NetworkPolicy string `json:"networkPolicy,omitempty"`
+	// Provenance is the routine origin label (V22-PR06): which saved
+	// recipe produced this job and what triggered it. Nil for ordinary
+	// one-off sends. It is informational only — no secrets — and travels
+	// on the wire manifest at dispatch time; the checksum covers this
+	// field (omitempty preserves the canonical encoding of older jobs,
+	// so no schema bump is needed and old records keep verifying).
+	Provenance *wire.Provenance `json:"provenance,omitempty"`
 	// Lease is non-nil while a dispatcher owns the job.
 	Lease *Lease `json:"lease,omitempty"`
 	// CancelledAt is set when the user cancels.
@@ -227,6 +234,9 @@ func ValidateJob(j Job) error {
 	}
 	if _, err := netpolicy.Parse(j.NetworkPolicy); err != nil {
 		return wire.Errorf(wire.CodeStorage, "jobs: invalid networkPolicy %q", j.NetworkPolicy)
+	}
+	if err := wire.ValidateProvenance(j.Provenance); err != nil {
+		return wire.Errorf(wire.CodeStorage, "jobs: invalid provenance: %v", err)
 	}
 	if j.Policy.BaseBackoff < 0 || j.Policy.MaxBackoff < 0 || j.Policy.BaseBackoff > j.Policy.MaxBackoff {
 		return wire.Errorf(wire.CodeStorage, "jobs: invalid backoff bounds")

@@ -19,6 +19,12 @@ type ConsentRequest struct {
 	// encrypted handoff envelope (V20-PR06): the consent UI must show an inert
 	// preview and offer Copy/Save/Open instead of a destination directory.
 	ContentKind string `json:"contentKind,omitempty"`
+	// Provenance is the sender's routine origin label (V22-PR06): which
+	// saved routine produced this transfer and what triggered it. Nil for
+	// ordinary one-off sends. The consent UI renders it (or an explicit
+	// "one-off" marker when nil) so the user sees where the transfer came
+	// from before accepting.
+	Provenance *wire.Provenance `json:"provenance,omitempty"`
 }
 
 // ConsentDecision reports the user or policy acceptance decision for an incoming transfer.
@@ -79,6 +85,11 @@ func (c *consentDestination) Prepare(manifest wire.Manifest) error {
 			TotalSize:    manifest.TotalSize,
 			DestDir:      targetDir,
 			ContentKind:  HandoffKindOf(manifest),
+			// V22-PR06: the routine origin label rides the consent surface
+			// so the UI can show where the transfer came from. Nil for
+			// ordinary one-off sends. The manifest was wire-validated on
+			// decode, so the provenance is already shape-checked here.
+			Provenance: manifest.Provenance,
 		}
 		decision, err := c.consent(c.ctx, req)
 		if err != nil {
