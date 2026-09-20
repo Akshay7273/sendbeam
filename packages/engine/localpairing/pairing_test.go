@@ -6,6 +6,8 @@ package localpairing
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/subtle"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -67,11 +69,16 @@ func startServer(t *testing.T, store trust.Store) (*localrendezvous.Server, stri
 // --- Invitation encoding ---
 
 func TestInvitationEncodeParseRoundTrip(t *testing.T) {
+	key, err := newMasterKey()
+	if err != nil {
+		t.Fatal(err)
+	}
 	in := &Invitation{
-		Address:     "192.168.1.10:45931",
-		Token:       "abc123",
-		Fingerprint: "device-id-123",
-		ExpiresAt:   time.Now().Add(time.Minute),
+		Address:      "192.168.1.10:45931",
+		Token:        "abc123",
+		Fingerprint:  "device-id-123",
+		MasterKeyHex: hex.EncodeToString(key),
+		ExpiresAt:    time.Now().Add(time.Minute),
 	}
 	enc := in.Encode()
 	if !strings.HasPrefix(enc, "sendbeam-local-pair|v1|") {
@@ -81,27 +88,60 @@ func TestInvitationEncodeParseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Address != in.Address || got.Token != in.Token || got.Fingerprint != in.Fingerprint {
+	if got.Address != in.Address || got.Token != in.Token || got.Fingerprint != in.Fingerprint || got.MasterKeyHex != in.MasterKeyHex {
 		t.Fatalf("round trip mismatch: %+v", got)
+	}
+	raw, err := got.MasterKey()
+	if err != nil || len(raw) != 32 {
+		t.Fatalf("master key decode: %v", err)
 	}
 }
 
 func TestParseInvitationRejectsMalformed(t *testing.T) {
+	validKey := strings.Repeat("a", 64)
 	cases := []string{
 		"",
-		"sendbeam-local-pair|v1|127.0.0.1:tok", // too few parts
-		"sendbeam-local-pair|v2|127.0.0.1:tok:fp",      // wrong version
-		"other-prefix|v1|127.0.0.1:tok:fp",             // wrong prefix
-		"sendbeam-local-pair|v1|:tok:fp",               // empty address
-		"sendbeam-local-pair|v1|127.0.0.1::fp",         // empty token
-		"sendbeam-local-pair|v1|127.0.0.1:tok:",        // empty fingerprint
-		"sendbeam-local-pair|v1|example.com:80:tok:fp", // hostname, not IP
-		"sendbeam-local-pair|v1|not-an-address:tok:fp", // bad address
+		"sendbeam-local-pair|v1|127.0.0.1:1|tok", // too few parts
+		"sendbeam-local-pair|v2|127.0.0.1:1|tok|fp|" + validKey,    // wrong version
+		"other-prefix|v1|127.0.0.1:1|tok|fp|" + validKey,           // wrong prefix
+		"sendbeam-local-pair|v1||tok|fp|" + validKey,               // empty address
+		"sendbeam-local-pair|v1|127.0.0.1:1||fp|" + validKey,       // empty token
+		"sendbeam-local-pair|v1|127.0.0.1:1|tok||" + validKey,      // empty fingerprint
+		"sendbeam-local-pair|v1|127.0.0.1:1|tok|fp|",               // empty master key
+		"sendbeam-local-pair|v1|127.0.0.1:1|tok|fp|not-hex!!",      // bad master key encoding
+		"sendbeam-local-pair|v1|127.0.0.1:1|tok|fp|abcd",           // short master key
+		"sendbeam-local-pair|v1|example.com:80|tok|fp|" + validKey, // hostname, not IP
+		"sendbeam-local-pair|v1|not-an-address|tok|fp|" + validKey, // bad address
 	}
 	for _, c := range cases {
 		if _, err := ParseInvitation(c); err == nil {
 			t.Fatalf("expected error for %q", c)
 		}
+	}
+}
+
+func TestCreateInvitationGeneratesMasterKey(t *testing.T) {
+	alice := newTestDevice(t)
+	srv, addr := startServer(t, alice.store)
+	in, err := CreateInvitation(srv, addr, alice.deviceID(t), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := in.MasterKey()
+	if err != nil || len(key) != 32 {
+		t.Fatalf("invitation master key invalid: %v", err)
+	}
+	// A second invitation carries a different key.
+	in2, err := CreateInvitation(srv, addr, alice.deviceID(t), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key2, err := in2.MasterKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subtle.ConstantTimeCompare(key, key2) == 1 {
+		t.Fatal("invitations reused the same master key")
 	}
 }
 
@@ -116,11 +156,11 @@ func TestOfflinePairingFreshDevices(t *testing.T) {
 	aliceID := alice.deviceID(t)
 
 	srv, addr := startServer(t, alice.store)
-	masterKey, err := newMasterKey()
+	in, err := CreateInvitation(srv, addr, aliceID, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	in, err := CreateInvitation(srv, addr, aliceID, time.Minute)
+	masterKey, err := in.MasterKey()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,8 +226,11 @@ func TestJoinWrongTokenFails(t *testing.T) {
 	alice := newTestDevice(t)
 	bob := newTestDevice(t)
 	srv, addr := startServer(t, alice.store)
-	masterKey, _ := newMasterKey()
 	in, err := CreateInvitation(srv, addr, alice.deviceID(t), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	masterKey, err := in.MasterKey()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,9 +282,12 @@ func TestJoinFingerprintMismatchFails(t *testing.T) {
 	alice := newTestDevice(t)
 	bob := newTestDevice(t)
 	srv, addr := startServer(t, alice.store)
-	masterKey, _ := newMasterKey()
 	// Invitation claims a DIFFERENT fingerprint than alice's real ID.
 	in, err := CreateInvitation(srv, addr, "wrong-device-id", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	masterKey, err := in.MasterKey()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,8 +328,11 @@ func TestCompetingJoinerFailsCleanly(t *testing.T) {
 	carol := newTestDevice(t)
 	aliceID := alice.deviceID(t)
 	srv, addr := startServer(t, alice.store)
-	masterKey, _ := newMasterKey()
 	in, err := CreateInvitation(srv, addr, aliceID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	masterKey, err := in.MasterKey()
 	if err != nil {
 		t.Fatal(err)
 	}
