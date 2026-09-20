@@ -220,6 +220,122 @@ func TestLocalOnlyInvariantsOnSpec(t *testing.T) {
 	}
 }
 
+// TestResumePassthroughOnSpec verifies the V21-PR07 resume wiring: a local
+// send configured with a stable TransferID and a resume context propagates
+// both into the shared engine spec, connecting the local path to the
+// existing cross-session resume contract. Absent values stay absent: a
+// fresh local send mints its identity exactly as before.
+func TestResumePassthroughOnSpec(t *testing.T) {
+	alice := newTestDevice(t)
+	bob := newTestDevice(t)
+	kPair := []byte(strings.Repeat("k", 32))
+	mkOpts := func() Options {
+		return Options{
+			Identity:     alice.identity,
+			Store:        alice.store,
+			Resolver:     alice.resolver,
+			Table:        discovery.NewCandidateTable(discovery.RoutePolicy{}, 16, time.Minute),
+			PeerDeviceID: bob.identity.DeviceID,
+			Role:         rendezvous.RoleOfferer,
+			Source:       wire.BytesSource([]byte("x"), wire.FileMeta{Name: "x"}, 1024),
+		}
+	}
+
+	// Fresh send: no resume identity configured.
+	fresh := mkOpts()
+	freshSpec, err := fresh.buildSpec("handle", bob.identity.PublicKey, kPair, "cred-test", []net.IP{net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freshSpec.TransferID != "" || freshSpec.Resume != nil || freshSpec.OnResume != nil {
+		t.Fatal("fresh send must not carry resume identity")
+	}
+
+	// Resumed send: stable id + authenticated resume context + UX hook.
+	resumed := mkOpts()
+	resumed.TransferID = "tid-0123456789abcdef"
+	resumeCtx := &transfer.ResumeContext{
+		TransferID:          "tid-0123456789abcdef",
+		ManifestFingerprint: "fp",
+		Role:                wire.RoleOfferer,
+		ResumeSecret:        []byte(strings.Repeat("s", 32)),
+	}
+	var onResumeCalled bool
+	resumed.Resume = resumeCtx
+	resumed.OnResume = func(transfer.ResumeResult) { onResumeCalled = true }
+	resumedSpec, err := resumed.buildSpec("handle", bob.identity.PublicKey, kPair, "cred-test", []net.IP{net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumedSpec.TransferID != "tid-0123456789abcdef" {
+		t.Errorf("TransferID not propagated: %q", resumedSpec.TransferID)
+	}
+	if resumedSpec.Resume != resumeCtx {
+		t.Error("Resume context not propagated to the engine spec")
+	}
+	if resumedSpec.OnResume == nil {
+		t.Error("OnResume hook not propagated to the engine spec")
+	} else {
+		resumedSpec.OnResume(transfer.ResumeResult{})
+		if !onResumeCalled {
+			t.Error("OnResume hook is not the caller's hook")
+		}
+	}
+}
+
+// TestSenderRecordHooksOnSpec verifies the V21-PR07 sender-record wiring:
+// OnSendManifest and OnResumeCredential propagate into the engine spec so
+// the durable sender record is created/verified and the resume credential
+// is attached on the local path exactly like the online path. Nil stays
+// nil: callers that do not want sender records get none.
+func TestSenderRecordHooksOnSpec(t *testing.T) {
+	alice := newTestDevice(t)
+	bob := newTestDevice(t)
+	kPair := []byte(strings.Repeat("k", 32))
+	mkOpts := func() Options {
+		return Options{
+			Identity:     alice.identity,
+			Store:        alice.store,
+			Resolver:     alice.resolver,
+			Table:        discovery.NewCandidateTable(discovery.RoutePolicy{}, 16, time.Minute),
+			PeerDeviceID: bob.identity.DeviceID,
+			Role:         rendezvous.RoleOfferer,
+			Source:       wire.BytesSource([]byte("x"), wire.FileMeta{Name: "x"}, 1024),
+		}
+	}
+
+	plain := mkOpts()
+	plainSpec, err := plain.buildSpec("handle", bob.identity.PublicKey, kPair, "cred-test", []net.IP{net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plainSpec.OnSendManifest != nil || plainSpec.OnResumeCredential != nil {
+		t.Fatal("unset sender-record hooks must stay nil")
+	}
+
+	var manifestSeen, credSeen bool
+	hooked := mkOpts()
+	hooked.OnSendManifest = func(wire.Manifest) error { manifestSeen = true; return nil }
+	hooked.OnResumeCredential = func(wire.Manifest, []byte) error { credSeen = true; return nil }
+	hookedSpec, err := hooked.buildSpec("handle", bob.identity.PublicKey, kPair, "cred-test", []net.IP{net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hookedSpec.OnSendManifest == nil || hookedSpec.OnResumeCredential == nil {
+		t.Fatal("sender-record hooks not propagated to the engine spec")
+	}
+	var m wire.Manifest
+	if err := hookedSpec.OnSendManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	if err := hookedSpec.OnResumeCredential(m, []byte("root")); err != nil {
+		t.Fatal(err)
+	}
+	if !manifestSeen || !credSeen {
+		t.Error("propagated hooks are not the caller's hooks")
+	}
+}
+
 // --- Direct-only transfer fails closed when ICE cannot connect ---
 //
 // UDP is blocked in this sandbox, so ICE cannot establish: the transfer

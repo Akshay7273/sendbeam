@@ -24,14 +24,23 @@ import (
 // refuses unknown dialers at the door, and the Opaque ceremony authenticates
 // the claimed device ID before any bytes move.
 func runLocalOnlyReceive(env *CLIEnvironment, outDir, bindAddr string, requirePadding, privateMode bool, stdout, stderr io.Writer) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runLocalOnlyReceiveWithContext(ctx, env, outDir, bindAddr, requirePadding, privateMode, stdout, stderr)
+}
+
+// runLocalOnlyReceiveWithContext is the testable core of runLocalOnlyReceive:
+// cancelling ctx stops the listener and aborts any in-flight receive.
+func runLocalOnlyReceiveWithContext(ctx context.Context, env *CLIEnvironment, outDir, bindAddr string, requirePadding, privateMode bool, stdout, stderr io.Writer) int {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam receive: %v\n", err)
 		return 1
 	}
 
-	// Bind a real LAN address so the sender can reach us. Loopback-only is
-	// rejected here: an invitation carrying 127.0.0.1 is unusable
-	// cross-device, and silently listening on loopback would lie about it.
+	// Bind a real LAN address by default so the sender can reach us: an
+	// auto-selected 127.0.0.1 would be unusable cross-device, and silently
+	// listening on loopback would lie about it. An explicit --bind
+	// loopback address is still honored for same-machine testing.
 	bind := bindAddr
 	if bind == "" {
 		lan, err := localrendezvous.LANBindAddr()
@@ -47,9 +56,6 @@ func runLocalOnlyReceive(env *CLIEnvironment, outDir, bindAddr string, requirePa
 		_, _ = fmt.Fprintf(stderr, "sendbeam receive: identity: %v\n", err)
 		return 1
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	srv := localrendezvous.NewServer(localrendezvous.Config{
 		BindAddr:      bind,

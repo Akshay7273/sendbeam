@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sendbeam/engine/jobs"
+	"github.com/sendbeam/engine/netpolicy"
 	"github.com/sendbeam/engine/transfer"
 )
 
@@ -59,7 +60,7 @@ func TestEnqueue_QueuesJobWithAttempts(t *testing.T) {
 	srcDir := t.TempDir()
 	p := writeTempFile(t, srcDir, "hello.txt", "hello outbox")
 
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy())
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy(), netpolicy.Online)
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestEnqueue_RejectsNoRecipients(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
 	ob := newTestOutbox(t, clk, nil)
 	p := writeTempFile(t, t.TempDir(), "a.txt", "x")
-	if _, err := ob.Enqueue(context.Background(), []string{p}, nil, jobs.DefaultRetryPolicy()); err == nil {
+	if _, err := ob.Enqueue(context.Background(), []string{p}, nil, jobs.DefaultRetryPolicy(), netpolicy.Online); err == nil {
 		t.Fatal("Enqueue with no recipients should fail")
 	}
 }
@@ -112,7 +113,7 @@ func TestDispatch_OfflineRecipientBackoff(t *testing.T) {
 	ob := newTestOutbox(t, clk, offline)
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
 	policy := jobs.DefaultRetryPolicy() // base 30s, max 5
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], policy)
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], policy, netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +182,7 @@ func TestDispatch_OkCompletesJob(t *testing.T) {
 	digest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	ob := newTestOutbox(t, clk, okSender(digest))
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients(), jobs.DefaultRetryPolicy())
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients(), jobs.DefaultRetryPolicy(), netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +219,7 @@ func TestDispatch_RefusedIsTerminal(t *testing.T) {
 	}
 	ob := newTestOutbox(t, clk, refused)
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy())
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy(), netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +251,7 @@ func TestDispatch_CancelStopsDispatch(t *testing.T) {
 	}
 	ob := newTestOutbox(t, clk, never)
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients(), jobs.DefaultRetryPolicy())
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients(), jobs.DefaultRetryPolicy(), netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +285,7 @@ func TestDispatch_ExpiredJobFailsAttempts(t *testing.T) {
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
 	policy := jobs.DefaultRetryPolicy()
 	policy.ExpiresAt = clk.t.Add(-time.Minute) // already expired
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], policy)
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], policy, netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +314,7 @@ func TestDispatch_ChangedSourceFailsJob(t *testing.T) {
 	ob := newTestOutbox(t, clk, never)
 	srcDir := t.TempDir()
 	p := writeTempFile(t, srcDir, "a.txt", "original")
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy())
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy(), netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +341,7 @@ func TestDispatch_RequiresSender(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
 	ob := newTestOutbox(t, clk, nil) // no production sender wired
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
-	if _, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy()); err != nil {
+	if _, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy(), netpolicy.Online); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ob.DispatchOnce(context.Background(), DispatchOptions{}); err == nil {
@@ -362,7 +363,7 @@ func TestDispatch_RestartRequeuesInterrupted(t *testing.T) {
 		return SendOutcome{Status: transfer.StatusOk, Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	})
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy())
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy(), netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +404,7 @@ func TestRetryFailed_RequeuesWithFreshBudget(t *testing.T) {
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
 	policy := jobs.DefaultRetryPolicy()
 	policy.MaxAttempts = 1 // exhaust the budget on the first failure
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], policy)
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], policy, netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +448,7 @@ func TestRetryFailed_DeviceFilter(t *testing.T) {
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
 	policy := jobs.DefaultRetryPolicy()
 	policy.MaxAttempts = 1
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients(), policy)
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients(), policy, netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +483,7 @@ func TestEnqueue_DuplicateRecipientsRejected(t *testing.T) {
 		{DeviceID: "dev-alice-0000000000000001", Label: "alice"},
 		{DeviceID: "dev-alice-0000000000000001", Label: "alice-again"},
 	}
-	if _, err := ob.Enqueue(context.Background(), []string{p}, recips, jobs.DefaultRetryPolicy()); err == nil {
+	if _, err := ob.Enqueue(context.Background(), []string{p}, recips, jobs.DefaultRetryPolicy(), netpolicy.Online); err == nil {
 		t.Fatal("expected duplicate recipient rejection")
 	}
 }
@@ -495,7 +496,7 @@ func TestDispatch_CorruptSidecarFailsJob(t *testing.T) {
 		return SendOutcome{Status: transfer.StatusOk, Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	})
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy())
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy(), netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +523,7 @@ func TestDispatch_MissingSourceFailsJob(t *testing.T) {
 		return SendOutcome{Status: transfer.StatusOk, Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	})
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy())
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy(), netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +549,7 @@ func TestDispatch_AttemptExhaustionFailsJob(t *testing.T) {
 	})
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
 	policy := jobs.RetryPolicy{MaxAttempts: 2, BaseBackoff: time.Second, MaxBackoff: time.Minute}
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], policy)
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], policy, netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,7 +578,7 @@ func TestDispatch_MixedOutcomes(t *testing.T) {
 	})
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
 	policy := jobs.RetryPolicy{MaxAttempts: 1, BaseBackoff: time.Second, MaxBackoff: time.Minute}
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients(), policy)
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients(), policy, netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -607,7 +608,7 @@ func TestDispatch_OkWithoutDigestFails(t *testing.T) {
 	})
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
 	policy := jobs.RetryPolicy{MaxAttempts: 1, BaseBackoff: time.Second, MaxBackoff: time.Minute}
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], policy)
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], policy, netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +635,7 @@ func TestDispatch_CancelDuringSendDropsResult(t *testing.T) {
 		return SendOutcome{Status: transfer.StatusOk, Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	})
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
-	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy())
+	job, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy(), netpolicy.Online)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -670,7 +671,7 @@ func TestDispatch_ParallelJobs(t *testing.T) {
 	})
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
 	for i := 0; i < 4; i++ {
-		if _, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy()); err != nil {
+		if _, err := ob.Enqueue(context.Background(), []string{p}, testRecipients()[:1], jobs.DefaultRetryPolicy(), netpolicy.Online); err != nil {
 			t.Fatal(err)
 		}
 	}

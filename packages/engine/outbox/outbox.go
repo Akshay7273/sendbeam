@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sendbeam/engine/jobs"
+	"github.com/sendbeam/engine/netpolicy"
 	"github.com/sendbeam/engine/transfer"
 	"github.com/sendbeam/wire"
 )
@@ -38,6 +39,13 @@ type SendOutcome struct {
 // recorded absolute source paths, re-verified by the outbox before the call.
 // The implementation must bind the attempt's DeviceID to the authenticated
 // peer via the trust store; it must not trust job metadata for identity.
+// It must also honor the job's bound network policy
+// (job.EffectiveNetworkPolicy()) together with the dispatcher's effective
+// policy (V21-PR07): a local-only job must never be sent over an online
+// route, and an online job must never be sent when the effective policy is
+// local-only. The outbox gates dispatch on netpolicy.DispatchableUnder
+// before invoking the SendFunc; the SendFunc is the second line of defense
+// and must re-verify rather than assume.
 type SendFunc func(ctx context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome
 
 // DispatchOptions tunes one dispatch pass.
@@ -47,6 +55,12 @@ type DispatchOptions struct {
 	// Concurrency bounds how many jobs dispatch in parallel; <=1 is
 	// sequential. The SendFunc must be safe for concurrent use when >1.
 	Concurrency int
+	// EffectivePolicy is the dispatcher's current network policy
+	// (V21-PR07). Jobs are dispatched only when their bound network
+	// policy is satisfiable under it; unsatisfiable jobs are held with
+	// a clear skip reason and their attempts are left untouched. Zero
+	// value means Online (the v2.0 behavior).
+	EffectivePolicy netpolicy.Policy
 }
 
 // AttemptReport describes what one dispatch pass did to one attempt.
@@ -118,7 +132,7 @@ func randomJobID() string {
 // (folders, symlink rejection, path normalization — the production transfer
 // semantics), fingerprinted, and bound to one queued attempt per recipient.
 // The job starts dispatching only via DispatchOnce.
-func (o *Outbox) Enqueue(ctx context.Context, paths []string, recipients []RecipientRef, policy jobs.RetryPolicy) (jobs.Job, error) {
+func (o *Outbox) Enqueue(ctx context.Context, paths []string, recipients []RecipientRef, policy jobs.RetryPolicy, networkPolicy netpolicy.Policy) (jobs.Job, error) {
 	_ = ctx
 	now := o.clock()
 	if len(recipients) == 0 {
@@ -161,6 +175,11 @@ func (o *Outbox) Enqueue(ctx context.Context, paths []string, recipients []Recip
 	if err != nil {
 		return jobs.Job{}, err
 	}
+	// Bind every attempt of this job to its network policy (V21-PR07).
+	// The canonical stored form is "" for Online so jobs enqueued under
+	// the default policy are byte-identical to v2.0 jobs; any other
+	// policy is stored by name and enforced at dispatch.
+	job.NetworkPolicy = canonicalNetworkPolicy(networkPolicy)
 	if err := jobs.QueueJob(&job, now); err != nil {
 		return jobs.Job{}, err
 	}
@@ -177,6 +196,23 @@ func (o *Outbox) Enqueue(ctx context.Context, paths []string, recipients []Recip
 		return jobs.Job{}, err
 	}
 	return job, nil
+}
+
+// canonicalNetworkPolicy returns the stored form of a network policy:
+// empty for Online (byte-identical to v2.0 jobs), the canonical name
+// otherwise.
+func canonicalNetworkPolicy(p netpolicy.Policy) string {
+	if p == netpolicy.Online {
+		return ""
+	}
+	return p.String()
+}
+
+// policyHoldReason explains why a job bound to jobPolicy is not
+// dispatchable under the dispatcher's effective policy.
+func policyHoldReason(jobPolicy, effective netpolicy.Policy) string {
+	return "network policy " + jobPolicy.String() + " is not satisfiable under effective policy " +
+		effective.String() + "; job held (not dispatched)"
 }
 
 // Get loads one job by ID.
@@ -290,6 +326,15 @@ func (o *Outbox) DispatchOnce(ctx context.Context, opts DispatchOptions) (Dispat
 		case jobs.JobCompleted, jobs.JobFailed, jobs.JobCancelled, jobs.JobDraft, jobs.JobPaused:
 			continue // terminal, not yet released, or operator-suspended
 		}
+		// V21-PR07 attempt binding: a job whose network policy is not
+		// satisfiable under the dispatcher's effective policy is held,
+		// never dispatched down a broader path. The hold is reported,
+		// not silent, and the job's attempts are untouched.
+		if !job.EffectiveNetworkPolicy().DispatchableUnder(opts.EffectivePolicy) {
+			rep.Skipped = append(rep.Skipped, e.JobID+": "+
+				policyHoldReason(job.EffectiveNetworkPolicy(), opts.EffectivePolicy))
+			continue
+		}
 		ids = append(ids, job.JobID)
 	}
 
@@ -326,7 +371,7 @@ func (o *Outbox) DispatchOnce(ctx context.Context, opts DispatchOptions) (Dispat
 					continue
 				}
 				var sub DispatchReport
-				o.dispatchJob(ctx, &job, owner, ttl, &sub)
+				o.dispatchJob(ctx, &job, owner, ttl, opts.EffectivePolicy, &sub)
 				mu.Lock()
 				rep.JobsDispatched += sub.JobsDispatched
 				rep.Results = append(rep.Results, sub.Results...)
@@ -354,8 +399,16 @@ func (o *Outbox) DispatchOnce(ctx context.Context, opts DispatchOptions) (Dispat
 
 // dispatchJob runs one job's dispatch pass: lease, expiry, source
 // verification, then each due attempt.
-func (o *Outbox) dispatchJob(ctx context.Context, job *jobs.Job, owner string, ttl time.Duration, rep *DispatchReport) {
+func (o *Outbox) dispatchJob(ctx context.Context, job *jobs.Job, owner string, ttl time.Duration, effective netpolicy.Policy, rep *DispatchReport) {
 	now := o.clock()
+	// V21-PR07 attempt binding (defense in depth alongside the
+	// DispatchOnce selection gate): never dispatch a job whose bound
+	// network policy the effective policy cannot satisfy.
+	if !job.EffectiveNetworkPolicy().DispatchableUnder(effective) {
+		rep.Skipped = append(rep.Skipped, job.JobID+": "+
+			policyHoldReason(job.EffectiveNetworkPolicy(), effective))
+		return
+	}
 	if err := jobs.AcquireLease(job, owner, ttl, now); err != nil {
 		rep.Skipped = append(rep.Skipped, job.JobID+": "+err.Error())
 		return

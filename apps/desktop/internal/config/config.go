@@ -55,6 +55,103 @@ type DesktopConfig struct {
 	NetworkPolicy string `json:"networkPolicy"`
 }
 
+// ApplyPatch merges a partial config update into cfg (V21-PR07). Only
+// keys present in the patch are changed; unknown keys and mistyped values
+// are rejected before anything is applied, and the merged result is
+// validated. This is the fix for the settings page wiping fields it does
+// not manage (theme, update channel, network policy, ...): the frontend
+// sends only the keys it owns, and everything else is preserved.
+func ApplyPatch(cfg *DesktopConfig, patch map[string]any) error {
+	// Apply to a copy so a rejected patch leaves the caller's config
+	// untouched (fail closed without partial mutation).
+	next := *cfg
+	for key, val := range patch {
+		switch key {
+		case "serverUrl":
+			s, ok := val.(string)
+			if !ok {
+				return fmt.Errorf("config patch: %q must be a string", key)
+			}
+			next.ServerURL = s
+		case "iceServers":
+			arr, ok := val.([]any)
+			if !ok {
+				return fmt.Errorf("config patch: %q must be an array of strings", key)
+			}
+			ice := make([]string, 0, len(arr))
+			for i, v := range arr {
+				s, ok := v.(string)
+				if !ok {
+					return fmt.Errorf("config patch: %q[%d] must be a string", key, i)
+				}
+				ice = append(ice, s)
+			}
+			next.ICEServers = ice
+		case "downloadDir":
+			s, ok := val.(string)
+			if !ok {
+				return fmt.Errorf("config patch: %q must be a string", key)
+			}
+			next.DownloadDir = s
+		case "autoAccept":
+			b, ok := val.(bool)
+			if !ok {
+				return fmt.Errorf("config patch: %q must be a boolean", key)
+			}
+			next.AutoAccept = b
+		case "closeToTray":
+			b, ok := val.(bool)
+			if !ok {
+				return fmt.Errorf("config patch: %q must be a boolean", key)
+			}
+			next.CloseToTray = b
+		case "startMinimized":
+			b, ok := val.(bool)
+			if !ok {
+				return fmt.Errorf("config patch: %q must be a boolean", key)
+			}
+			next.StartMinimized = b
+		case "theme":
+			s, ok := val.(string)
+			if !ok {
+				return fmt.Errorf("config patch: %q must be a string", key)
+			}
+			next.Theme = s
+		case "updateChannel":
+			s, ok := val.(string)
+			if !ok {
+				return fmt.Errorf("config patch: %q must be a string", key)
+			}
+			next.UpdateChannel = s
+		case "autoCheckUpdate":
+			b, ok := val.(bool)
+			if !ok {
+				return fmt.Errorf("config patch: %q must be a boolean", key)
+			}
+			next.AutoCheckUpdate = b
+		case "requirePadding":
+			b, ok := val.(bool)
+			if !ok {
+				return fmt.Errorf("config patch: %q must be a boolean", key)
+			}
+			next.RequirePadding = b
+		case "networkPolicy":
+			s, ok := val.(string)
+			if !ok {
+				return fmt.Errorf("config patch: %q must be a string", key)
+			}
+			next.NetworkPolicy = s
+		default:
+			return fmt.Errorf("config patch: unknown key %q", key)
+		}
+	}
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	*cfg = next
+	return nil
+}
+
 // DefaultConfig returns the default safe configuration.
 func DefaultConfig() DesktopConfig {
 	return DesktopConfig{

@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/sendbeam/engine/netpolicy"
 	"github.com/sendbeam/wire"
 )
 
@@ -127,6 +128,22 @@ type Job struct {
 	Attempts []RecipientAttempt `json:"attempts"`
 	// Policy bounds retries and expiry.
 	Policy RetryPolicy `json:"policy"`
+	// NetworkPolicy binds every attempt of this job to a network path
+	// policy (V21-PR07). It is the canonical policy name ("online",
+	// "prefer-local", "local-only"); empty means "online", the v2.0
+	// default, so jobs written before this field existed keep their
+	// semantics and their checksums (omitempty preserves the canonical
+	// encoding). A job's network policy never changes implicitly: a
+	// global policy change holds unsatisfiable jobs rather than
+	// re-binding them, so local-only is never silently relaxed to
+	// finish a transfer.
+	//
+	// Compatibility (no schema bump): old binaries quarantine a job that
+	// carries this field because the strict store decoder rejects
+	// unknown fields — a local-only job can never be silently
+	// reinterpreted as online by an older reader. The checksum covers
+	// this field, so flipping it after the fact also fails closed.
+	NetworkPolicy string `json:"networkPolicy,omitempty"`
 	// Lease is non-nil while a dispatcher owns the job.
 	Lease *Lease `json:"lease,omitempty"`
 	// CancelledAt is set when the user cancels.
@@ -142,6 +159,18 @@ func DefaultRetryPolicy() RetryPolicy {
 		BaseBackoff: 30 * time.Second,
 		MaxBackoff:  30 * time.Minute,
 	}
+}
+
+// EffectiveNetworkPolicy returns the job's bound network policy. Empty
+// (including every job written before V21-PR07) means Online, the v2.0
+// behavior; the stored value is always a valid policy name because
+// ValidateJob rejects anything else.
+func (j Job) EffectiveNetworkPolicy() netpolicy.Policy {
+	p, err := netpolicy.Parse(j.NetworkPolicy)
+	if err != nil {
+		return netpolicy.Online
+	}
+	return p
 }
 
 // ValidateJob checks structural invariants without touching the filesystem.
@@ -195,6 +224,9 @@ func ValidateJob(j Job) error {
 	}
 	if j.Policy.MaxAttempts < 1 {
 		return wire.Errorf(wire.CodeStorage, "jobs: maxAttempts must be >= 1")
+	}
+	if _, err := netpolicy.Parse(j.NetworkPolicy); err != nil {
+		return wire.Errorf(wire.CodeStorage, "jobs: invalid networkPolicy %q", j.NetworkPolicy)
 	}
 	if j.Policy.BaseBackoff < 0 || j.Policy.MaxBackoff < 0 || j.Policy.BaseBackoff > j.Policy.MaxBackoff {
 		return wire.Errorf(wire.CodeStorage, "jobs: invalid backoff bounds")

@@ -688,6 +688,19 @@ func (s *TransferService) SendToDeviceLocal(paths []string, deviceID string) (Ha
 // route policy before dialing.
 func (r *transferRun) runSendLocal(ctx context.Context, sources []wire.FileSource, peer *targetedPeer, endpoint string) {
 	defer r.svc.remove(r)
+	if err := r.doSendLocal(ctx, sources, peer, endpoint); err != nil {
+		r.fail(err.Error())
+		if r.svc.notifier != nil {
+			r.svc.notifier.NotifyFailure("Transfer Failed", err.Error())
+		}
+	}
+}
+
+// doSendLocal performs one local-only offerer transfer attempt (V21-PR06).
+// It reports connect/progress/transport events and publishes completion on
+// success; on failure it returns the error without failing the run, so a
+// prefer-local caller can fall back to the online path on the same run.
+func (r *transferRun) doSendLocal(ctx context.Context, sources []wire.FileSource, peer *targetedPeer, endpoint string) error {
 
 	lastProgress := time.Time{}
 	emitProgress := func() {
@@ -701,11 +714,13 @@ func (r *transferRun) runSendLocal(ctx context.Context, sources []wire.FileSourc
 
 	// Route gate: the discovered LAN endpoint must validate against the
 	// local interfaces. A stale or spoofed presence entry pointing
-	// off-LAN fails closed here.
+	// off-LAN fails closed here. AllowLoopback stays true (V21-PR07
+	// review): loopback cannot cause public egress, the peer is still
+	// trust-gated and Opaque-authenticated, and same-host operation
+	// needs it.
 	tab := discovery.NewCandidateTable(discovery.RoutePolicy{AllowLoopback: true}, 16, 5*time.Minute)
 	if _, err := tab.AddManual(peer.peerDeviceID, endpoint); err != nil {
-		r.fail("local endpoint rejected: " + err.Error())
-		return
+		return fmt.Errorf("local endpoint rejected: %w", err)
 	}
 
 	requirePadding := r.svc.requirePaddingConfig() || r.svc.isDeviceRequirePadding(peer.peerDeviceID)
@@ -732,11 +747,7 @@ func (r *transferRun) runSendLocal(ctx context.Context, sources []wire.FileSourc
 		},
 	})
 	if err != nil {
-		r.fail(err.Error())
-		if r.svc.notifier != nil {
-			r.svc.notifier.NotifyFailure("Transfer Failed", err.Error())
-		}
-		return
+		return err
 	}
 
 	r.mu.Lock()
@@ -763,10 +774,100 @@ func (r *transferRun) runSendLocal(ctx context.Context, sources []wire.FileSourc
 		summary := fmt.Sprintf("Sent %d file(s) (%s) to %s over the local network", len(out.Files), humanBytes(r.totalBytes), peer.label)
 		r.svc.notifier.NotifySuccess("Transfer Complete", summary, "")
 	}
+	return nil
 }
 
-// SendHandoffToDevice sends an explicit encrypted text or link handoff to a
-// paired trusted device through the ordinary authenticated transfer path.
+// resetLeg clears per-attempt progress so a fallback leg starts clean on
+// the same run (V21-PR07). The file list and totals are kept.
+func (r *transferRun) resetLeg() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.doneBytes = 0
+	r.reused = 0
+	r.fileIdx = 0
+	r.fileBytes = 0
+	r.fileSize = 0
+	r.filesDone = 0
+	r.paused = false
+	r.canceled = false
+	r.failed = false
+	r.resumed = false
+	r.transport = ""
+	r.fingerprint = ""
+	r.samples = nil
+}
+
+// runSendPreferLocal tries the LAN path first and falls back to the online
+// path explicitly when the local attempt fails (V21-PR07). Both legs share
+// one run so progress, transport, and state events stay coherent in the UI;
+// the fallback is announced as a state event, never silent.
+func (r *transferRun) runSendPreferLocal(ctx context.Context, server string, sources []wire.FileSource, iceServers []webrtc.ICEServer, peer *targetedPeer, endpoint string) {
+	defer r.svc.remove(r)
+
+	r.publish("state", func(ev *TransferEvent) { ev.State = "trying local route…" })
+	if err := r.doSendLocal(ctx, sources, peer, endpoint); err == nil {
+		return
+	} else {
+		r.publish("state", func(ev *TransferEvent) {
+			ev.State = "local route failed; falling back to online"
+		})
+	}
+	r.resetLeg()
+	r.runSendTargetedCore(ctx, server, sources, iceServers, peer.opaqueOpts, peer.label, peer.peerDeviceID, "")
+}
+
+// SendToDevicePreferLocal sends files to a trusted device preferring the
+// LAN path (V21-PR07): when the peer has a live local endpoint the transfer
+// tries the offline route first and falls back to the online path
+// explicitly if it fails; with no live endpoint it goes online directly.
+// The route taken is visible in the transfer's transport/state events.
+func (s *TransferService) SendToDevicePreferLocal(paths []string, deviceID string, server string) (Handle, error) {
+	if len(paths) == 0 {
+		return Handle{}, errors.New("no files or folders selected")
+	}
+	server = s.resolveSendServer(server)
+	if err := validatePaths(paths); err != nil {
+		return Handle{}, err
+	}
+	iceServers, err := s.resolveICEServers()
+	if err != nil {
+		return Handle{}, err
+	}
+
+	peer, err := s.resolveTargetedPeer(deviceID)
+	if err != nil {
+		return Handle{}, err
+	}
+
+	sources, total, err := transfer.NewOSFileSources(paths)
+	if err != nil {
+		return Handle{}, err
+	}
+
+	id := s.newID()
+	r := s.newRun(id, wire.RoleOfferer)
+	for _, src := range sources {
+		meta := src.Meta()
+		r.mu.Lock()
+		r.files = append(r.files, FileInfo{Name: meta.Name, Size: meta.Size})
+		r.totalBytes += meta.Size
+		r.mu.Unlock()
+	}
+	_ = total
+
+	ds := s.DeviceService()
+	if ds == nil {
+		return Handle{}, errors.New("device service not available")
+	}
+	if endpoint, ok := ds.DirectEndpointFor(deviceID); ok {
+		go r.runSendPreferLocal(r.ctx, server, sources, iceServers, peer, endpoint)
+		return Handle{ID: id, Role: "send"}, nil
+	}
+	// No live LAN endpoint: nothing local to prefer, go online directly.
+	go r.runSendTargeted(r.ctx, server, sources, nil, iceServers, peer.opaqueOpts, peer.label, peer.peerDeviceID, "")
+	return Handle{ID: id, Role: "send"}, nil
+}
+
 // kind must be "text" or "link". The envelope is a single in-memory payload of
 // at most 256 KiB; it is never recorded as a sender job and never resumes —
 // the payload is verified before the receiver may Copy/Save/Open it.
@@ -1268,6 +1369,29 @@ func (s *TransferService) SaveConfig(cfg config.DesktopConfig) error {
 	s.mu.Unlock()
 	if cs == nil {
 		return errors.New("config store not available")
+	}
+	return cs.Save(cfg)
+}
+
+// SaveConfigPatch merges a partial config update into the stored config
+// (V21-PR07). Only keys present in the patch change; everything else is
+// preserved. The settings UI must call this (not SaveConfig) so saving
+// one section never wipes fields managed elsewhere (theme, update
+// channel, network policy, ...). Unknown keys and mistyped values fail
+// closed before anything is written.
+func (s *TransferService) SaveConfigPatch(patch map[string]any) error {
+	s.mu.Lock()
+	cs := s.configStore
+	s.mu.Unlock()
+	if cs == nil {
+		return errors.New("config store not available")
+	}
+	cfg, err := cs.Load()
+	if err != nil {
+		return err
+	}
+	if err := config.ApplyPatch(&cfg, patch); err != nil {
+		return err
 	}
 	return cs.Save(cfg)
 }
@@ -1851,6 +1975,13 @@ func (r *transferRun) runSend(ctx context.Context, server string, sources []wire
 // contentKind is "" for file sends or "text"/"link" for an encrypted handoff (V20-PR06).
 func (r *transferRun) runSendTargeted(ctx context.Context, server string, sources []wire.FileSource, _ []string, iceServers []webrtc.ICEServer, opaqueOpts *rendezvous.OpaqueOptions, peerLabel, peerDeviceID, contentKind string) {
 	defer r.svc.remove(r)
+	r.runSendTargetedCore(ctx, server, sources, iceServers, opaqueOpts, peerLabel, peerDeviceID, contentKind)
+}
+
+// runSendTargetedCore is the online offerer path without run lifecycle
+// management, so a prefer-local run can fall back to it after a failed
+// local attempt on the same run (V21-PR07).
+func (r *transferRun) runSendTargetedCore(ctx context.Context, server string, sources []wire.FileSource, iceServers []webrtc.ICEServer, opaqueOpts *rendezvous.OpaqueOptions, peerLabel, peerDeviceID, contentKind string) {
 
 	sig, err := r.svc.dial(ctx, server, wire.RoleOfferer)
 	if err != nil {

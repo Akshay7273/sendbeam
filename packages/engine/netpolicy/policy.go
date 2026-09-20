@@ -71,3 +71,30 @@ func (p Policy) AllowsOnline() bool {
 func (p Policy) RequiresLocal() bool {
 	return p == LocalOnly
 }
+
+// DispatchableUnder reports whether a job bound to policy p may be
+// dispatched by a dispatcher running under the effective policy. This is
+// the V21-PR07 attempt-binding rule: a job is dispatched only when its
+// bound policy can be satisfied, never by silently broadening it.
+//
+//   - LocalOnly jobs dispatch only when the effective policy leaves a
+//     local route available (LocalOnly or PreferLocal). The dispatcher
+//     must still suppress any online fallback for them.
+//   - Online jobs (including pre-V21-PR07 jobs, whose bound policy is
+//     empty) dispatch only when the effective policy permits an online
+//     route (Online or PreferLocal).
+//   - PreferLocal jobs dispatch under any effective policy; the route is
+//     chosen at send time within what the effective policy allows.
+//
+// A false result means the job is held: the dispatcher skips it with a
+// clear reason and leaves its attempts untouched.
+func (p Policy) DispatchableUnder(effective Policy) bool {
+	switch p {
+	case LocalOnly:
+		return effective == LocalOnly || effective == PreferLocal
+	case PreferLocal:
+		return true
+	default: // Online and any unrecognized value fail closed toward online semantics
+		return effective == Online || effective == PreferLocal
+	}
+}
