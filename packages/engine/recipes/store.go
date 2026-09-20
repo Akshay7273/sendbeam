@@ -104,6 +104,27 @@ func (s *RecipeStore) Save(r Recipe) error {
 	return s.write(s.Path(r.ID), r)
 }
 
+// RecordRun replaces the recipe's LastRun ledger entry and saves it
+// through the normal validated path (UpdatedAt refreshed, checksum
+// recomputed). It loads the current record first so concurrent writers
+// only ever replace the ledger entry, never the recipe itself.
+func (s *RecipeStore) RecordRun(recipeID string, info RecipeRunInfo) error {
+	r, ok, err := s.Load(recipeID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return wire.Errorf(wire.CodeStorage, "recipes: no recipe %q", recipeID)
+	}
+	if info.At.IsZero() {
+		info.At = s.now().UTC()
+	} else {
+		info.At = info.At.UTC()
+	}
+	r.LastRun = &info
+	return s.Save(r)
+}
+
 // Delete removes one recipe, idempotently and bounded to that recipe: it
 // never touches other recipes. Only explicit user action calls this.
 func (s *RecipeStore) Delete(id string) error {
@@ -148,7 +169,7 @@ func (s *RecipeStore) List() ([]RecipeEntry, error) {
 			ID:             r.ID,
 			Name:           r.Name,
 			Status:         r.Status,
-			Trigger:        r.Trigger.Kind,
+			Trigger:        string(r.Trigger.Kind),
 			Sources:        len(r.Sources),
 			Recipients:     len(r.Recipients),
 			AutoSend:       r.Grant.AutoSend,

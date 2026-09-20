@@ -44,6 +44,10 @@ func runRecipe(args []string, stdout, stderr io.Writer) int {
 		return runRecipeDelete(args[1:], stdout, stderr)
 	case "approve":
 		return runRecipeApprove(args[1:], stdout, stderr)
+	case "grant":
+		return runRecipeGrant(args[1:], stdout, stderr)
+	case "revoke":
+		return runRecipeRevoke(args[1:], stdout, stderr)
 	case "preview":
 		return runRecipePreview(args[1:], stdout, stderr)
 	case "run":
@@ -74,6 +78,8 @@ func recipeUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe duplicate")+" <id> --name NEW")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe delete")+" <id>")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe approve")+" <id>")
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe grant")+" <id>      "+s.dim("(explicit auto-send consent for the routine runner)"))
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe revoke")+" <id>     "+s.dim("(withdraw auto-send consent)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe preview")+" <id> [--json]   "+s.dim("(dry-run: sends nothing)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe run")+" <id> [--json]       "+s.dim("(explicit one-shot: enqueues one job)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe export")+" <id> [--out FILE]")
@@ -236,6 +242,30 @@ func runRecipeShow(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	_, _ = fmt.Fprint(stdout, recipes.Preview(r))
+	// Grant state beyond the preview summary: whether the stored scope
+	// hash still matches the current scope, and the last-run ledger.
+	s := newStyleFromWriter(stdout)
+	if r.Grant.AutoSend {
+		match := "MISMATCH — re-grant with " + s.cyan("sendbeam recipe grant "+shortRecipeID(r.ID))
+		if r.Grant.ScopeHash != "" && r.Grant.ScopeHash == r.ScopeHash() {
+			match = "matches the current scope"
+		}
+		_, _ = fmt.Fprintf(stdout, "Grant scope: %s (%s)\n", shortScopeHash(r.Grant.ScopeHash), match)
+	}
+	if r.LastRun == nil {
+		_, _ = fmt.Fprintln(stdout, "Last run: none recorded")
+	} else {
+		lr := r.LastRun
+		line := fmt.Sprintf("Last run: %s via %s — %s",
+			lr.At.UTC().Format(time.RFC3339), lr.Trigger, lr.Status)
+		if lr.JobID != "" {
+			line += fmt.Sprintf(" (job %s)", shortJobID(lr.JobID))
+		}
+		if lr.Detail != "" {
+			line += " — " + lr.Detail
+		}
+		_, _ = fmt.Fprintln(stdout, line)
+	}
 	return 0
 }
 
@@ -592,6 +622,95 @@ func runRecipeApprove(args []string, stdout, stderr io.Writer) int {
 	_, _ = fmt.Fprintf(stdout, "%s recipe %q for manual one-shot runs (id %s).\n",
 		s.green("Approved"), r.Name, s.cyan(shortRecipeID(r.ID)))
 	return 0
+}
+
+func runRecipeGrant(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("recipe grant", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configDir := fs.String("config-dir", "", "path to custom configuration directory")
+	positionals := parseArgs(fs, args)
+	if len(positionals) != 1 {
+		_, _ = fmt.Fprintln(stderr, "sendbeam recipe grant: need exactly one <id>")
+		fs.Usage()
+		return 2
+	}
+	store, err := openRecipeStore(*configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe grant: %v\n", err)
+		return 1
+	}
+	r, err := loadRecipe(store, positionals[0])
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe grant: %v\n", err)
+		return 1
+	}
+	// Explicit user consent: this command, typed by the human at the
+	// keyboard, IS the authorization. It records auto-send consent for
+	// the routine runner; it never runs anything itself.
+	if err := recipes.GrantAutomation(&r, time.Now().UTC()); err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe grant: %v\n", err)
+		return 1
+	}
+	if err := store.Save(r); err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe grant: %v\n", err)
+		return 1
+	}
+	s := newStyleFromWriter(stdout)
+	_, _ = fmt.Fprintf(stdout, "%s auto-send for recipe %q (id %s).\n",
+		s.green("Granted"), r.Name, s.cyan(shortRecipeID(r.ID)))
+	_, _ = fmt.Fprintf(stdout, "  Consent v%d recorded at %s for scope %s.\n",
+		r.Grant.ConsentVersion, r.Grant.GrantedAt.UTC().Format(time.RFC3339), shortScopeHash(r.Grant.ScopeHash))
+	_, _ = fmt.Fprintln(stdout, "  Any material change (sources, recipients, trigger, network policy,")
+	_, _ = fmt.Fprintln(stdout, "  padding, filters, expiry, budgets) revokes this grant — re-grant")
+	_, _ = fmt.Fprintln(stdout, "  explicitly afterwards. The receiver's acceptance policy is separate")
+	_, _ = fmt.Fprintln(stdout, "  and unaffected.")
+	return 0
+}
+
+func runRecipeRevoke(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("recipe revoke", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configDir := fs.String("config-dir", "", "path to custom configuration directory")
+	positionals := parseArgs(fs, args)
+	if len(positionals) != 1 {
+		_, _ = fmt.Fprintln(stderr, "sendbeam recipe revoke: need exactly one <id>")
+		fs.Usage()
+		return 2
+	}
+	store, err := openRecipeStore(*configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe revoke: %v\n", err)
+		return 1
+	}
+	r, err := loadRecipe(store, positionals[0])
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe revoke: %v\n", err)
+		return 1
+	}
+	had := r.Grant.AutoSend
+	recipes.RevokeAutomation(&r)
+	if err := store.Save(r); err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe revoke: %v\n", err)
+		return 1
+	}
+	s := newStyleFromWriter(stdout)
+	if had {
+		_, _ = fmt.Fprintf(stdout, "%s auto-send for recipe %q (id %s).\n",
+			s.yellow("Revoked"), r.Name, s.cyan(shortRecipeID(r.ID)))
+	} else {
+		_, _ = fmt.Fprintf(stdout, "Recipe %q had no active auto-send grant; nothing to revoke (id %s).\n",
+			r.Name, s.cyan(shortRecipeID(r.ID)))
+	}
+	_, _ = fmt.Fprintf(stdout, "  Status is unchanged (%s): manual runs still work, automated dispatch is refused.\n",
+		string(r.Status))
+	return 0
+}
+
+func shortScopeHash(h string) string {
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
 }
 
 func runRecipePreview(args []string, stdout, stderr io.Writer) int {

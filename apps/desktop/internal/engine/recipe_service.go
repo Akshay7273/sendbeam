@@ -146,6 +146,64 @@ func (s *RecipeService) ApproveRecipe(id string) (recipes.Recipe, error) {
 	return r, nil
 }
 
+// GrantAutomation records the user's explicit consent for automatic
+// dispatch of the recipe by the native routine runner (V22-PR03). The
+// person clicking Grant IS the authorization: consent is timestamped and
+// bound to the recipe's current material scope, and any later material
+// change revokes it. It grants nothing on the receiver side and it never
+// runs anything itself — grant != run. Only manual-status recipes can be
+// granted (approve first); the status is left untouched.
+func (s *RecipeService) GrantAutomation(id string) (recipes.Recipe, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok, err := s.store.Load(id)
+	if err != nil {
+		return recipes.Recipe{}, err
+	}
+	if !ok {
+		return recipes.Recipe{}, fmt.Errorf("recipe service: no recipe %q", id)
+	}
+	if err := recipes.GrantAutomation(&r, s.nowFunc().UTC()); err != nil {
+		return recipes.Recipe{}, err
+	}
+	if err := s.store.Save(r); err != nil {
+		return recipes.Recipe{}, err
+	}
+	return r, nil
+}
+
+// RevokeAutomation withdraws the auto-send consent for the recipe.
+// Automated dispatch is refused from then on; the status is unchanged, so
+// manual runs keep working.
+func (s *RecipeService) RevokeAutomation(id string) (recipes.Recipe, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok, err := s.store.Load(id)
+	if err != nil {
+		return recipes.Recipe{}, err
+	}
+	if !ok {
+		return recipes.Recipe{}, fmt.Errorf("recipe service: no recipe %q", id)
+	}
+	recipes.RevokeAutomation(&r)
+	if err := s.store.Save(r); err != nil {
+		return recipes.Recipe{}, err
+	}
+	return r, nil
+}
+
+// LastRun returns the recipe's last-run ledger entry — the most recent
+// dispatch attempt (any trigger, including refusals), written by the
+// routine runner. It returns nil when no attempt has been recorded yet.
+// The entry also rides on the Recipe DTO returned by GetRecipe.
+func (s *RecipeService) LastRun(id string) (*recipes.RecipeRunInfo, error) {
+	r, err := s.GetRecipe(id)
+	if err != nil {
+		return nil, err
+	}
+	return r.LastRun, nil
+}
+
 // RunRecipe performs the explicit one-shot run: revalidates status,
 // expiry, trust, files and budgets at enqueue time, then enqueues exactly
 // one job through the production outbox. It returns the job id.

@@ -257,3 +257,199 @@ func TestRecipeCreateValidatesTrust(t *testing.T) {
 		t.Fatalf("expected an error message")
 	}
 }
+
+// TestRecipeGrantRevokeShow exercises the auto-send grant lifecycle:
+// approve → grant → show (grant state + empty ledger) → revoke → show,
+// plus the grant gates (approval-required and disabled cannot be granted)
+// and the material-change revocation through the real edit path.
+func TestRecipeGrantRevokeShow(t *testing.T) {
+	cfgDir, devID, srcDir := recipeTestSetup(t)
+
+	code, _, errOut := runRecipeCmd(t, "create", "--config-dir", cfgDir,
+		"--name", "Exports", "--source", srcDir, "--to", devID)
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, errOut)
+	}
+	id := recipeIDInStore(t, cfgDir)
+
+	// Grant before approval is refused with an actionable error.
+	code, _, errOut = runRecipeCmd(t, "grant", "--config-dir", cfgDir, id)
+	if code == 0 {
+		t.Fatalf("grant on approval-required recipe succeeded")
+	}
+	if !strings.Contains(errOut, "recipe approve") {
+		t.Fatalf("grant refusal does not point at approval: %s", errOut)
+	}
+
+	code, _, errOut = runRecipeCmd(t, "approve", "--config-dir", cfgDir, id)
+	if code != 0 {
+		t.Fatalf("approve exit %d: %s", code, errOut)
+	}
+
+	// Grant: explicit consent, material-change warning, no run.
+	code, out, errOut := runRecipeCmd(t, "grant", "--config-dir", cfgDir, id)
+	if code != 0 {
+		t.Fatalf("grant exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "Granted") || !strings.Contains(out, "Consent v1") {
+		t.Fatalf("grant output: %s", out)
+	}
+	if !strings.Contains(out, "material change") || !strings.Contains(out, "revokes") {
+		t.Fatalf("grant must warn that material changes revoke it: %s", out)
+	}
+
+	// Show: grant state, scope hash match, empty last-run ledger.
+	code, out, errOut = runRecipeCmd(t, "show", "--config-dir", cfgDir, id)
+	if code != 0 {
+		t.Fatalf("show exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "auto-send ENABLED") {
+		t.Fatalf("show does not report the grant: %s", out)
+	}
+	if !strings.Contains(out, "Grant scope:") || !strings.Contains(out, "matches the current scope") {
+		t.Fatalf("show does not report scope hash match: %s", out)
+	}
+	if !strings.Contains(out, "Last run: none recorded") {
+		t.Fatalf("show does not report the empty ledger: %s", out)
+	}
+
+	// JSON show carries the machine-readable grant.
+	code, out, errOut = runRecipeCmd(t, "show", "--config-dir", cfgDir, id, "--json")
+	if code != 0 {
+		t.Fatalf("show --json exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, `"autoSend": true`) {
+		t.Fatalf("show --json missing the grant: %s", out)
+	}
+
+	// Non-material edit keeps the grant.
+	code, _, errOut = runRecipeCmd(t, "edit", "--config-dir", cfgDir, id, "--name", "Exports v2")
+	if code != 0 {
+		t.Fatalf("edit exit %d: %s", code, errOut)
+	}
+	code, out, errOut = runRecipeCmd(t, "show", "--config-dir", cfgDir, id, "--json")
+	if code != 0 {
+		t.Fatalf("show --json exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, `"autoSend": true`) {
+		t.Fatalf("non-material edit dropped the grant: %s", out)
+	}
+
+	// Material edit revokes the grant and forces re-approval (the V22-PR01
+	// material-change rule, through the real CLI edit path).
+	code, _, errOut = runRecipeCmd(t, "edit", "--config-dir", cfgDir, id, "--budget-bytes", "123")
+	if code != 0 {
+		t.Fatalf("edit exit %d: %s", code, errOut)
+	}
+	code, out, errOut = runRecipeCmd(t, "show", "--config-dir", cfgDir, id)
+	if code != 0 {
+		t.Fatalf("show exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "approval-required") {
+		t.Fatalf("material edit did not force re-approval: %s", out)
+	}
+	if strings.Contains(out, "auto-send ENABLED") {
+		t.Fatalf("material edit did not revoke the grant: %s", out)
+	}
+	if !strings.Contains(out, "was revoked") {
+		t.Fatalf("show does not explain the revoked consent: %s", out)
+	}
+
+	// Revoke on a grant-less recipe is a no-op with a clear message;
+	// status is unchanged.
+	code, out, errOut = runRecipeCmd(t, "revoke", "--config-dir", cfgDir, id)
+	if code != 0 {
+		t.Fatalf("revoke exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "no active auto-send grant") {
+		t.Fatalf("revoke output: %s", out)
+	}
+}
+
+// TestRecipeGrantRevokeRoundTrip grants and then revokes, verifying the
+// stored record at each step.
+func TestRecipeGrantRevokeRoundTrip(t *testing.T) {
+	cfgDir, devID, srcDir := recipeTestSetup(t)
+
+	code, _, errOut := runRecipeCmd(t, "create", "--config-dir", cfgDir,
+		"--name", "Exports", "--source", srcDir, "--to", devID)
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, errOut)
+	}
+	id := recipeIDInStore(t, cfgDir)
+	if code, _, errOut = runRecipeCmd(t, "approve", "--config-dir", cfgDir, id); code != 0 {
+		t.Fatalf("approve exit %d: %s", code, errOut)
+	}
+	if code, _, errOut = runRecipeCmd(t, "grant", "--config-dir", cfgDir, id); code != 0 {
+		t.Fatalf("grant exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runRecipeCmd(t, "revoke", "--config-dir", cfgDir, id)
+	if code != 0 {
+		t.Fatalf("revoke exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "Revoked") {
+		t.Fatalf("revoke output: %s", out)
+	}
+	if !strings.Contains(out, "manual runs still work") {
+		t.Fatalf("revoke must say manual runs keep working: %s", out)
+	}
+
+	code, out, errOut = runRecipeCmd(t, "show", "--config-dir", cfgDir, id, "--json")
+	if code != 0 {
+		t.Fatalf("show --json exit %d: %s", code, errOut)
+	}
+	if strings.Contains(out, `"autoSend": true`) {
+		t.Fatalf("revoke did not clear autoSend: %s", out)
+	}
+}
+
+// TestRecipeImportNeverRestoresGrant verifies that importing an export of
+// a granted recipe starts disabled with no grant and no last-run ledger.
+func TestRecipeImportNeverRestoresGrant(t *testing.T) {
+	cfgDir, devID, srcDir := recipeTestSetup(t)
+
+	code, _, errOut := runRecipeCmd(t, "create", "--config-dir", cfgDir,
+		"--name", "Exports", "--source", srcDir, "--to", devID)
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, errOut)
+	}
+	id := recipeIDInStore(t, cfgDir)
+	if code, _, errOut = runRecipeCmd(t, "approve", "--config-dir", cfgDir, id); code != 0 {
+		t.Fatalf("approve exit %d: %s", code, errOut)
+	}
+	if code, _, errOut = runRecipeCmd(t, "grant", "--config-dir", cfgDir, id); code != 0 {
+		t.Fatalf("grant exit %d: %s", code, errOut)
+	}
+
+	exportPath := filepath.Join(t.TempDir(), "recipe.json")
+	if code, _, errOut = runRecipeCmd(t, "export", "--config-dir", cfgDir, id, "--out", exportPath); code != 0 {
+		t.Fatalf("export exit %d: %s", code, errOut)
+	}
+	if code, _, errOut = runRecipeCmd(t, "delete", "--config-dir", cfgDir, id); code != 0 {
+		t.Fatalf("delete exit %d: %s", code, errOut)
+	}
+	if code, _, errOut = runRecipeCmd(t, "import", "--config-dir", cfgDir, exportPath); code != 0 {
+		t.Fatalf("import exit %d: %s", code, errOut)
+	}
+	newID := recipeIDInStore(t, cfgDir)
+
+	code, out, errOut := runRecipeCmd(t, "show", "--config-dir", cfgDir, newID, "--json")
+	if code != 0 {
+		t.Fatalf("show --json exit %d: %s", code, errOut)
+	}
+	if strings.Contains(out, `"autoSend": true`) {
+		t.Fatalf("import restored the auto-send grant")
+	}
+	if strings.Contains(out, `"lastRun"`) {
+		t.Fatalf("import restored the last-run ledger")
+	}
+	if !strings.Contains(out, `"status": "disabled"`) {
+		t.Fatalf("imported recipe is not disabled: %s", out)
+	}
+
+	// A disabled import cannot be granted: enable (edit) and approve first.
+	if code, _, _ = runRecipeCmd(t, "grant", "--config-dir", cfgDir, newID); code == 0 {
+		t.Fatalf("grant on disabled import succeeded")
+	}
+}
