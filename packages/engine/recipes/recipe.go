@@ -41,12 +41,60 @@ const (
 	RecipeApprovalRequired RecipeStatus = "approval-required"
 )
 
+// RunStatus is the outcome class of one dispatch attempt, recorded in the
+// last-run ledger.
+type RunStatus string
+
+const (
+	// RunStatusDispatched means the attempt passed every gate and
+	// enqueued exactly one job.
+	RunStatusDispatched RunStatus = "dispatched"
+	// RunStatusRefused means a gate refused the attempt (disabled
+	// recipe, missing/invalid grant, expired, revoked recipient,
+	// budget exceeded, runner busy, ...). The attempt never enqueued.
+	RunStatusRefused RunStatus = "refused"
+	// RunStatusFailed means the attempt failed unexpectedly after
+	// passing the gates (enqueue error, context cancellation, ...).
+	RunStatusFailed RunStatus = "failed"
+	// RunStatusSkipped means the attempt was deduplicated: the recipe
+	// already had a dispatch in flight, so this attempt did nothing.
+	RunStatusSkipped RunStatus = "skipped"
+)
+
+// RecipeRunInfo is one last-run ledger entry: when the most recent
+// dispatch attempt happened, what triggered it, which job it produced (if
+// any), how it ended, and a short human-readable detail. It is stored on
+// the recipe record (durable, checksummed) and is the audit trail the
+// routine-management UI (V22-PR06) reads.
+type RecipeRunInfo struct {
+	// At is when the attempt finished (RFC3339, UTC).
+	At time.Time `json:"at"`
+	// Trigger is the reason that started the attempt.
+	Trigger TriggerReason `json:"trigger"`
+	// JobID is the enqueued job id, set only for dispatched runs.
+	JobID string `json:"jobId,omitempty"`
+	// Status is the outcome class (dispatched/refused/failed/skipped).
+	Status RunStatus `json:"status"`
+	// Detail is a short human-readable note (e.g. the refusal reason).
+	Detail string `json:"detail,omitempty"`
+}
+
+// TriggerReason names what started a recipe dispatch. Manual is the human
+// at the keyboard; watch, schedule and retry are automated reasons that
+// the native routine runner (V22-PR03) serves. Watch and schedule trigger
+// sources arrive in V22-PR04/PR05 — the runner API is ready for them.
+type TriggerReason string
+
 // Trigger kinds. "watch" and "schedule" detail lands in V22-PR04/PR05;
 // until then their reserved parameter maps must be empty (PR01).
 const (
-	TriggerManual   = "manual"
-	TriggerWatch    = "watch"
-	TriggerSchedule = "schedule"
+	TriggerManual   TriggerReason = "manual"
+	TriggerWatch    TriggerReason = "watch"
+	TriggerSchedule TriggerReason = "schedule"
+	// TriggerRetry marks a dispatch that re-attempts a previously refused
+	// or failed automated run. Like watch and schedule, it requires a
+	// valid automation grant; only TriggerManual never does.
+	TriggerRetry TriggerReason = "retry"
 )
 
 // RecipeSource is one explicit local source root: an absolute local path,
@@ -68,7 +116,7 @@ type RecipeRecipient struct {
 // reserved parameter maps for V22-PR04/PR05; they MUST be empty in PR01
 // and validation rejects non-empty maps.
 type RecipeTrigger struct {
-	Kind     string         `json:"kind"`
+	Kind     TriggerReason  `json:"kind"`
 	Watch    map[string]any `json:"watch,omitempty"`
 	Schedule map[string]any `json:"schedule,omitempty"`
 }
@@ -134,6 +182,11 @@ type Recipe struct {
 	Budgets RecipeBudgets `json:"budgets"`
 	// Grant is the explicit sender-side automation grant.
 	Grant RecipeGrant `json:"grant"`
+	// LastRun is the most recent dispatch attempt (any trigger reason,
+	// including refusals). Nil when no attempt has been recorded yet.
+	// Written by the routine runner after every dispatch attempt; never
+	// set by create/duplicate/import.
+	LastRun *RecipeRunInfo `json:"lastRun,omitempty"`
 	// Checksum covers the canonical encoding of every other field.
 	Checksum string `json:"checksum"`
 }
@@ -224,7 +277,7 @@ func (r Recipe) ScopeHash() string {
 		h.writeString(c.Label)
 	}
 	h.writeString("trigger")
-	h.writeString(r.Trigger.Kind)
+	h.writeString(string(r.Trigger.Kind))
 	p, err := netpolicy.Parse(r.NetworkPolicy)
 	if err != nil {
 		p = netpolicy.Online
@@ -409,6 +462,83 @@ func validateRecipe(r Recipe, requireContent bool) error {
 	return nil
 }
 
+// GrantValid reports whether the recipe's automation grant currently
+// authorizes automated (non-manual) dispatch: AutoSend must be on, the
+// consent must be timestamped and versioned, and the scope hash must match
+// the recipe's current material scope. A grant dated in the future (clock
+// skew or hand-edited record) is invalid. Any material change revokes the
+// grant via ApplyUpdate (AutoSend cleared, ConsentVersion bumped), so a
+// stale grant can never validate afterwards.
+func (r Recipe) GrantValid(now time.Time) bool {
+	g := r.Grant
+	if !g.AutoSend || g.ConsentVersion <= 0 || g.GrantedAt.IsZero() {
+		return false
+	}
+	if g.ScopeHash == "" || g.ScopeHash != r.ScopeHash() {
+		return false
+	}
+	if g.GrantedAt.After(now.UTC()) {
+		return false
+	}
+	return true
+}
+
+// GrantAutomation records explicit user consent for automatic dispatch of
+// r: it sets AutoSend, timestamps the consent, binds it to the recipe's
+// current material scope, and keeps the current consent version (starting
+// one when no version was ever recorded). The status is left untouched —
+// granting is only meaningful on a "manual" recipe, so approval-required
+// and disabled recipes are refused with an actionable error. Granting
+// never runs anything: grant != run. Any later material change revokes
+// this consent (see ApplyUpdate) and the user must re-grant explicitly.
+//
+// The caller persists the returned recipe (store.Save).
+func GrantAutomation(r *Recipe, now time.Time) error {
+	if r == nil {
+		return wire.Errorf(wire.CodeInternal, "recipes: nil recipe")
+	}
+	switch r.Status {
+	case RecipeManual:
+		// The only status automated dispatch may run under.
+	case RecipeDisabled:
+		return wire.Errorf(wire.CodeAuth,
+			"recipes: cannot grant auto-send on disabled recipe %q — enable it before granting", r.Name)
+	case RecipeApprovalRequired:
+		return wire.Errorf(wire.CodeAuth,
+			"recipes: recipe %q requires approval before auto-send can be granted — run `recipe approve %s` first", r.Name, r.ID)
+	default:
+		return wire.Errorf(wire.CodeStorage, "recipes: recipe %q has unknown status %q", r.Name, r.Status)
+	}
+	cv := r.Grant.ConsentVersion
+	if cv <= 0 {
+		cv = 1
+	}
+	r.Grant = RecipeGrant{
+		AutoSend:       true,
+		ConsentVersion: cv,
+		GrantedAt:      now.UTC(),
+		ScopeHash:      r.ScopeHash(),
+	}
+	return nil
+}
+
+// RevokeAutomation withdraws the auto-send consent on r: AutoSend and the
+// grant timestamp are cleared (the scope hash is cleared too, so a later
+// refusal names the absence of a grant rather than a stale scope). The
+// consent version and the status are left untouched — revoking never
+// changes what the recipe is, only whether it may dispatch automatically.
+// Manual runs remain allowed.
+//
+// The caller persists the recipe (store.Save).
+func RevokeAutomation(r *Recipe) {
+	if r == nil {
+		return
+	}
+	r.Grant.AutoSend = false
+	r.Grant.GrantedAt = time.Time{}
+	r.Grant.ScopeHash = ""
+}
+
 // ApplyUpdate applies an edited recipe through the store, enforcing the
 // material-change rule: if the material scope (ScopeHash) changed since the
 // stored version, any automation consent is revoked — ConsentVersion is
@@ -420,6 +550,10 @@ func validateRecipe(r Recipe, requireContent bool) error {
 // caller's grant fields are ignored and replaced with the stored grant, so
 // a grant can never be smuggled in through the edit path. The grant's
 // ScopeHash is refreshed to the current scope on every update.
+//
+// The grant is reconciled before validation: the caller's grant fields are
+// never trusted, so a material edit on a granted recipe revokes the grant
+// instead of failing validation on the now-stale consent.
 //
 // The returned recipe is the freshly stored record.
 func ApplyUpdate(store *RecipeStore, updated Recipe) (Recipe, error) {
@@ -436,9 +570,12 @@ func ApplyUpdate(store *RecipeStore, updated Recipe) (Recipe, error) {
 	if !ok {
 		return Recipe{}, wire.Errorf(wire.CodeStorage, "recipes: cannot update unknown recipe %q", updated.ID)
 	}
-	if err := ValidateRecipe(updated); err != nil {
-		return Recipe{}, err
-	}
+	// Reconcile the grant BEFORE validating: the caller's grant fields are
+	// never trusted (see below), and a material change on a granted recipe
+	// must revoke the grant — not fail validation because the stored
+	// consent no longer matches the edited scope. Validating first would
+	// reject the edit instead of revoking, which contradicts the
+	// material-change rule.
 	newScope := updated.ScopeHash()
 	if newScope != stored.ScopeHash() {
 		// Material change: revoke automation consent.
@@ -456,6 +593,9 @@ func ApplyUpdate(store *RecipeStore, updated Recipe) (Recipe, error) {
 		// Non-material edit: the stored grant carries over verbatim.
 		updated.Grant = stored.Grant
 		updated.Grant.ScopeHash = newScope
+	}
+	if err := ValidateRecipe(updated); err != nil {
+		return Recipe{}, err
 	}
 	if err := store.Save(updated); err != nil {
 		return Recipe{}, err

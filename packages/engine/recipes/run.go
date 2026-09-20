@@ -52,7 +52,24 @@ type RunDeps struct {
 //
 // Dry-run paths (Resolve, PlanDTO, Preview) must NEVER enqueue: they do
 // not take an Enqueuer at all, so a job cannot be created by accident.
+//
+// Run is RunWithTrigger with the manual reason; the routine runner calls
+// RunWithTrigger directly for automated reasons.
 func Run(ctx context.Context, deps RunDeps, eq Enqueuer, recipeID string) (jobs.Job, error) {
+	return RunWithTrigger(ctx, deps, eq, recipeID, TriggerManual)
+}
+
+// RunWithTrigger dispatches one recipe run for the given trigger reason,
+// running the same gates for every reason: status, expiry, recipient
+// trust revalidation, fresh resolution, and budgets — then exactly one
+// Enqueue. TriggerManual behaves exactly like Run: the human at the
+// keyboard is the authorization, so no automation grant is needed. Every
+// other reason (watch, schedule, retry) additionally requires a valid
+// AutoSend grant at dispatch time; without one the attempt is refused
+// with a CodeAuth error naming the recipe and the cause.
+//
+// Disabled recipes refuse for every trigger reason, including manual.
+func RunWithTrigger(ctx context.Context, deps RunDeps, eq Enqueuer, recipeID string, reason TriggerReason) (jobs.Job, error) {
 	if deps.Store == nil {
 		return jobs.Job{}, wire.Errorf(wire.CodeInternal, "recipes: nil recipe store")
 	}
@@ -64,6 +81,11 @@ func Run(ctx context.Context, deps RunDeps, eq Enqueuer, recipeID string) (jobs.
 	}
 	if !isLowerHex32(recipeID) {
 		return jobs.Job{}, wire.Errorf(wire.CodeStorage, "recipes: invalid recipe id %q", recipeID)
+	}
+	switch reason {
+	case TriggerManual, TriggerWatch, TriggerSchedule, TriggerRetry:
+	default:
+		return jobs.Job{}, wire.Errorf(wire.CodeStorage, "recipes: unknown trigger reason %q", string(reason))
 	}
 	now := time.Now().UTC
 	if deps.Now != nil {
@@ -84,10 +106,27 @@ func Run(ctx context.Context, deps RunDeps, eq Enqueuer, recipeID string) (jobs.
 	case RecipeDisabled:
 		return jobs.Job{}, wire.Errorf(wire.CodeAuth, "recipes: recipe %q is disabled — enable it before running", r.Name)
 	case RecipeApprovalRequired:
+		if reason == TriggerManual {
+			return jobs.Job{}, wire.Errorf(wire.CodeAuth,
+				"recipes: recipe %q requires approval — run `recipe approve %s` first", r.Name, r.ID)
+		}
+		if grantRevokedByMaterialChange(r) {
+			return jobs.Job{}, wire.Errorf(wire.CodeAuth,
+				"recipes: recipe %q automation grant revoked by material change — re-approve with `recipe approve %s`, then re-grant explicitly with `recipe grant %s`",
+				r.Name, r.ID, r.ID)
+		}
 		return jobs.Job{}, wire.Errorf(wire.CodeAuth,
-			"recipes: recipe %q requires approval — run `recipe approve %s` first", r.Name, r.ID)
+			"recipes: recipe %q requires approval before automated %s dispatch — run `recipe approve %s` first (then `recipe grant %s` to allow automation)",
+			r.Name, reason, r.ID, r.ID)
 	default:
 		return jobs.Job{}, wire.Errorf(wire.CodeStorage, "recipes: recipe %q has unknown status %q", r.Name, r.Status)
+	}
+
+	// Automated reasons need an explicit, still-valid AutoSend grant at
+	// dispatch time. Manual never does: the human at the keyboard is the
+	// authorization.
+	if reason != TriggerManual && !r.GrantValid(now()) {
+		return jobs.Job{}, grantRefusal(r, reason)
 	}
 
 	if !r.ExpiresAt.IsZero() && !now().UTC().Before(r.ExpiresAt.UTC()) {
@@ -135,4 +174,44 @@ func Run(ctx context.Context, deps RunDeps, eq Enqueuer, recipeID string) (jobs.
 		recipients[i] = EnqueueRecipient(c)
 	}
 	return eq.Enqueue(ctx, paths, recipients, jobs.DefaultRetryPolicy(), np)
+}
+
+// grantRevokedByMaterialChange reports whether the recipe's automation
+// grant was revoked by a material scope change: consent was given for the
+// current scope (versioned, scope hash matches it) but is no longer
+// active. ApplyUpdate leaves exactly this shape behind.
+func grantRevokedByMaterialChange(r Recipe) bool {
+	g := r.Grant
+	return !g.AutoSend && g.ConsentVersion > 0 && g.ScopeHash != "" && g.ScopeHash == r.ScopeHash()
+}
+
+// grantRefusal builds the CodeAuth error for an automated dispatch attempt
+// on a recipe whose automation grant is not currently valid. The message
+// names the recipe and the specific cause so the user knows the fix is
+// always an explicit re-grant — never silent, never automatic.
+func grantRefusal(r Recipe, reason TriggerReason) error {
+	g := r.Grant
+	switch {
+	case grantRevokedByMaterialChange(r):
+		// Consent was given for the current scope but is no longer
+		// active: a material change revoked it (ApplyUpdate clears
+		// AutoSend while refreshing ScopeHash to the new scope).
+		return wire.Errorf(wire.CodeAuth,
+			"recipes: recipe %q automation grant revoked by material change — re-grant explicitly with `recipe grant %s` before %s dispatch",
+			r.Name, r.ID, reason)
+	case g.AutoSend && (g.GrantedAt.IsZero() || g.ConsentVersion <= 0):
+		return wire.Errorf(wire.CodeAuth,
+			"recipes: recipe %q automation grant is incomplete (missing timestamp or consent version) — re-grant explicitly with `recipe grant %s`",
+			r.Name, r.ID)
+	case g.AutoSend:
+		// Scope drift or a future-dated grant: the stored consent no
+		// longer matches what automated dispatch may use.
+		return wire.Errorf(wire.CodeAuth,
+			"recipes: recipe %q automation grant does not match the current recipe scope — re-grant explicitly with `recipe grant %s` before %s dispatch",
+			r.Name, r.ID, reason)
+	default:
+		return wire.Errorf(wire.CodeAuth,
+			"recipes: recipe %q has no automation grant for %s dispatch — run `recipe grant %s` to allow it (manual runs need no grant)",
+			r.Name, reason, r.ID)
+	}
 }

@@ -63,7 +63,7 @@ func triggerText(r Recipe) string {
 	case TriggerSchedule:
 		return "schedule (parameters reserved; not active in schema v1)"
 	default:
-		return r.Trigger.Kind
+		return string(r.Trigger.Kind)
 	}
 }
 

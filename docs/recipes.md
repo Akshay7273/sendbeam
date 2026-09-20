@@ -3,9 +3,9 @@
 Recipes are **saved, reviewable handoff workflows**: a name, explicit local
 source roots, fixed trusted recipients, a network/privacy policy, file
 filters, an expiry, and resource budgets. This document covers the V22-PR02
-one-shot workflow: save a recipe, dry-run preview it, and run it explicitly.
-No daemon, watcher, or scheduler is involved yet — a recipe is useful with
-nothing running in the background.
+one-shot workflow (save, preview, run explicitly) and the V22-PR03 native
+routine runner (bounded, user-scoped automatic dispatch behind an explicit
+auto-send grant).
 
 ## What a recipe is
 
@@ -19,10 +19,88 @@ nothing running in the background.
   overrides). The schema holds no key material, credentials, or reusable
   secrets — exports are safe to copy, back up, or share for review.
 - **Three separate permissions.** A one-shot manual run needs no grant; the
-  person running it is the authorization. Sender auto-dispatch (a future
-  runner feature) needs an explicit `AutoSend` grant, recorded and
-  invalidated by material scope changes. Receiver acceptance lives on the
-  receiver side in its trust policy. None of the three implies another.
+  person running it is the authorization. Sender auto-dispatch needs an
+  explicit `AutoSend` grant, recorded and invalidated by material scope
+  changes. Receiver acceptance lives on the receiver side in its trust
+  policy. None of the three implies another.
+
+## The auto-send grant lifecycle
+
+Automatic dispatch is opt-in twice over: the recipe must be approved for
+runs (`manual` status) **and** carry a valid auto-send grant.
+
+```sh
+# Grant auto-send consent for the routine runner. You, at the keyboard,
+# are the authorization. This never runs anything: grant != run.
+sendbeam recipe grant <id>
+
+# Withdraw it again. Status is unchanged; manual runs keep working.
+sendbeam recipe revoke <id>
+```
+
+A grant is valid only while **all** of these hold: `AutoSend` is on, the
+consent is timestamped (`GrantedAt`) and versioned (`ConsentVersion > 0`),
+and the stored scope hash matches the recipe's current material scope.
+**Material changes revoke automation consent.** Editing sources,
+recipients, trigger, network policy, padding, filters, expiry, or budgets
+bumps the consent version, clears the grant, and forces the recipe back to
+`approval-required` (a `disabled` recipe stays disabled). The only fix is
+an explicit re-grant — consent is never re-inferred, and imported recipes
+never carry a grant.
+
+`sendbeam recipe show <id>` displays the grant state (on/off, granted at,
+whether the scope hash still matches) and the last-run ledger entry.
+
+## Trigger reasons
+
+Every dispatch attempt records what started it:
+
+| Reason     | Meaning                                                                          |
+| ---------- | -------------------------------------------------------------------------------- |
+| `manual`   | The human at the keyboard (CLI `run`, desktop Run now). Never needs a grant.     |
+| `watch`    | A watched-folder trigger fired. Needs a valid grant. Sources arrive in V22-PR04. |
+| `schedule` | A schedule fired. Needs a valid grant. Sources arrive in V22-PR05.               |
+| `retry`    | Re-attempt of a previously refused/failed automated run. Needs a valid grant.    |
+
+Disabled recipes refuse **every** trigger reason, including manual.
+Approval-required recipes refuse automated reasons until re-approved (and
+re-granted, if a material change revoked the grant).
+
+## The routine runner (V22-PR03)
+
+The routine runner is the small, in-process, **user-scoped** host for
+automated triggers: it only ever acts on the local user's own recipes, has
+no remote authority, and dispatches through the same enqueue seam as manual
+runs — every dispatch becomes one ordinary outbox job. No second queue, no
+privileged service, no network administration API.
+
+**Bounds:**
+
+- At most `MaxConcurrent` dispatches in flight (default 1, hard cap 4).
+  Overload is refused immediately with a clear busy signal — the runner
+  never queues unbounded work and never spawns unbounded goroutines.
+- Per-recipe deduplication: a second dispatch for a recipe that already
+  has one in flight is skipped deterministically ("already running,
+  skipped"), not run twice and not reported as a failure.
+- `Stop()` refuses new dispatches; dispatches already in flight run to
+  completion. Dispatch honors context cancellation: a canceled context
+  aborts the attempt and is recorded as a failure.
+- Every gate from the manual path is re-checked at dispatch: status,
+  expiry, recipient trust, fresh resolution, budgets. A recipe whose
+  recipient was revoked, whose budget would be exceeded, or whose grant
+  lapsed is refused — never silently.
+
+**Last-run ledger.** Every dispatch attempt — dispatched, refused, failed,
+or skipped — writes a `lastRun` entry onto the recipe record (durable,
+checksummed, in the 0600 store): when it happened, the trigger reason, the
+job id if one was enqueued, the outcome, and a short detail. Nothing is
+ever silent, and the routine-management UI (V22-PR06) reads this ledger for
+recent decisions. `sendbeam recipe show <id>` prints it.
+
+Watch and schedule trigger _sources_ arrive in V22-PR04/PR05 — the runner
+API is ready for them; until then the `watch`/`schedule` trigger
+parameters stay reserved and rejected, and only manual (and retry, via the
+API) dispatches occur.
 
 ## The one-shot workflow
 
@@ -128,6 +206,8 @@ sendbeam recipe edit <id> [--name NAME] [--add-source PATH] [--remove-source PAT
 sendbeam recipe duplicate <id> --name NEW
 sendbeam recipe delete <id>
 sendbeam recipe approve <id>
+sendbeam recipe grant <id>
+sendbeam recipe revoke <id>
 sendbeam recipe preview <id> [--json]
 sendbeam recipe run <id> [--json]
 sendbeam recipe export <id> [--out FILE]
@@ -142,21 +222,23 @@ directory (trust, jobs, and recipes).
 The desktop app exposes the same operations through the Wails-bound
 `RecipeService` (`apps/desktop/internal/engine/recipe_service.go`):
 `ListRecipes`, `GetRecipe`, `PreviewRecipe`, `PlanRecipe` (DTO JSON),
-`RunRecipe` (returns the job id), `ApproveRecipe`, `DeleteRecipe` — all
+`RunRecipe` (returns the job id), `ApproveRecipe`, `GrantAutomation`,
+`RevokeAutomation`, `LastRun`, `DeleteRecipe` — all
 backed by the same engine functions as the CLI, sharing the desktop trust
-store and the production outbox. Frontend UI markup is pending: this repo
+store and the production outbox. The `Recipe` DTO carries the automation
+grant and the last-run ledger entry. Frontend UI markup is pending: this repo
 carries no TypeScript source for the desktop frontend (only the built
 `dist/`), so the bindings are the complete service surface for now.
 
-## Limitations (V22-PR02 scope)
+## Limitations (V22-PR03 scope)
 
-- **No daemon, watcher, or scheduler.** Recipes run only when you run
-  them. Watch-folder handoffs and schedules arrive in V22-PR04/PR05; the
-  `watch`/`schedule` trigger parameters are reserved and rejected
-  until then.
-- **No auto-dispatch yet.** The grant model exists and is enforced
-  (material changes revoke consent), but no runner consumes `AutoSend`
-  until V22-PR03.
+- **No watcher or scheduler yet.** The runner API accepts `watch` and
+  `schedule` trigger reasons and enforces their grants, but the trigger
+  sources themselves arrive in V22-PR04/PR05; the `watch`/`schedule`
+  trigger parameters are reserved and rejected until then.
+- **Auto-dispatch needs an explicit grant.** Nothing runs automatically
+  without `sendbeam recipe grant <id>` (or the desktop equivalent), and
+  any material change revokes it.
 - **Desktop UI pending.** The service bindings are done; the visual
   composer ships when the frontend source does.
 - Preview is an estimate, not a lock: re-resolution at run time is
