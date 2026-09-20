@@ -28,6 +28,11 @@ type Config struct {
 	AdvertisePort  uint16
 	BeaconInterval time.Duration
 	EpochWindow    time.Duration
+	// PeerTTL bounds how long a peer stays listed without a fresh beacon.
+	// Default 5 minutes.
+	PeerTTL time.Duration
+	// MaxPeers bounds the peer table. Default 64.
+	MaxPeers int
 }
 
 // LanDiscoveryService broadcasts blinded beacons and discovers local paired peers.
@@ -51,6 +56,12 @@ func NewLanDiscoveryService(cfg Config, store trust.Store, resolver trust.Secret
 	}
 	if cfg.EpochWindow <= 0 {
 		cfg.EpochWindow = wire.DefaultLanBeaconEpochWindow
+	}
+	if cfg.PeerTTL <= 0 {
+		cfg.PeerTTL = 5 * time.Minute
+	}
+	if cfg.MaxPeers <= 0 {
+		cfg.MaxPeers = 64
 	}
 	return &LanDiscoveryService{
 		cfg:      cfg,
@@ -76,14 +87,54 @@ func (s *LanDiscoveryService) OnPeerDiscovered(handler func(peer DiscoveredPeer)
 }
 
 // GetDiscoveredPeers returns a snapshot of currently discovered LAN peers.
+// Expired entries are omitted.
 func (s *LanDiscoveryService) GetDiscoveredPeers() []DiscoveredPeer {
+	now := time.Now().UTC()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	res := make([]DiscoveredPeer, 0, len(s.peers))
 	for _, p := range s.peers {
+		if now.Sub(p.LastSeen) > s.cfg.PeerTTL {
+			continue
+		}
 		res = append(res, *p)
 	}
 	return res
+}
+
+// SweepPeers removes expired peers and enforces the table bound. It is
+// called periodically by Start; tests may call it directly.
+func (s *LanDiscoveryService) SweepPeers(now time.Time) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for id, p := range s.peers {
+		if now.Sub(p.LastSeen) > s.cfg.PeerTTL {
+			delete(s.peers, id)
+			removed++
+		}
+	}
+	removed += s.enforceBoundLocked()
+	return removed
+}
+
+// enforceBoundLocked drops the stalest peers until the table fits MaxPeers.
+// Callers must hold s.mu.
+func (s *LanDiscoveryService) enforceBoundLocked() int {
+	removed := 0
+	for len(s.peers) > s.cfg.MaxPeers {
+		var oldestID string
+		var oldest time.Time
+		first := true
+		for id, p := range s.peers {
+			if first || p.LastSeen.Before(oldest) {
+				oldestID, oldest, first = id, p.LastSeen, false
+			}
+		}
+		delete(s.peers, oldestID)
+		removed++
+	}
+	return removed
 }
 
 // Start launches the background advertiser and listener routines.
@@ -106,7 +157,7 @@ func (s *LanDiscoveryService) Start(ctx context.Context) error {
 	s.mu.Unlock()
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 
 	// Listener loop
 	go func() {
@@ -118,6 +169,28 @@ func (s *LanDiscoveryService) Start(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		s.advertiseLoop(ctx, conn)
+	}()
+
+	// Peer-table sweep loop
+	go func() {
+		defer wg.Done()
+		interval := s.cfg.PeerTTL / 2
+		if interval < time.Second {
+			interval = time.Second
+		}
+		if interval > time.Minute {
+			interval = time.Minute
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.SweepPeers(time.Now().UTC())
+			}
+		}
 	}()
 
 	<-ctx.Done()
@@ -202,6 +275,9 @@ func (s *LanDiscoveryService) processBeacon(ctx context.Context, beacon *wire.La
 			go h(*peer)
 		}
 	}
+	// Enforce the table bound at insert time; expiry is handled by the
+	// periodic SweepPeers.
+	s.enforceBoundLocked()
 }
 
 func (s *LanDiscoveryService) advertiseLoop(ctx context.Context, conn net.PacketConn) {
