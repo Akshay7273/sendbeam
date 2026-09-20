@@ -763,3 +763,31 @@ func TestTransferService_SendToDeviceAndBroadcast(t *testing.T) {
 		t.Fatal("expected error when device service is nil in BroadcastSend")
 	}
 }
+
+// V20-PR07: the share inbox stages OS share paths until the frontend drains
+// them on boot; the first drain marks the share UI ready.
+func TestShareInboxStageAndTake(t *testing.T) {
+	svc := NewTransferService(nil, nil)
+	if svc.ShareUIReady() {
+		t.Fatal("ShareUIReady before any TakeStagedShares, want false")
+	}
+	svc.StageSharePaths([]string{"/tmp/a.txt"})
+	svc.StageSharePaths(nil) // no-op
+	svc.StageSharePaths([]string{"/tmp/b.txt", "/tmp/c.txt"})
+	got := svc.TakeStagedShares()
+	want := []string{"/tmp/a.txt", "/tmp/b.txt", "/tmp/c.txt"}
+	if len(got) != len(want) {
+		t.Fatalf("TakeStagedShares = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("TakeStagedShares = %v, want %v", got, want)
+		}
+	}
+	if !svc.ShareUIReady() {
+		t.Fatal("ShareUIReady after TakeStagedShares, want true")
+	}
+	if again := svc.TakeStagedShares(); len(again) != 0 {
+		t.Fatalf("second TakeStagedShares = %v, want empty", again)
+	}
+}

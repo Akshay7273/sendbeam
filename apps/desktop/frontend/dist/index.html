@@ -949,7 +949,11 @@
       $("pick-send").addEventListener("click", pickSend);
       $("drop-send").addEventListener("click", pickSend);
 
-      wails.Events.On("sendbeam:transfer", (ev) => {
+      // V20-PR07: a drop (drag-and-drop, OS Share / Send to / Open with,
+      // second-instance forwarding) stages the paths into a send run; the
+      // composer renders the run and the user still picks the recipient —
+      // nothing is transmitted until the invite is shared and joined.
+      function handleDropEvent(ev) {
         if (!ev || ev.kind !== "drop" || !ev.id) return;
         if (state.send.id && state.send.id !== ev.id) return;
         state.send.id = ev.id;
@@ -958,7 +962,25 @@
         $("send-status").textContent = "Preparing secure channel…";
         $("send-progress-card").classList.remove("hidden");
         $("start-send").disabled = true;
+      }
+
+      wails.Events.On("sendbeam:transfer", (ev) => {
+        handleDropEvent(ev);
       });
+
+      // V20-PR07: drain shares that arrived before the UI was ready (startup
+      // file args, forwarded second-instance launches). This call also marks
+      // the share UI ready so later shares drop in live.
+      call(SV.Transfer + ".TakeStagedShares").then((paths) => {
+        if (!paths || !paths.length) return;
+        return call(SV.Transfer + ".Drop", paths).then((h) => {
+          if (h && !h.error) {
+            handleDropEvent({ kind: "drop", id: h.id, files: paths });
+          } else if (h && h.error) {
+            $("send-status").textContent = String(h.error);
+          }
+        });
+      }).catch(() => {});
 
       $("start-send").addEventListener("click", () => {
         if (!state.selected.length) return;

@@ -190,6 +190,14 @@ type TransferService struct {
 	nativeReceiverCancel context.CancelFunc
 
 	deviceService *DeviceService
+
+	// V20-PR07: share inbox for OS Share / Send to / Open with launches.
+	// Paths that arrive before the frontend has subscribed to events are
+	// staged here; the frontend drains them on boot with TakeStagedShares.
+	// shareUIReady is set by the first TakeStagedShares call.
+	shareMu      sync.Mutex
+	stagedShares [][]string
+	shareUIReady bool
 }
 
 // SetDeviceService sets the device service reference for targeted sends and peer trust resolution.
@@ -809,6 +817,42 @@ func (s *TransferService) Receive(code string, destDir string, server string) (H
 
 	go r.runReceive(r.ctx, code, destDir, server, iceServers)
 	return Handle{ID: id, Role: "receive"}, nil
+}
+
+// StageSharePaths queues share paths (OS Share / Send to / Open with) that
+// arrived before the frontend was ready to receive the drop event. The
+// frontend drains them on boot with TakeStagedShares.
+func (s *TransferService) StageSharePaths(paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	cp := append([]string(nil), paths...)
+	s.shareMu.Lock()
+	s.stagedShares = append(s.stagedShares, cp)
+	s.shareMu.Unlock()
+}
+
+// TakeStagedShares atomically drains staged share paths and marks the share
+// UI ready: after this call the frontend is subscribed to transfer events, so
+// new shares can be dropped straight into the composer.
+func (s *TransferService) TakeStagedShares() []string {
+	s.shareMu.Lock()
+	defer s.shareMu.Unlock()
+	s.shareUIReady = true
+	var out []string
+	for _, batch := range s.stagedShares {
+		out = append(out, batch...)
+	}
+	s.stagedShares = nil
+	return out
+}
+
+// ShareUIReady reports whether the frontend has drained the share inbox at
+// least once (i.e. it is subscribed to transfer events).
+func (s *TransferService) ShareUIReady() bool {
+	s.shareMu.Lock()
+	defer s.shareMu.Unlock()
+	return s.shareUIReady
 }
 
 // Drop starts a send for paths dropped onto the window, mirroring Send.

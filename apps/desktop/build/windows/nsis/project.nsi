@@ -85,6 +85,12 @@ Section "MainSection" SEC01
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}\Uninstall ${INFO_PRODUCTNAME}.lnk" "$INSTDIR\uninstall.exe"
     CreateShortcut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}" "" "$INSTDIR\icon.ico" 0
 
+    ; V20-PR07: "Send to" entry point. Explorer invokes the shortcut with the
+    ; selected paths as arguments; a running instance forwards them into its
+    ; send composer via the single-instance channel, otherwise they are staged
+    ; on startup. No file associations are touched.
+    CreateShortcut "$SENDTO\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}" "" "$INSTDIR\icon.ico" 0
+
     WriteUninstaller "$INSTDIR\uninstall.exe"
 
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINST_KEY_NAME}" "DisplayName" "${INFO_PRODUCTNAME}"
@@ -96,6 +102,7 @@ SectionEnd
 
 Section "Uninstall"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
+    Delete "$SENDTO\${INFO_PRODUCTNAME}.lnk"
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}\${INFO_PRODUCTNAME}.lnk"
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}\Uninstall ${INFO_PRODUCTNAME}.lnk"
     RMDir "$SMPROGRAMS\${INFO_PRODUCTNAME}"

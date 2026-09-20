@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,18 +35,28 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// V20-PR07: package-level handles so OS share entry points (second-instance
+// forwarding, startup file args, ApplicationOpenedWithFile) can stage paths
+// into the send composer once the app is up.
+var (
+	transferSvc    *engine.TransferService
+	sendBeamWindow *application.WebviewWindow
+)
+
 func main() {
 	// Single-instance lock: ensure only one authoritative desktop process runs
 	// to prevent racing on transfer journals, config, or destinations.
-	lockPath := filepath.Join(os.TempDir(), "sendbeam.lock")
-	if configDir, err := os.UserConfigDir(); err == nil {
-		lockPath = filepath.Join(configDir, config.AppDirName, "sendbeam.lock")
+	// V20-PR07: the same config dir hosts the forward channel a second
+	// instance uses to hand over share paths instead of starting a duplicate.
+	configDir := os.TempDir()
+	if userCfg, err := os.UserConfigDir(); err == nil {
+		configDir = filepath.Join(userCfg, config.AppDirName)
 	}
+	lockPath := filepath.Join(configDir, "sendbeam.lock")
 	lock, err := lifecycle.AcquireSingleInstanceLock(lockPath)
 	if err != nil {
 		if errors.Is(err, lifecycle.ErrAnotherInstanceRunning) {
-			fmt.Fprintln(os.Stderr, "SendBeam Desktop: another instance is already running.")
-			os.Exit(0)
+			forwardShareArgs(configDir)
 		}
 		// Fail closed on lock acquisition errors rather than running unprotected
 		fmt.Fprintf(os.Stderr, "SendBeam Desktop: single-instance lock failed: %v\n", err)
@@ -55,7 +66,23 @@ func main() {
 		defer func() { _ = lock.Release() }()
 	}
 
-	transferSvc := engine.NewTransferService(
+	// V20-PR07: forward channel for OS Share / Send to / Open with launches.
+	// A second instance forwards its share paths here; they are queued and
+	// fed into the send composer once the window and services are ready.
+	shareCh := make(chan []string, 16)
+	if fwdInfo, fwdLn, ferr := lifecycle.WriteForwardInfo(configDir); ferr != nil {
+		log.Printf("SendBeam Desktop: share channel unavailable: %v", ferr)
+	} else {
+		defer func() {
+			_ = fwdLn.Close()
+			_ = lifecycle.ClearForwardInfo(configDir)
+		}()
+		go lifecycle.ServeForward(fwdLn, fwdInfo, func(paths []string) {
+			shareCh <- paths
+		})
+	}
+
+	transferSvc = engine.NewTransferService(
 		// Emit every transfer snapshot to the frontend.
 		func(name string, data any) {
 			if app := application.Get(); app != nil && app.Event != nil {
@@ -177,7 +204,7 @@ func main() {
 		winOpts.StartState = application.WindowStateMinimised
 	}
 
-	win := app.Window.NewWithOptions(winOpts)
+	sendBeamWindow = app.Window.NewWithOptions(winOpts)
 
 	// System Tray: provides an authoritative reopen and quit mechanism so close-to-tray
 	// or start-minimized maintains an easily discoverable and restorable window state.
@@ -196,8 +223,8 @@ func main() {
 
 	trayMenu := app.NewMenu()
 	trayMenu.Add("Show SendBeam").OnClick(func(_ *application.Context) {
-		win.Show()
-		win.Focus()
+		sendBeamWindow.Show()
+		sendBeamWindow.Focus()
 	})
 	trayMenu.Add("Quit SendBeam").OnClick(func(_ *application.Context) {
 		_ = lifecycleCoord.Shutdown(3 * time.Second)
@@ -205,14 +232,14 @@ func main() {
 	})
 	systemTray.SetMenu(trayMenu)
 	systemTray.OnClick(func() {
-		win.Show()
-		win.Focus()
+		sendBeamWindow.Show()
+		sendBeamWindow.Focus()
 	})
 
 	// macOS dock click reopen hook
 	app.Event.OnApplicationEvent(events.Mac.ApplicationShouldHandleReopen, func(_ *application.ApplicationEvent) {
-		win.Show()
-		win.Focus()
+		sendBeamWindow.Show()
+		sendBeamWindow.Focus()
 	})
 
 	// Wire real system sleep/wake notifications provided by Wails v3
@@ -225,9 +252,9 @@ func main() {
 
 	// Cancellable window closing hook: uses RegisterHook so e.Cancel() properly suppresses window destruction
 	// when CloseToTray is active and tray access is known usable.
-	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+	sendBeamWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
 		if lifecycleCoord.ShouldHideOnClose() {
-			win.Hide()
+			sendBeamWindow.Hide()
 			e.Cancel()
 		}
 	})
@@ -236,27 +263,39 @@ func main() {
 	// engine's source expansion handles files and folders identically. The
 	// drop event lets the frontend adopt the new transfer id and show the
 	// invite as soon as the engine allocates the room.
-	win.OnWindowEvent(events.Common.WindowFilesDropped, func(e *application.WindowEvent) {
+	sendBeamWindow.OnWindowEvent(events.Common.WindowFilesDropped, func(e *application.WindowEvent) {
 		paths := e.Context().DroppedFiles()
 		if len(paths) == 0 {
 			return
 		}
-		h, err := transferSvc.Drop(paths)
-		if err != nil {
-			if a := application.Get(); a != nil && a.Event != nil {
-				a.Event.Emit(engine.TransferEventName, map[string]any{
-					"kind":  "error",
-					"error": err.Error(),
-				})
+		// Same share pipeline as OS entry points: staged until the frontend
+		// is subscribed, then dropped into the composer.
+		shareCh <- paths
+	})
+
+	// V20-PR07: share entry points feed the same composer as a drag-and-drop —
+	// forwarded paths from a second instance, startup file arguments, and OS
+	// "Open with" events (e.g. macOS Finder) all land here. Before the
+	// frontend has drained the share inbox (TakeStagedShares) its event
+	// subscription is not up yet, so shares are staged; afterwards they drop
+	// straight into the composer.
+	go func() {
+		for paths := range shareCh {
+			if transferSvc.ShareUIReady() {
+				forwardIntoComposer(paths)
+			} else {
+				transferSvc.StageSharePaths(paths)
 			}
-			return
+			sendBeamWindow.Show()
+			sendBeamWindow.Focus()
 		}
-		if a := application.Get(); a != nil && a.Event != nil {
-			a.Event.Emit(engine.TransferEventName, map[string]any{
-				"kind":  "drop",
-				"id":    h.ID,
-				"files": paths,
-			})
+	}()
+	if paths := lifecycle.SharePathsFromArgs(os.Args); len(paths) > 0 {
+		shareCh <- paths
+	}
+	app.Event.OnApplicationEvent(events.Common.ApplicationOpenedWithFile, func(e *application.ApplicationEvent) {
+		if p := e.Context().Filename(); p != "" {
+			shareCh <- []string{p}
 		}
 	})
 
@@ -266,6 +305,64 @@ func main() {
 
 	// Bounded graceful teardown upon exit: cancel active transfers cleanly
 	_ = lifecycleCoord.Shutdown(3 * time.Second)
+}
+
+// forwardIntoComposer drops paths into the send composer — the same flow as
+// a drag-and-drop onto the window: a send run is created and the frontend
+// shows the invite. The transfer service validates the paths; nothing is
+// transmitted until the user shares the invite and a recipient joins.
+func forwardIntoComposer(paths []string) {
+	h, err := transferSvc.Drop(paths)
+	if err != nil {
+		if a := application.Get(); a != nil && a.Event != nil {
+			a.Event.Emit(engine.TransferEventName, map[string]any{
+				"kind":  "error",
+				"error": err.Error(),
+			})
+		}
+		return
+	}
+	if a := application.Get(); a != nil && a.Event != nil {
+		a.Event.Emit(engine.TransferEventName, map[string]any{
+			"kind":  "drop",
+			"id":    h.ID,
+			"files": paths,
+		})
+	}
+	if w := sendBeamWindow; w != nil {
+		w.Show()
+		w.Focus()
+	}
+}
+
+// forwardShareArgs hands this process's share paths to the already-running
+// instance and exits. It never starts a second engine.
+func forwardShareArgs(configDir string) {
+	paths := lifecycle.SharePathsFromArgs(os.Args)
+	if len(paths) == 0 {
+		fmt.Fprintln(os.Stderr, "SendBeam Desktop: another instance is already running.")
+		os.Exit(0)
+	}
+	info, err := lifecycle.ReadForwardInfo(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "SendBeam Desktop: another instance is running but its share channel is unavailable: %v\n", err)
+		os.Exit(0)
+	}
+	// The first instance may still be starting its listener; retry dial
+	// failures briefly, but not rejections (retrying those cannot help).
+	var ferr error
+	for i := 0; i < 10; i++ {
+		if ferr = lifecycle.ForwardPaths(info, paths); ferr == nil {
+			os.Exit(0)
+		}
+		var opErr *net.OpError
+		if !errors.As(ferr, &opErr) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	fmt.Fprintf(os.Stderr, "SendBeam Desktop: could not forward %d path(s) to the running instance: %v\n", len(paths), ferr)
+	os.Exit(0)
 }
 
 type wailsPicker struct{}
