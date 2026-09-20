@@ -42,6 +42,13 @@ type ReceiveOptions struct {
 	RequirePadding bool
 	Private        bool
 
+	// TransferID / Resume / OnResume are the V21-PR07 cross-session resume
+	// passthrough, mirroring transfer.Options: set Resume only when the
+	// caller holds an authenticated resume context for this transfer.
+	TransferID string
+	Resume     *transfer.ResumeContext
+	OnResume   func(transfer.ResumeResult)
+
 	// Dial performs the TCP dial for any outbound connection (normally nil
 	// here; the joiner only accepts). Provided for egress monitoring.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
@@ -67,11 +74,17 @@ type ServeOptions struct {
 	Consent        transfer.ConsentHandler
 	RequirePadding bool
 	Private        bool
-	Dial           func(ctx context.Context, network, address string) (net.Conn, error)
-	OnTransport    func(string)
-	OnProgress     func(int64)
-	OnManifest     func(wire.FileEntry)
-	OnConnect      func()
+	// TransferID / Resume / OnResume are the V21-PR07 cross-session resume
+	// passthrough, mirroring transfer.Options: set Resume only when the
+	// caller holds an authenticated resume context for this transfer.
+	TransferID  string
+	Resume      *transfer.ResumeContext
+	OnResume    func(transfer.ResumeResult)
+	Dial        func(ctx context.Context, network, address string) (net.Conn, error)
+	OnTransport func(string)
+	OnProgress  func(int64)
+	OnManifest  func(wire.FileEntry)
+	OnConnect   func()
 }
 
 // Receive accepts the next paired session on opts.Server and runs one
@@ -125,6 +138,9 @@ func Receive(ctx context.Context, opts ReceiveOptions) (*transfer.Outcome, error
 		Consent:        opts.Consent,
 		RequirePadding: opts.RequirePadding,
 		Private:        opts.Private,
+		TransferID:     opts.TransferID,
+		Resume:         opts.Resume,
+		OnResume:       opts.OnResume,
 		Dial:           opts.Dial,
 		OnTransport:    opts.OnTransport,
 		OnProgress:     opts.OnProgress,
@@ -198,6 +214,9 @@ func ServeSession(ctx context.Context, sess *localrendezvous.Session, opts Serve
 		Consent:        opts.Consent,
 		RequirePadding: opts.RequirePadding,
 		Private:        opts.Private,
+		TransferID:     opts.TransferID,
+		Resume:         opts.Resume,
+		OnResume:       opts.OnResume,
 		Dial:           opts.Dial,
 		OnTransport:    opts.OnTransport,
 		OnProgress:     opts.OnProgress,

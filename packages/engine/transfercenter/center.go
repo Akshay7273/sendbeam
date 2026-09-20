@@ -63,6 +63,7 @@ type JobView struct {
 	JobID          string       `json:"jobId"`
 	ShortJobID     string       `json:"shortJobId"`
 	State          DisplayState `json:"state"`
+	NetworkPolicy  string       `json:"networkPolicy"`
 	Files          int          `json:"files"`
 	TotalSize      int64        `json:"totalSize"`
 	Recipients     int          `json:"recipients"`
@@ -226,15 +227,16 @@ func attemptView(a jobs.RecipientAttempt, maxAttempts int) AttemptView {
 // jobView renders one job's summary row.
 func jobView(j jobs.Job) JobView {
 	v := JobView{
-		JobID:      j.JobID,
-		ShortJobID: shortID(j.JobID),
-		State:      displayJobState(j),
-		Files:      len(j.Files),
-		TotalSize:  j.TotalSize,
-		Recipients: len(j.Attempts),
-		HasLease:   j.Lease != nil,
-		CreatedAt:  j.CreatedAt,
-		UpdatedAt:  j.UpdatedAt,
+		JobID:         j.JobID,
+		ShortJobID:    shortID(j.JobID),
+		State:         displayJobState(j),
+		NetworkPolicy: string(j.EffectiveNetworkPolicy().String()),
+		Files:         len(j.Files),
+		TotalSize:     j.TotalSize,
+		Recipients:    len(j.Attempts),
+		HasLease:      j.Lease != nil,
+		CreatedAt:     j.CreatedAt,
+		UpdatedAt:     j.UpdatedAt,
 	}
 	if !j.Policy.ExpiresAt.IsZero() {
 		t := j.Policy.ExpiresAt

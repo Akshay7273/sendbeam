@@ -26,7 +26,7 @@ func TestDesktopFrontend_OfflineUI(t *testing.T) {
 		"cfg-network-policy",   // network policy selector in settings
 		"local-listener-state", // offline listener status readout
 		"local-listener-toggle",
-		"card-offline",         // offline pairing card
+		"card-offline", // offline pairing card
 		"offline-invite-btn",
 		"offline-invite-view",
 		"offline-join-inv",
@@ -54,6 +54,7 @@ func TestDesktopFrontend_OfflineUI(t *testing.T) {
 	// Local-only send route and local consent routing marker.
 	for _, marker := range []string{
 		"SendToDeviceLocal",
+		"SendToDevicePreferLocal", // V21-PR07: prefer-local LAN-first with explicit online fallback
 		"RespondLocalConsent",
 		"pendingConsentLocal",
 		"skipped_local_only",
@@ -61,5 +62,17 @@ func TestDesktopFrontend_OfflineUI(t *testing.T) {
 		if !strings.Contains(content, marker) {
 			t.Errorf("desktop index.html is missing offline marker %q", marker)
 		}
+	}
+
+	// V21-PR07: the settings page must save via the merge-patch binding so
+	// one section never wipes fields managed elsewhere (theme, update
+	// channel, network policy).
+	if !strings.Contains(content, "SaveConfigPatch") {
+		t.Error("desktop index.html does not use the SaveConfigPatch binding")
+	}
+	// V21-PR07: the updater status check must read the backend's `state`
+	// field (not `status`) for the local-only skip.
+	if !strings.Contains(content, `st.state === "skipped_local_only"`) {
+		t.Error("desktop index.html checks the wrong updater status field")
 	}
 }

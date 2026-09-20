@@ -382,3 +382,69 @@ func TestConfigFileContainsNoSecrets(t *testing.T) {
 		t.Fatalf("desktop_config.json leaked secret password! content: %s", string(rawJSON))
 	}
 }
+
+// TestApplyPatchPreservesUnmanagedFields is the regression test for the
+// V21-PR06 settings-page wipe: a partial patch changes only the keys it
+// carries, and fields the UI does not manage (theme, update channel,
+// network policy, tray/minimized) survive untouched.
+func TestApplyPatchPreservesUnmanagedFields(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Theme = "dark"
+	cfg.UpdateChannel = "beta"
+	cfg.NetworkPolicy = "local-only"
+	cfg.CloseToTray = true
+	cfg.AutoCheckUpdate = false
+
+	patch := map[string]any{
+		"serverUrl":      "wss://relay.example.com",
+		"iceServers":     []any{"stun:stun.example.com:3478"},
+		"downloadDir":    "/tmp/dl",
+		"autoAccept":     false,
+		"requirePadding": true,
+	}
+	if err := ApplyPatch(&cfg, patch); err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	if cfg.ServerURL != "wss://relay.example.com" || cfg.DownloadDir != "/tmp/dl" || !cfg.RequirePadding {
+		t.Fatalf("patched fields not applied: %+v", cfg)
+	}
+	if len(cfg.ICEServers) != 1 || cfg.ICEServers[0] != "stun:stun.example.com:3478" {
+		t.Fatalf("iceServers not applied: %v", cfg.ICEServers)
+	}
+	// Unmanaged fields must survive.
+	if cfg.Theme != "dark" || cfg.UpdateChannel != "beta" || cfg.NetworkPolicy != "local-only" {
+		t.Fatalf("unmanaged fields wiped: theme=%q channel=%q policy=%q", cfg.Theme, cfg.UpdateChannel, cfg.NetworkPolicy)
+	}
+	if !cfg.CloseToTray || cfg.AutoCheckUpdate {
+		t.Fatalf("unmanaged bools changed: closeToTray=%v autoCheckUpdate=%v", cfg.CloseToTray, cfg.AutoCheckUpdate)
+	}
+}
+
+// TestApplyPatchRejectsUnknownKeysAndMistypes verifies the patch fails
+// closed: unknown keys and mistyped values are rejected and the config is
+// left untouched.
+func TestApplyPatchRejectsUnknownKeysAndMistypes(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Theme = "dark"
+
+	if err := ApplyPatch(&cfg, map[string]any{"nuclearLaunchCodes": true}); err == nil {
+		t.Fatal("unknown key accepted")
+	}
+	if err := ApplyPatch(&cfg, map[string]any{"requirePadding": "yes"}); err == nil {
+		t.Fatal("mistyped value accepted")
+	}
+	if err := ApplyPatch(&cfg, map[string]any{"iceServers": []any{"stun:x", 42}}); err == nil {
+		t.Fatal("mistyped array element accepted")
+	}
+	if err := ApplyPatch(&cfg, map[string]any{"updateChannel": "canary"}); err == nil {
+		t.Fatal("invalid update channel accepted")
+	}
+	if cfg.Theme != "dark" {
+		t.Fatal("failed patch mutated the config")
+	}
+
+	// Empty patch is a no-op that still validates.
+	if err := ApplyPatch(&cfg, map[string]any{}); err != nil {
+		t.Fatalf("empty patch: %v", err)
+	}
+}

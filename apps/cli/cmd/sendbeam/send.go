@@ -128,7 +128,22 @@ func executeSend(args []string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "sendbeam send: %v\n", err)
 			return 1
 		}
-		return runLocalOnlySend(env, filePaths, hp, toDevices[0], *peerAddr, *requirePadding, *privateMode, *jsonOutput, stdout, stderr)
+		return runLocalOnlySend(env, filePaths, hp, toDevices[0], *peerAddr, *requirePadding, *privateMode, *jsonOutput, policy, stdout, stderr)
+	}
+
+	// V21-PR07: prefer-local with a single target and an explicit local
+	// endpoint tries the local route first, then falls back to online
+	// explicitly. A usage error (exit 2) is not masked by the fallback.
+	if policy == netpolicy.PreferLocal && len(toDevices) == 1 && *peerAddr != "" {
+		env, err := InitCLIEnvironment(*configDir)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "sendbeam send: %v\n", err)
+			return 1
+		}
+		if rc := runLocalOnlySend(env, filePaths, hp, toDevices[0], *peerAddr, *requirePadding, *privateMode, *jsonOutput, policy, stdout, stderr); rc != 1 {
+			return rc
+		}
+		_, _ = fmt.Fprintln(stderr, "sendbeam send: local route failed; falling back to online (prefer-local)")
 	}
 
 	return runBroadcastSend(filePaths, hp, toDevices, *server, *insecure, *relayOnly, iceServer, *privateMode, *requirePadding, *jitter, *jsonOutput, *concurrency, *timeout, *configDir, stdout, stderr)
@@ -160,6 +175,12 @@ func runSingleInteractiveSend(filePaths []string, hp handoffPayload, server stri
 	}
 	if !jsonOutput {
 		_, _ = fmt.Fprintf(stdout, "network policy: %s\n", policy)
+		if policy == netpolicy.PreferLocal {
+			// No local endpoint was given (no --to/--peer-addr), so there
+			// is no local route to prefer: say so instead of silently
+			// proceeding online.
+			_, _ = fmt.Fprintln(stdout, "no local endpoint specified; proceeding online (prefer-local)")
+		}
 	}
 	ice, err := iceServers(iceServer)
 	if err != nil {

@@ -78,6 +78,33 @@ type Options struct {
 	RequirePadding bool
 	Private        bool
 
+	// TransferID, when set, is advertised as the stable transfer id in the
+	// manifest so an interrupted local send can be correlated with a
+	// resumed session (V21-PR07). Empty mints a fresh id.
+	TransferID string
+	// Resume carries the cross-session resume context for an interrupted
+	// local send that holds a resume credential (V21-PR07). It is set only
+	// when the caller can authenticate a resume for this attempt; the
+	// shared engine reuses durable progress only after the mutual
+	// resume-auth preamble succeeds, under a fresh key epoch — a restart
+	// never resets a nonce under the same key.
+	Resume *transfer.ResumeContext
+	// OnResume reports the cross-session resume decision for UX.
+	OnResume func(transfer.ResumeResult)
+
+	// OnSendManifest, when set, is wired into the engine's manifest hook:
+	// it runs when the manifest frame goes out, before any bytes move.
+	// The CLI passes the sender-store hook so a durable sender record is
+	// created (or verified, on retry) for every local send — the same
+	// resume contract as the online path (V21-PR07).
+	OnSendManifest func(wire.Manifest) error
+
+	// OnResumeCredential, when set, persists the transfer-scoped resume
+	// credential into the sender record strictly before the manifest
+	// frame is transmitted, enabling authenticated cross-session resume
+	// with fresh keys via the existing resume contract (V21-PR07).
+	OnResumeCredential func(wire.Manifest, []byte) error
+
 	// Dial performs the TCP dial. Nil uses a default dialer. Every outbound
 	// connection the local path makes flows through it, so a host can deny
 	// and monitor egress (see localrendezvous.DialConfig).
@@ -244,6 +271,13 @@ func (o Options) buildSpec(handle string, peerPub, kPair []byte, credRef string,
 		DestDir:      o.DestDir,
 		Consent:      o.Consent,
 		Private:      o.Private,
+		// V21-PR07: connect the local path to the existing cross-session
+		// resume contract instead of minting a fresh identity per send.
+		TransferID:         o.TransferID,
+		Resume:             o.Resume,
+		OnResume:           o.OnResume,
+		OnSendManifest:     o.OnSendManifest,
+		OnResumeCredential: o.OnResumeCredential,
 		// Local-only invariants, enforced on the actual engine — not flags
 		// on a UI. Explicit empty ICE servers: host candidates only, no
 		// STUN/TURN. DisableRelay: no relay path exists to fall back to.

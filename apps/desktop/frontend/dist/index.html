@@ -1082,12 +1082,17 @@
 
         // V21-PR06: local-only device sends take the LAN path — no public
         // signaling, STUN/TURN, or relay at any step.
+        // V21-PR07: prefer-local tries the LAN path first with explicit
+        // online fallback; anything else goes online directly.
+        const preferLocal = state.policy === "prefer-local";
         const sendPromise =
           localOnly && recipient && recipient !== "code"
             ? call(SV.Transfer + ".SendToDeviceLocal", paths, recipient)
-            : recipient && recipient !== "code"
-              ? call(SV.Transfer + ".SendToDevice", paths, recipient, "")
-              : call(SV.Transfer + ".Send", paths, "");
+            : preferLocal && recipient && recipient !== "code"
+              ? call(SV.Transfer + ".SendToDevicePreferLocal", paths, recipient, "")
+              : recipient && recipient !== "code"
+                ? call(SV.Transfer + ".SendToDevice", paths, recipient, "")
+                : call(SV.Transfer + ".Send", paths, "");
 
         sendPromise.then((h) => {
           if (h && h.error) { $("send-status").textContent = h.error; return; }
@@ -2086,7 +2091,7 @@
           requirePadding: requirePadding,
         };
         try {
-          await call(SV.Transfer + ".SaveConfig", cfg);
+          await call(SV.Transfer + ".SaveConfigPatch", cfg);
           // V21-PR06: persist the network policy, re-apply it to the
           // background receiver, and sync the offline listener so a policy
           // change takes effect without an app restart.
@@ -2198,7 +2203,7 @@
       function renderUpdateStatus(st) {
         if (!st) return;
         // V21-PR06: the backend skips update checks in local-only mode.
-        if (st.status === "skipped_local_only") {
+        if (st.state === "skipped_local_only") {
           $("update-status-label").textContent =
             "Updates disabled in local-only mode.";
           $("update-banner").classList.add("hidden");

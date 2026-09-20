@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sendbeam/engine/jobs"
+	"github.com/sendbeam/engine/netpolicy"
 	"github.com/sendbeam/engine/outbox"
 	"github.com/sendbeam/engine/transfer"
 	"github.com/sendbeam/engine/transfercenter"
@@ -74,6 +75,14 @@ func outboxUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "exponential backoff until attempts run out, the job expires, or you cancel it.")
 	_, _ = fmt.Fprintln(w, "Prune enforces history retention on terminal jobs only; forget deletes one")
 	_, _ = fmt.Fprintln(w, "terminal job's history explicitly. Neither ever touches live work.")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "Network policies (V21-PR07):")
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("--network-policy")+" binds each job at enqueue: online (default),")
+	_, _ = fmt.Fprintln(w, "  prefer-local, or local-only. Dispatch reads the effective policy for")
+	_, _ = fmt.Fprintln(w, "  the pass (--network-policy flag, else the configured policy) and holds")
+	_, _ = fmt.Fprintln(w, "  jobs it cannot serve: a local-only job never sends online, and an online")
+	_, _ = fmt.Fprintln(w, "  job never sends over a local-only dispatcher. Local-only dispatch needs")
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("--peer-addr <ip:port>")+" for the trusted peer's local endpoint.")
 }
 
 // openOutboxStore opens the jobs store backing the outbox. With --config-dir
@@ -118,6 +127,7 @@ func runOutboxEnqueue(args []string, stdout, stderr io.Writer) int {
 	baseBackoff := fs.Duration("base-backoff", defPolicy.BaseBackoff, "initial backoff after an offline recipient")
 	maxBackoff := fs.Duration("max-backoff", defPolicy.MaxBackoff, "upper bound for backoff between attempts")
 	expireIn := fs.Duration("expire-in", 0, "drop the job after this long without delivery (0 = never)")
+	networkPolicyFlag := fs.String("network-policy", "", "bind the job to a network policy: online, prefer-local, local-only (default online)")
 	jsonOutput := fs.Bool("json", false, "print the enqueued job as JSON")
 	configDir := fs.String("config-dir", "", "path to custom configuration directory")
 	positionals := parseArgs(fs, args)
@@ -155,7 +165,12 @@ func runOutboxEnqueue(args []string, stdout, stderr io.Writer) int {
 		policy.ExpiresAt = time.Now().UTC().Add(*expireIn)
 	}
 	ob := outbox.New(store, nil)
-	job, err := ob.Enqueue(ctx, positionals, recipients, policy)
+	np, err := netpolicy.Parse(*networkPolicyFlag)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam outbox enqueue: %v\n", err)
+		return 2
+	}
+	job, err := ob.Enqueue(ctx, positionals, recipients, policy, np)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam outbox enqueue: %v\n", err)
 		return 1
@@ -169,8 +184,8 @@ func runOutboxEnqueue(args []string, stdout, stderr io.Writer) int {
 	s := newStyleFromWriter(stdout)
 	_, _ = fmt.Fprintf(stdout, "%s queued %s for %d recipient(s)\n",
 		s.green("Queued"), s.cyan(shortJobID(job.JobID)), len(recipients))
-	_, _ = fmt.Fprintf(stdout, "  %d file(s), %s. Run %s to send due attempts.\n",
-		len(job.Files), humanBytes(job.TotalSize), s.cyan("sendbeam outbox dispatch"))
+	_, _ = fmt.Fprintf(stdout, "  %d file(s), %s; network policy: %s. Run %s to send due attempts.\n",
+		len(job.Files), humanBytes(job.TotalSize), job.EffectiveNetworkPolicy(), s.cyan("sendbeam outbox dispatch"))
 	return 0
 }
 
@@ -232,9 +247,9 @@ func runOutboxList(args []string, stdout, stderr io.Writer) int {
 				shown++
 				continue
 			}
-			_, _ = fmt.Fprintf(stdout, "%s  %-8s %d file(s) %s  %d/%d/%d done/failed/total recipients\n",
+			_, _ = fmt.Fprintf(stdout, "%s  %-8s %d file(s) %s  %d/%d/%d done/failed/total recipients  [%s]\n",
 				s.cyan(shortJobID(j.JobID)), string(j.State),
-				j.Files, humanBytes(j.TotalSize), j.Delivered, j.Failed, j.Recipients)
+				j.Files, humanBytes(j.TotalSize), j.Delivered, j.Failed, j.Recipients, j.NetworkPolicy)
 			shown++
 		}
 	}
@@ -315,11 +330,19 @@ func runOutboxDispatch(args []string, stdout, stderr io.Writer) int {
 	timeout := fs.Duration("timeout", 0, "per-recipient transfer timeout (0 = none)")
 	concurrency := fs.Int("concurrency", 4, "parallel recipient transfers")
 	jsonOutput := fs.Bool("json", false, "print the dispatch report as JSON")
+	networkPolicyFlag := fs.String("network-policy", "", "effective network policy for this dispatch pass: online, prefer-local, local-only (default: configured policy)")
+	peerAddr := fs.String("peer-addr", "", "manual local peer endpoint <ip:port> for local-only dispatch")
 	configDir := fs.String("config-dir", "", "path to custom configuration directory")
 	_ = parseArgs(fs, args)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	effective, err := resolveNetworkPolicy(*networkPolicyFlag, *configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam outbox dispatch: %v\n", err)
+		return 2
+	}
 
 	env, err := InitCLIEnvironment(*configDir)
 	if err != nil {
@@ -360,14 +383,46 @@ func runOutboxDispatch(args []string, stdout, stderr io.Writer) int {
 		concurrencyLimit = 1
 	}
 	perTarget := *timeout
-	sender := func(ctx context.Context, _ jobs.Job, attempt jobs.RecipientAttempt, paths []string) outbox.SendOutcome {
+	sender := func(ctx context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) outbox.SendOutcome {
+		// V21-PR07 per-job route binding (second line of defense after
+		// the outbox dispatch gate):
+		// - a local-only job is dispatched through the offline sender
+		//   only, never the online one;
+		// - a prefer-local job tries the approved local route first when
+		//   a manual local endpoint is configured, then falls back to
+		//   the online sender explicitly (the fallback is visible in the
+		//   attempt error/output, not silent).
+		switch job.EffectiveNetworkPolicy() {
+		case netpolicy.LocalOnly:
+			return outboxLocalSend(ctx, env, job, attempt, paths, netpolicy.LocalOnly, effective, *peerAddr, *requirePadding, *privateMode)
+		case netpolicy.PreferLocal:
+			if effective == netpolicy.PreferLocal && *peerAddr != "" {
+				out := outboxLocalSend(ctx, env, job, attempt, paths, netpolicy.PreferLocal, effective, *peerAddr, *requirePadding, *privateMode)
+				if out.Status == transfer.StatusOk {
+					return out
+				}
+				localErr := out.Error
+				fb := outboxTargetSend(ctx, env, localID, attempt, paths, cfg, perTarget)
+				if fb.Status == transfer.StatusOk {
+					_, _ = fmt.Fprintf(stderr, "job %s: local route failed (%s); fell back to online\n", shortJobID(job.JobID), localErr)
+				} else if fb.Error != "" {
+					fb.Error = "local route: " + localErr + "; online fallback: " + fb.Error
+				} else {
+					fb.Error = "local route: " + localErr + "; online fallback: " + string(fb.Status)
+				}
+				return fb
+			}
+		}
 		return outboxTargetSend(ctx, env, localID, attempt, paths, cfg, perTarget)
 	}
 	ob := outbox.New(store, sender)
-	rep, err := ob.DispatchOnce(ctx, outbox.DispatchOptions{Concurrency: concurrencyLimit, LeaseTTL: jobs.DefaultLeaseTTL})
+	rep, err := ob.DispatchOnce(ctx, outbox.DispatchOptions{Concurrency: concurrencyLimit, LeaseTTL: jobs.DefaultLeaseTTL, EffectivePolicy: effective})
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam outbox dispatch: %v\n", err)
 		return 1
+	}
+	if !*jsonOutput {
+		_, _ = fmt.Fprintf(stderr, "dispatching under network policy: %s\n", effective)
 	}
 	if *jsonOutput {
 		enc := json.NewEncoder(stdout)
@@ -602,13 +657,14 @@ func runOutboxForget(args []string, stdout, stderr io.Writer) int {
 
 // jobSummary is the JSON shape for `outbox enqueue/show --json`.
 type jobSummaryJSON struct {
-	JobID      string                 `json:"job_id"`
-	Status     string                 `json:"status"`
-	Files      int                    `json:"files"`
-	TotalBytes int64                  `json:"total_bytes"`
-	Recipients []recipientSummaryJSON `json:"recipients"`
-	ExpiresAt  *time.Time             `json:"expires_at,omitempty"`
-	CreatedAt  time.Time              `json:"created_at"`
+	JobID         string                 `json:"job_id"`
+	Status        string                 `json:"status"`
+	NetworkPolicy string                 `json:"network_policy"`
+	Files         int                    `json:"files"`
+	TotalBytes    int64                  `json:"total_bytes"`
+	Recipients    []recipientSummaryJSON `json:"recipients"`
+	ExpiresAt     *time.Time             `json:"expires_at,omitempty"`
+	CreatedAt     time.Time              `json:"created_at"`
 }
 
 type recipientSummaryJSON struct {
@@ -621,11 +677,12 @@ type recipientSummaryJSON struct {
 
 func jobSummary(job jobs.Job) jobSummaryJSON {
 	sum := jobSummaryJSON{
-		JobID:      job.JobID,
-		Status:     string(job.Status),
-		Files:      len(job.Files),
-		TotalBytes: job.TotalSize,
-		CreatedAt:  job.CreatedAt,
+		JobID:         job.JobID,
+		Status:        string(job.Status),
+		NetworkPolicy: job.EffectiveNetworkPolicy().String(),
+		Files:         len(job.Files),
+		TotalBytes:    job.TotalSize,
+		CreatedAt:     job.CreatedAt,
 	}
 	if !job.Policy.ExpiresAt.IsZero() {
 		t := job.Policy.ExpiresAt
