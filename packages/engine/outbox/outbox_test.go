@@ -350,7 +350,7 @@ func TestDispatch_RequiresSender(t *testing.T) {
 
 func TestDispatch_RestartRequeuesInterrupted(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
-	hang := func(_ context.Context, _ jobs.Job, attempt jobs.RecipientAttempt, _ []string) SendOutcome {
+	hang := func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		// Simulate a crash mid-dispatch: leave the attempt active in the store
 		// and never report an outcome.
 		return SendOutcome{Status: transfer.StatusOffline, Error: "simulated"}
