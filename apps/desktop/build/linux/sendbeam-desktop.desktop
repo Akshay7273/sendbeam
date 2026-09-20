@@ -7,3 +7,8 @@ Terminal=false
 Type=Application
 Categories=Network;FileTransfer;Utility;
 StartupWMClass=SendBeam
+# V20-PR07: "Open With" entry point for folders and untyped binaries.
+# Intentionally conservative: SendBeam must never hijack default open handlers,
+# so it does not claim specific media types; users can still route any file via
+# "Open With → SendBeam", which stages it into the send composer (no auto-send).
+MimeType=inode/directory;application/octet-stream;

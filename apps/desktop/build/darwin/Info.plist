@@ -26,5 +26,24 @@
 	<string>Copyright (c) 2026 Akshay7273</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
+	<!-- V20-PR07: "Open With" entry point. Finder can hand files and folders
+	     to SendBeam; the app stages them into the send composer. Viewer role
+	     + Alternate rank: never becomes the default opener. -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>All files and folders</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.data</string>
+				<string>public.folder</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
