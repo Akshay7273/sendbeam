@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sendbeam/engine/migrate"
 	"github.com/sendbeam/engine/trust"
 	"github.com/sendbeam/wire"
 )
@@ -50,6 +51,13 @@ func InitCLIEnvironment(customDir string) (*CLIEnvironment, error) {
 
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create config dir: %w", err)
+	}
+
+	// v2.0 state migrations run before any store is opened: upgrades are
+	// applied in order with rollback, and state from a newer generation is
+	// quarantined (refused, never modified).
+	if _, err := migrate.Run(context.Background(), dir); err != nil {
+		return nil, fmt.Errorf("state migration: %w", err)
 	}
 
 	idPath := filepath.Join(dir, identityKeyFileName)
