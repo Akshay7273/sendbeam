@@ -413,6 +413,7 @@
 
     <!-- SEND -->
     <section class="panel active" id="panel-send">
+      <div class="hidden" id="policy-banner" style="margin-bottom:1rem; padding:0.75rem; border:1px solid var(--accent); border-radius:6px; font-size:0.85rem; background:var(--surface);"></div>
       <div class="card">
         <h2>Files &amp; folders</h2>
         <div class="drop" id="drop-send" data-file-drop-target>
@@ -435,7 +436,7 @@
       </div>
 
       <!-- V20-PR06: encrypted text/link handoff composer for a paired trusted device. -->
-      <div class="card">
+      <div class="card" id="card-handoff">
         <h2>Text / link handoff</h2>
         <p style="font-size:0.85rem; color:var(--text-muted); margin:0 0 0.75rem;">
           Send an encrypted text note or link directly to a paired trusted device — held for
@@ -499,6 +500,11 @@
         </div>
         <div class="controls">
           <button class="primary" id="start-recv" disabled>Receive Transfer</button>
+        </div>
+        <div class="hidden" id="recv-local-note" style="font-size:0.85rem; color:var(--text-muted); margin-top:0.5rem;">
+          Local only: paired devices send to you automatically through the
+          offline listener — no invite code is needed. Make sure the listener
+          is running in Settings.
         </div>
         <div class="statusline" id="recv-status"></div>
       </div>
@@ -627,11 +633,56 @@
           <span>Require Traffic Padding (Reject unpadded peers and frames fail-closed)</span>
         </label>
 
+        <label for="cfg-network-policy" style="display:block; margin-top: 1rem;">Network Policy</label>
+        <select id="cfg-network-policy" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.5rem; border-radius:6px; font-size:0.85rem; outline:none;">
+          <option value="online">Online — signaling server + LAN (default)</option>
+          <option value="prefer-local">Prefer local — LAN first, online fallback</option>
+          <option value="local-only">Local only — no internet (LAN transfers only)</option>
+        </select>
+        <p style="font-size:0.8rem; color:var(--text-muted); margin:0.4rem 0 0;">Local only disables the signaling server, STUN/TURN, relay, invite codes, and update checks. Pairing and transfers stay on your local network.</p>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:1rem;">
+          <div style="font-size:0.85rem; color:var(--text-muted);">Offline listener: <span id="local-listener-state" style="color:var(--text-heading);">—</span></div>
+          <button id="local-listener-toggle">Start listener</button>
+        </div>
+        <div class="statusline" id="local-listener-status"></div>
+
         <div class="controls" style="margin-top: 1.25rem;">
           <button class="primary" id="save-settings">Save Settings</button>
           <button id="reset-settings">Reload</button>
         </div>
         <div class="statusline" id="settings-status"></div>
+      </div>
+
+      <div class="card" id="card-offline" style="margin-top: 1.25rem;">
+        <h2>Offline Pairing &amp; Listener</h2>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-top:0;">
+          Pair with a nearby device over your local network — no account, no
+          server, no internet. While the offline listener is running, paired
+          devices can also send files to you directly.
+        </p>
+        <div class="controls">
+          <button class="primary" id="offline-invite-btn">Create offline invitation</button>
+        </div>
+        <div id="offline-invite-view" class="hidden" style="margin-top:0.75rem;">
+          <img id="offline-invite-qr" alt="Offline invitation QR code" style="width:180px; height:180px; border:1px solid var(--border); border-radius:6px;" />
+          <div class="mono" id="offline-invite-text" style="margin-top:0.5rem; word-break:break-all; font-size:0.8rem;"></div>
+          <div style="font-size:0.85rem; margin-top:0.5rem;">Listening on <span class="mono" id="offline-invite-addr"></span></div>
+          <div style="font-size:0.85rem;">Fingerprint: <span class="mono" id="offline-invite-fp"></span></div>
+          <div style="font-size:0.85rem;">Expires: <span id="offline-invite-exp"></span></div>
+          <div class="statusline" id="offline-invite-status"></div>
+          <div class="controls">
+            <button id="offline-invite-copy">Copy invitation</button>
+            <button id="offline-invite-cancel">Cancel invitation</button>
+          </div>
+        </div>
+        <h3 style="margin-top:1rem;">Join with an invitation</h3>
+        <textarea id="offline-join-inv" rows="3" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.5rem; border-radius:6px; font-size:0.85rem;" placeholder="Paste the offline invitation text"></textarea>
+        <input type="text" id="offline-join-name" placeholder="This device's name (optional)" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.5rem; border-radius:6px; font-size:0.85rem; margin-top:0.5rem;" />
+        <div class="controls" style="margin-top:0.5rem;">
+          <button class="primary" id="offline-join-btn">Pair offline</button>
+        </div>
+        <div class="statusline" id="offline-join-status"></div>
       </div>
 
       <div class="card" id="card-updates" style="margin-top: 1.25rem;">
@@ -857,6 +908,11 @@
         Transfer: "github.com/sendbeam/desktop/internal/engine.TransferService",
         Update:   "github.com/sendbeam/desktop/internal/engine.UpdateService",
         Device:   "github.com/sendbeam/desktop/internal/engine.DeviceService",
+        NetworkPolicy:
+          "github.com/sendbeam/desktop/internal/engine.NetworkPolicyService",
+        LocalPairing:
+          "github.com/sendbeam/desktop/internal/engine.LocalPairingService",
+        Local: "github.com/sendbeam/desktop/internal/engine.LocalService",
       };
       const call = (fqn, ...args) => wails.Call.ByName(fqn, ...args);
       const $ = (id) => document.getElementById(id);
@@ -887,6 +943,12 @@
         recv: { id: null, outPath: null },
         activeDevice: null,
         pendingConsentId: null,
+        // V21-PR06: network policy and offline (LAN-only) transfer state.
+        policy: "online",
+        localListenerAddr: "",
+        pendingConsentLocal: false,
+        offlineInviteExpiresAt: 0,
+        offlineInviteTimer: null,
         // V20-PR06: verified handoff payload held for deliberate Copy/Save/Open.
         handoffText: "",
         handoffKind: "",
@@ -986,8 +1048,20 @@
         if (!state.selected.length) return;
         const paths = state.selected.map((p) => p.path);
         const recipient = $("send-recipient") ? $("send-recipient").value : "code";
+        const localOnly = state.policy === "local-only";
+
+        if (localOnly && (!recipient || recipient === "code")) {
+          $("send-status").textContent =
+            "Local only: invite-code sends are disabled. Choose a paired device.";
+          return;
+        }
 
         if (recipient === "broadcast:all") {
+          if (localOnly) {
+            $("send-status").textContent =
+              "Local only: broadcast is disabled. Send to one device at a time.";
+            return;
+          }
           const devIds = state.devices.filter((d) => !d.revoked).map((d) => d.deviceId);
           if (!devIds.length) {
             $("send-status").textContent = "No trusted devices available for broadcast.";
@@ -1006,9 +1080,14 @@
           return;
         }
 
-        const sendPromise = (recipient && recipient !== "code")
-          ? call(SV.Transfer + ".SendToDevice", paths, recipient, "")
-          : call(SV.Transfer + ".Send", paths, "");
+        // V21-PR06: local-only device sends take the LAN path — no public
+        // signaling, STUN/TURN, or relay at any step.
+        const sendPromise =
+          localOnly && recipient && recipient !== "code"
+            ? call(SV.Transfer + ".SendToDeviceLocal", paths, recipient)
+            : recipient && recipient !== "code"
+              ? call(SV.Transfer + ".SendToDevice", paths, recipient, "")
+              : call(SV.Transfer + ".Send", paths, "");
 
         sendPromise.then((h) => {
           if (h && h.error) { $("send-status").textContent = h.error; return; }
@@ -1322,11 +1401,15 @@
         if (!sel) return;
         const currentVal = sel.value;
         sel.replaceChildren();
-
-        const defOpt = document.createElement("option");
-        defOpt.value = "code";
-        defOpt.textContent = "Anyone with invite code / link / QR (Default)";
-        sel.appendChild(defOpt);
+        // V21-PR06: in local-only mode there is no invite-code signaling and
+        // no broadcast; only direct LAN sends to a paired device.
+        const localOnly = state.policy === "local-only";
+        if (!localOnly) {
+          const defOpt = document.createElement("option");
+          defOpt.value = "code";
+          defOpt.textContent = "Anyone with invite code / link / QR (Default)";
+          sel.appendChild(defOpt);
+        }
 
         const activeDevs = (devices || []).filter((d) => !d.revoked);
         for (const d of activeDevs) {
@@ -1337,15 +1420,15 @@
           sel.appendChild(opt);
         }
 
-        if (activeDevs.length > 1) {
+        if (activeDevs.length > 1 && !localOnly) {
           const bOpt = document.createElement("option");
           bOpt.value = "broadcast:all";
           bOpt.textContent = "Broadcast to all trusted devices (" + activeDevs.length + ")";
           sel.appendChild(bOpt);
         }
 
-        sel.value = currentVal || "code";
-        if (sel.selectedIndex === -1) sel.value = "code";
+        sel.value = currentVal || (localOnly ? "" : "code");
+        if (sel.selectedIndex === -1) sel.selectedIndex = 0;
       }
 
       function renderDevicesList(devices) {
@@ -1715,13 +1798,17 @@
       function showConsentPrompt(req) {
         if (!req || !req.transferId) return;
         state.pendingConsentId = req.transferId;
+        // V21-PR06: the offline listener emits the same consent shape with
+        // a local marker; the response routes to the matching service.
+        state.pendingConsentLocal = !!req.local;
         // V20-PR06: a handoff envelope is rendered inertly — kind and size only,
         // no destination-folder prompt; the payload appears only after verification.
         const isHandoff = req.contentKind === "text" || req.contentKind === "link";
         $("modal-consent").classList.remove("hidden");
         $("modal-consent").querySelector(".modal-header h3").textContent =
-          isHandoff ? (req.contentKind === "link" ? "Incoming Link" : "Incoming Text")
-                    : "Incoming Transfer Request";
+          (req.local ? "Incoming Transfer (local network) — " : "") +
+          (isHandoff ? (req.contentKind === "link" ? "Incoming Link" : "Incoming Text")
+                     : "Incoming Transfer Request");
         $("consent-device-name").textContent =
           req.peerLabel || req.peerName || req.peerDeviceId || "Trusted Device";
         $("consent-fingerprint").textContent = req.fingerprint || "";
@@ -1752,13 +1839,17 @@
         if (!state.pendingConsentId) return;
         const destDir = $("consent-dest-dir").value.trim();
         $("consent-status").textContent = "Accepting…";
+        // V21-PR06: local incoming transfers answer through the offline
+        // listener service, not the online transfer service.
+        const svc = state.pendingConsentLocal ? SV.Local + ".RespondLocalConsent" : SV.Transfer + ".RespondConsent";
         try {
-          await call(SV.Transfer + ".RespondConsent", state.pendingConsentId, {
+          await call(svc, state.pendingConsentId, {
             accepted: true,
             destDir: destDir,
           });
           $("modal-consent").classList.add("hidden");
           state.pendingConsentId = null;
+          state.pendingConsentLocal = false;
         } catch (err) {
           $("consent-status").textContent = String(err);
         }
@@ -1766,13 +1857,15 @@
       $("consent-decline-btn").addEventListener("click", async () => {
         if (!state.pendingConsentId) return;
         $("consent-status").textContent = "Declining…";
+        const svc = state.pendingConsentLocal ? SV.Local + ".RespondLocalConsent" : SV.Transfer + ".RespondConsent";
         try {
-          await call(SV.Transfer + ".RespondConsent", state.pendingConsentId, {
+          await call(svc, state.pendingConsentId, {
             accepted: false,
             reason: "Declined by user",
           });
           $("modal-consent").classList.add("hidden");
           state.pendingConsentId = null;
+          state.pendingConsentLocal = false;
         } catch (err) {
           $("consent-status").textContent = String(err);
         }
@@ -1881,6 +1974,75 @@
       });
 
       // SETTINGS
+      // V21-PR06: apply the network policy across the UI. Local only means
+      // the signaling server, STUN/TURN, relay, invite codes, and update
+      // checks are off; pairing and transfers stay on the LAN.
+      function applyPolicyUI(policy) {
+        state.policy = policy || "online";
+        const localOnly = state.policy === "local-only";
+        const banner = $("policy-banner");
+        if (localOnly) {
+          banner.classList.remove("hidden");
+          // Literal text only: the shipped UI builds this banner from text
+          // nodes, never from markup.
+          banner.replaceChildren();
+          const strong = document.createElement("strong");
+          strong.textContent = "Local only: ";
+          banner.appendChild(strong);
+          banner.appendChild(
+            document.createTextNode(
+              "transfers and pairing stay on your local network — no " +
+                "signaling server, no STUN/TURN, no relay, no invite codes, " +
+                "and no update checks. Device-to-device and broadcast sends " +
+                "are disabled; choose a paired device."
+            )
+          );
+        } else {
+          banner.classList.add("hidden");
+          banner.replaceChildren();
+        }
+        updateRecipientSelect(state.devices);
+        // Receive tab: invite codes only work online.
+        $("recv-code").disabled = localOnly;
+        $("start-recv").disabled = localOnly;
+        $("recv-local-note").classList.toggle("hidden", !localOnly);
+        if (localOnly) {
+          $("recv-status").textContent =
+            "Local only: incoming files arrive through the offline listener.";
+        }
+        // Updates: disabled in local-only by the backend.
+        $("check-update-btn").disabled = localOnly;
+        if (localOnly) {
+          $("update-status-label").textContent =
+            "Updates disabled in local-only mode.";
+        } else {
+          // Restore the live update status when leaving local-only.
+          call(SV.Update + ".GetStatus")
+            .then((st) => {
+              if (st) renderUpdateStatus(st);
+            })
+            .catch(() => {});
+        }
+        // Text/link handoffs are not supported offline in this release.
+        $("card-handoff").classList.toggle("hidden", localOnly);
+      }
+
+      async function refreshListenerUI() {
+        try {
+          const addr = await call(SV.Local + ".ListenAddr");
+          state.localListenerAddr = addr || "";
+        } catch (err) {
+          state.localListenerAddr = "";
+        }
+        const running = !!state.localListenerAddr;
+        $("local-listener-state").textContent = running
+          ? "Running on " + state.localListenerAddr
+          : "Stopped";
+        $("local-listener-toggle").textContent = running
+          ? "Stop listener"
+          : "Start listener";
+      }
+
       async function loadSettings() {
         try {
           const cfg = await call(SV.Transfer + ".GetConfig");
@@ -1894,6 +2056,14 @@
         } catch (err) {
           $("settings-status").textContent = "Load error: " + err;
         }
+        try {
+          const policy = await call(SV.NetworkPolicy + ".GetPolicy");
+          $("cfg-network-policy").value = policy || "online";
+          applyPolicyUI(policy || "online");
+        } catch (err) {
+          $("settings-status").textContent = "Policy load error: " + err;
+        }
+        await refreshListenerUI();
       }
 
       $("cfg-pick-dir").addEventListener("click", async () => {
@@ -1917,9 +2087,106 @@
         };
         try {
           await call(SV.Transfer + ".SaveConfig", cfg);
+          // V21-PR06: persist the network policy, re-apply it to the
+          // background receiver, and sync the offline listener so a policy
+          // change takes effect without an app restart.
+          const policy = $("cfg-network-policy").value;
+          await call(SV.NetworkPolicy + ".SetPolicy", policy);
+          await call(SV.Transfer + ".ApplyNetworkPolicy");
+          await syncLocalListener(policy);
+          applyPolicyUI(policy);
           setStatusMessage($("settings-status"), "ok", "✓ Settings saved successfully.");
         } catch (err) {
           setStatusMessage($("settings-status"), "err", "✗ " + err);
+        }
+      });
+
+      // V21-PR06: start the offline listener when the policy is
+      // offline-capable, stop it when the policy goes back online.
+      async function syncLocalListener(policy) {
+        try {
+          const addr = await call(SV.Local + ".ListenAddr");
+          const running = !!addr;
+          const want = policy === "local-only" || policy === "prefer-local";
+          if (want && !running) {
+            await call(SV.Local + ".Start");
+          } else if (!want && running) {
+            await call(SV.Local + ".Stop");
+          }
+        } catch (err) {
+          setStatusMessage($("local-listener-status"), "err", "✗ " + err);
+        }
+        await refreshListenerUI();
+      }
+
+      $("local-listener-toggle").addEventListener("click", async () => {
+        try {
+          if (state.localListenerAddr) {
+            await call(SV.Local + ".Stop");
+          } else {
+            await call(SV.Local + ".Start");
+          }
+        } catch (err) {
+          setStatusMessage($("local-listener-status"), "err", "✗ " + err);
+        }
+        await refreshListenerUI();
+      });
+
+      // V21-PR06: offline (LAN-only) pairing flows.
+      $("offline-invite-btn").addEventListener("click", async () => {
+        try {
+          $("offline-invite-status").textContent = "Creating invitation…";
+          const inv = await call(SV.LocalPairing + ".CreateInvitationView");
+          $("offline-invite-text").textContent = inv.invitation;
+          $("offline-invite-qr").src = inv.qr;
+          $("offline-invite-addr").textContent = inv.address;
+          $("offline-invite-fp").textContent = inv.fingerprint;
+          $("offline-invite-exp").textContent = new Date(inv.expiresAt).toLocaleString();
+          $("offline-invite-view").classList.remove("hidden");
+          $("offline-invite-status").textContent =
+            "Share the invitation text or QR code with the nearby device. It expires automatically.";
+          if (state.offlineInviteTimer) clearTimeout(state.offlineInviteTimer);
+          const ms = new Date(inv.expiresAt).getTime() - Date.now();
+          state.offlineInviteTimer = setTimeout(() => {
+            $("offline-invite-status").textContent = "Invitation expired.";
+            $("offline-invite-view").classList.add("hidden");
+          }, Math.max(ms, 0) + 1000);
+        } catch (err) {
+          $("offline-invite-status").textContent = String(err);
+        }
+      });
+      $("offline-invite-copy").addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText($("offline-invite-text").textContent);
+          $("offline-invite-status").textContent = "Invitation copied.";
+        } catch (err) {
+          $("offline-invite-status").textContent = "Copy failed: " + err;
+        }
+      });
+      $("offline-invite-cancel").addEventListener("click", async () => {
+        try {
+          await call(SV.LocalPairing + ".CancelInvitation");
+        } catch (err) { /* nothing pending */ }
+        if (state.offlineInviteTimer) clearTimeout(state.offlineInviteTimer);
+        $("offline-invite-view").classList.add("hidden");
+        $("offline-invite-status").textContent = "Invitation cancelled.";
+      });
+      $("offline-join-btn").addEventListener("click", async () => {
+        const invitation = $("offline-join-inv").value.trim();
+        const deviceName = $("offline-join-name").value.trim();
+        if (!invitation) {
+          $("offline-join-status").textContent = "Paste an offline invitation first.";
+          return;
+        }
+        try {
+          $("offline-join-status").textContent = "Pairing…";
+          const res = await call(SV.LocalPairing + ".JoinInvitation", invitation, deviceName);
+          $("offline-join-status").textContent =
+            "Paired with " + (res.peerDeviceId || "device") + ". It is now a trusted device.";
+          $("offline-join-inv").value = "";
+          loadDevicesList();
+        } catch (err) {
+          $("offline-join-status").textContent = String(err);
         }
       });
 
@@ -1930,6 +2197,13 @@
 
       function renderUpdateStatus(st) {
         if (!st) return;
+        // V21-PR06: the backend skips update checks in local-only mode.
+        if (st.status === "skipped_local_only") {
+          $("update-status-label").textContent =
+            "Updates disabled in local-only mode.";
+          $("update-banner").classList.add("hidden");
+          return;
+        }
         const banner = $("update-banner");
         const bannerText = $("update-banner-text");
         const statusLabel = $("update-status-label");
@@ -2050,8 +2324,21 @@
         } catch (err) {}
 
         try {
+          // V21-PR06: apply the persisted network policy at startup so the
+          // send/receive/update UI matches it before Settings is ever opened.
+          const policy = await call(SV.NetworkPolicy + ".GetPolicy");
+          applyPolicyUI(policy || "online");
+        } catch (err) {}
+
+        try {
           const consents = await call(SV.Transfer + ".PendingConsents");
           if (consents && consents.length) showConsentPrompt(consents[0]);
+        } catch (err) {}
+
+        try {
+          // V21-PR06: surface any local incoming transfers already waiting.
+          const localConsents = await call(SV.Local + ".PendingLocalConsents");
+          if (localConsents && localConsents.length) showConsentPrompt(localConsents[0]);
         } catch (err) {}
       })();
     </script>

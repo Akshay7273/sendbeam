@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sendbeam/engine/netpolicy"
 	"github.com/sendbeam/engine/rendezvous"
 	"github.com/sendbeam/engine/transfer"
 	"github.com/sendbeam/wire"
@@ -42,11 +43,13 @@ func executeSend(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	server := fs.String("server", defaultServer, "signaling server URL")
+	networkPolicy := fs.String("network-policy", "", "network path policy: online, prefer-local, local-only (default from config)")
 	insecure := fs.Bool("insecure-skip-verify", false, "skip TLS verification (self-signed dev certs only)")
 	words := fs.Int("words", 0, "number of words in the invite code (0 = default)")
 	var toDevices stringList
 	fs.Var(&toDevices, "to", "send directly to trusted device name, ID, or fingerprint (repeatable or comma-separated)")
 	relayOnly := fs.Bool("relay-only", false, "force the encrypted WebSocket relay")
+	peerAddr := fs.String("peer-addr", "", "peer ip:port for --network-policy=local-only (validated against local interfaces)")
 	var iceServer iceServerList
 	fs.Var(&iceServer, "ice-server", "STUN server URL for direct-path candidates (repeatable; default stun:stun.l.google.com:19302)")
 	privateMode := fs.Bool("private", false, "enable negotiated traffic padding for wire privacy")
@@ -98,7 +101,34 @@ func executeSend(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(toDevices) == 0 {
-		return runSingleInteractiveSend(filePaths, hp, *server, *insecure, *words, *relayOnly, iceServer, *privateMode, *requirePadding, *jitter, *jsonOutput, stdout, stderr)
+		// V21-PR06: resolve the network policy before dispatching.
+		policy, err := resolveNetworkPolicy(*networkPolicy, *configDir)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "sendbeam send: %v\n", err)
+			return 2
+		}
+		return runSingleInteractiveSend(filePaths, hp, *server, *insecure, *words, *relayOnly, iceServer, *privateMode, *requirePadding, *jitter, *jsonOutput, policy, stdout, stderr)
+	}
+
+	// V21-PR06: Local only never touches public infrastructure. A single
+	// target goes through the offline path; multi-target offline broadcast
+	// is not offered — fail loudly instead of silently sending online.
+	policy, err := resolveNetworkPolicy(*networkPolicy, *configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam send: %v\n", err)
+		return 2
+	}
+	if policy == netpolicy.LocalOnly {
+		if len(toDevices) > 1 {
+			_, _ = fmt.Fprintln(stderr, "sendbeam send: --network-policy=local-only supports one --to device at a time (offline broadcast is not available)")
+			return 2
+		}
+		env, err := InitCLIEnvironment(*configDir)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "sendbeam send: %v\n", err)
+			return 1
+		}
+		return runLocalOnlySend(env, filePaths, hp, toDevices[0], *peerAddr, *requirePadding, *privateMode, *jsonOutput, stdout, stderr)
 	}
 
 	return runBroadcastSend(filePaths, hp, toDevices, *server, *insecure, *relayOnly, iceServer, *privateMode, *requirePadding, *jitter, *jsonOutput, *concurrency, *timeout, *configDir, stdout, stderr)
@@ -120,7 +150,17 @@ func handoffKindLabel(kind string) string {
 	return "text"
 }
 
-func runSingleInteractiveSend(filePaths []string, hp handoffPayload, server string, insecure bool, words int, relayOnly bool, iceServer iceServerList, privateMode bool, requirePadding bool, jitter time.Duration, jsonOutput bool, stdout, stderr io.Writer) int {
+func runSingleInteractiveSend(filePaths []string, hp handoffPayload, server string, insecure bool, words int, relayOnly bool, iceServer iceServerList, privateMode bool, requirePadding bool, jitter time.Duration, jsonOutput bool, policy netpolicy.Policy, stdout, stderr io.Writer) int {
+	if policy == netpolicy.LocalOnly {
+		// No invite codes offline: a local-only send needs an explicit
+		// trusted target and its local address.
+		_, _ = fmt.Fprintln(stderr, "sendbeam send: --network-policy=local-only needs --to <trusted device> and --peer-addr <ip:port>")
+		_, _ = fmt.Fprintln(stderr, "hint: run `sendbeam pair-local start` on the receiver, then `sendbeam send --network-policy=local-only --to <device> --peer-addr <addr> <file>`")
+		return 2
+	}
+	if !jsonOutput {
+		_, _ = fmt.Fprintf(stdout, "network policy: %s\n", policy)
+	}
 	ice, err := iceServers(iceServer)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", err)
@@ -283,6 +323,7 @@ func runSingleInteractiveSend(filePaths []string, hp handoffPayload, server stri
 			}
 		},
 		ForceRelay:       relayOnly,
+		DisableRelay:     policy == netpolicy.LocalOnly,
 		Private:          privateMode || requirePadding,
 		RequirePadding:   requirePadding,
 		RelayJitter:      jitter,

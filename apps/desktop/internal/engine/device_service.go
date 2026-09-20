@@ -546,6 +546,29 @@ func (s *DeviceService) GetTombstoneStore() trust.TombstoneStore {
 	return s.tombstones
 }
 
+// DirectEndpointFor returns the live LAN direct endpoint ("ip:port") for a
+// trusted, non-revoked device seen on the LAN within the presence window, or
+// false when the peer has no usable local route (V21-PR06: local-only sends
+// need a real local address, never a guess).
+func (s *DeviceService) DirectEndpointFor(deviceID string) (string, bool) {
+	ctx := context.Background()
+	s.mu.RLock()
+	peer, ok := s.activePeers[deviceID]
+	lastSeen := peer.lastSeen
+	s.mu.RUnlock()
+	if !ok || time.Since(lastSeen) >= 30*time.Second {
+		return "", false
+	}
+	rec, err := s.store.GetDevice(ctx, deviceID)
+	if err != nil || rec == nil || rec.Revoked {
+		return "", false
+	}
+	if s.tombstones != nil && s.tombstones.HasTombstone(ctx, deviceID) {
+		return "", false
+	}
+	return fmt.Sprintf("%s:%d", peer.ip.String(), peer.port), true
+}
+
 func (s *DeviceService) notifyDevicesChanged() {
 	if s.emit == nil {
 		return

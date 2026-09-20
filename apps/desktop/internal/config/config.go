@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/sendbeam/engine/netpolicy"
 )
 
 const (
@@ -47,6 +49,10 @@ type DesktopConfig struct {
 	AutoCheckUpdate bool `json:"autoCheckUpdate"`
 	// RequirePadding mandates traffic padding; transfers with peers lacking padding are rejected fail-closed (V19-PR11).
 	RequirePadding bool `json:"requirePadding"`
+	// NetworkPolicy is the user-selected network path policy: "online",
+	// "prefer-local", or "local-only" (V21-PR06). Local-only disables all
+	// public-network operations (signaling, STUN/TURN, relay, update checks).
+	NetworkPolicy string `json:"networkPolicy"`
 }
 
 // DefaultConfig returns the default safe configuration.
@@ -62,9 +68,9 @@ func DefaultConfig() DesktopConfig {
 		Theme:           "system",
 		UpdateChannel:   "stable",
 		AutoCheckUpdate: true,
+		NetworkPolicy:   "online",
 	}
 }
-
 
 // Validate validates the configuration values.
 func (c *DesktopConfig) Validate() error {
@@ -100,6 +106,11 @@ func (c *DesktopConfig) Validate() error {
 	}
 	if c.Theme != "" && c.Theme != "system" && c.Theme != "dark" && c.Theme != "light" {
 		return fmt.Errorf("invalid theme %q (must be system, dark, or light)", c.Theme)
+	}
+	if c.NetworkPolicy != "" {
+		if _, err := netpolicy.Parse(c.NetworkPolicy); err != nil {
+			return fmt.Errorf("invalid network policy %q: %v", c.NetworkPolicy, err)
+		}
 	}
 	return nil
 }

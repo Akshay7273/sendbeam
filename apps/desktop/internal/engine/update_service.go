@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sendbeam/desktop/internal/config"
+	"github.com/sendbeam/engine/netpolicy"
 	"github.com/sendbeam/engine/updater"
 )
 
@@ -19,7 +20,7 @@ const (
 
 // UpdateStatus represents the desktop application update state exposed to the UI.
 type UpdateStatus struct {
-	State               string `json:"state"` // "idle", "checking", "available", "downloading", "ready_to_restart", "up_to_date", "managed_by_pkg_manager", "error"
+	State               string `json:"state"` // "idle", "checking", "available", "downloading", "ready_to_restart", "up_to_date", "managed_by_pkg_manager", "skipped_local_only", "error"
 	CurrentVersion      string `json:"currentVersion"`
 	LatestVersion       string `json:"latestVersion"`
 	Channel             string `json:"channel"`
@@ -38,7 +39,27 @@ type UpdateService struct {
 	status      UpdateStatus
 	lastCheck   *updater.CheckResult
 	customOpts  []updater.Option
-	mu          sync.RWMutex
+	// policy, when set, reports the current network policy. In local-only
+	// mode update checks are skipped: contacting the update server would be
+	// public egress the user explicitly disabled (V21-PR06).
+	policy func() netpolicy.Policy
+	mu     sync.RWMutex
+}
+
+// SetNetworkPolicyProvider installs the network-policy source used to gate
+// update checks. A nil provider disables the gate.
+func (s *UpdateService) SetNetworkPolicyProvider(p func() netpolicy.Policy) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.policy = p
+}
+
+// localOnly reports whether update checks must be skipped.
+func (s *UpdateService) localOnly() bool {
+	s.mu.RLock()
+	p := s.policy
+	s.mu.RUnlock()
+	return p != nil && p() == netpolicy.LocalOnly
 }
 
 // NewUpdateService creates a new desktop UpdateService.
@@ -131,6 +152,18 @@ func (s *UpdateService) SetChannel(channelStr string) error {
 
 // CheckUpdate checks the update server for a newer release on the configured channel.
 func (s *UpdateService) CheckUpdate(channelStr string) (UpdateStatus, error) {
+	// V21-PR06: local-only means no public egress, including the update
+	// server. Report the skip honestly instead of failing on a blocked dial.
+	if s.localOnly() {
+		s.mu.Lock()
+		s.status.State = "skipped_local_only"
+		s.status.Error = ""
+		s.status.Message = "Update checks are disabled while the network policy is local-only."
+		st := s.status
+		s.mu.Unlock()
+		s.emit(st)
+		return st, nil
+	}
 	if channelStr != "" {
 		if err := s.SetChannel(channelStr); err != nil {
 			return s.GetStatus(), err

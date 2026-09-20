@@ -29,6 +29,7 @@ import (
 	"github.com/sendbeam/desktop/internal/config"
 	"github.com/sendbeam/desktop/internal/engine"
 	"github.com/sendbeam/desktop/internal/lifecycle"
+	"github.com/sendbeam/engine/netpolicy"
 	"github.com/sendbeam/engine/receiver"
 )
 
@@ -112,6 +113,31 @@ func main() {
 		},
 	)
 
+	// V21-PR06: network policy accessors, defined before the services that
+	// need them. The policy is persisted in the desktop config.
+	getPolicy := func() netpolicy.Policy {
+		cfg, err := transferSvc.GetConfig()
+		if err != nil {
+			return netpolicy.Online
+		}
+		p, err := netpolicy.Parse(cfg.NetworkPolicy)
+		if err != nil {
+			return netpolicy.Online
+		}
+		return p
+	}
+	setPolicy := func(p netpolicy.Policy) error {
+		cfg, err := transferSvc.GetConfig()
+		if err != nil {
+			return err
+		}
+		cfg.NetworkPolicy = p.String()
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		return transferSvc.SaveConfig(cfg)
+	}
+
 	deviceSvc, err := engine.NewDeviceService(
 		func(name string, data any) {
 			if app := application.Get(); app != nil && app.Event != nil {
@@ -135,7 +161,7 @@ func main() {
 			if serverURL == "" {
 				serverURL = engine.DefaultServer
 			}
-			if err := transferSvc.StartNativeReceiver(receiver.Config{
+			if err := transferSvc.StartNativeReceiverWithPolicy(receiver.Config{
 				Server:         serverURL,
 				DestDir:        downloadDir,
 				AutoAccept:     false,
@@ -161,13 +187,65 @@ func main() {
 		nil,
 	)
 
+	// V21-PR06: offline services, wired into the shipped app. The network
+	// policy is persisted in the desktop config (see getPolicy/setPolicy
+	// above); the updater consults it so update checks are skipped in
+	// local-only mode.
+	networkPolicySvc := engine.NewNetworkPolicyService(getPolicy, setPolicy)
+	updateSvc.SetNetworkPolicyProvider(getPolicy)
+
+	var localPairingSvc *engine.LocalPairingService
+	var localSvc *engine.LocalService
+	if deviceSvc != nil {
+		localPairingSvc = engine.NewLocalPairingService(deviceSvc.GetIdentityManager(), deviceSvc.GetStore())
+
+		// V21-PR06: the offline transfer endpoint — a persistent LAN
+		// listener serving paired-device receives with no public egress.
+		// It backs the port the LAN presence beacon already advertises.
+		localSvc = engine.NewLocalService(
+			deviceSvc.GetIdentityManager(),
+			deviceSvc.GetStore(),
+			deviceSvc.GetCredentialStore(),
+			deviceSvc.GetTombstoneStore(),
+			func(name string, data any) {
+				if app := application.Get(); app != nil && app.Event != nil {
+					app.Event.Emit(name, data)
+				}
+			},
+		)
+		localSvc.SetDownloadDir(func() string {
+			cfg, err := transferSvc.GetConfig()
+			if err != nil || cfg.DownloadDir == "" {
+				return "."
+			}
+			return cfg.DownloadDir
+		})
+		localSvc.SetRequirePadding(func() bool {
+			cfg, err := transferSvc.GetConfig()
+			return err == nil && cfg.RequirePadding
+		})
+		localSvc.SetPolicy(getPolicy)
+		if p := getPolicy(); p == netpolicy.LocalOnly || p == netpolicy.PreferLocal {
+			if _, err := localSvc.Start(); err != nil {
+				log.Printf("SendBeam Desktop: offline listener failed to start: %v", err)
+			}
+		}
+	}
+
 	services := []application.Service{
 		application.NewService(engine.NewService()),
 		application.NewService(transferSvc),
 		application.NewService(updateSvc),
+		application.NewService(networkPolicySvc),
 	}
 	if deviceSvc != nil {
 		services = append(services, application.NewService(deviceSvc))
+	}
+	if localPairingSvc != nil {
+		services = append(services, application.NewService(localPairingSvc))
+	}
+	if localSvc != nil {
+		services = append(services, application.NewService(localSvc))
 	}
 
 	app := application.New(application.Options{

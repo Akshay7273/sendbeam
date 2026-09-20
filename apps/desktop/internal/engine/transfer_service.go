@@ -27,6 +27,9 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/sendbeam/desktop/internal/config"
 	"github.com/sendbeam/desktop/internal/lifecycle"
+	"github.com/sendbeam/engine/discovery"
+	"github.com/sendbeam/engine/localtransfer"
+	"github.com/sendbeam/engine/netpolicy"
 	"github.com/sendbeam/engine/receiver"
 	"github.com/sendbeam/engine/rendezvous"
 	"github.com/sendbeam/engine/transfer"
@@ -188,6 +191,10 @@ type TransferService struct {
 
 	nativeReceiver       *receiver.Listener
 	nativeReceiverCancel context.CancelFunc
+	// nativeReceiverBase is the receiver config as constructed at startup.
+	// ApplyNetworkPolicy re-derives the live config from it so a policy
+	// change (e.g. to local-only) takes effect without an app restart.
+	nativeReceiverBase *receiver.Config
 
 	deviceService *DeviceService
 
@@ -628,6 +635,134 @@ func (s *TransferService) SendToDevice(paths []string, deviceID string, server s
 
 	go r.runSendTargeted(r.ctx, server, sources, nil, iceServers, peer.opaqueOpts, peer.label, peer.peerDeviceID, "")
 	return Handle{ID: id, Role: "send"}, nil
+}
+
+// SendToDeviceLocal sends files to a trusted device over the LAN only — no
+// signaling server, STUN/TURN, or relay is contacted (V21-PR06). The peer
+// must be a non-revoked trusted device currently seen on the LAN
+// (DeviceService presence); otherwise the send fails closed with a clear
+// error instead of falling back to public infrastructure.
+func (s *TransferService) SendToDeviceLocal(paths []string, deviceID string) (Handle, error) {
+	if len(paths) == 0 {
+		return Handle{}, errors.New("no files or folders selected")
+	}
+	if err := validatePaths(paths); err != nil {
+		return Handle{}, err
+	}
+	peer, err := s.resolveTargetedPeer(deviceID)
+	if err != nil {
+		return Handle{}, err
+	}
+	ds := s.DeviceService()
+	if ds == nil {
+		return Handle{}, errors.New("device service not available")
+	}
+	endpoint, ok := ds.DirectEndpointFor(deviceID)
+	if !ok {
+		return Handle{}, fmt.Errorf("device %q is not reachable on the local network (no live LAN endpoint); local-only send refuses any online fallback", peer.label)
+	}
+
+	sources, total, err := transfer.NewOSFileSources(paths)
+	if err != nil {
+		return Handle{}, err
+	}
+
+	id := s.newID()
+	r := s.newRun(id, wire.RoleOfferer)
+	for _, src := range sources {
+		meta := src.Meta()
+		r.mu.Lock()
+		r.files = append(r.files, FileInfo{Name: meta.Name, Size: meta.Size})
+		r.totalBytes += meta.Size
+		r.mu.Unlock()
+	}
+	_ = total
+
+	go r.runSendLocal(r.ctx, sources, peer, endpoint)
+	return Handle{ID: id, Role: "send"}, nil
+}
+
+// runSendLocal drives one local-only offerer transfer through
+// packages/engine/localtransfer, mirroring runSendTargeted's progress and
+// event flow. The peer endpoint was validated against the interface-derived
+// route policy before dialing.
+func (r *transferRun) runSendLocal(ctx context.Context, sources []wire.FileSource, peer *targetedPeer, endpoint string) {
+	defer r.svc.remove(r)
+
+	lastProgress := time.Time{}
+	emitProgress := func() {
+		now := time.Now()
+		if now.Sub(lastProgress) < 200*time.Millisecond {
+			return
+		}
+		lastProgress = now
+		r.publish("progress")
+	}
+
+	// Route gate: the discovered LAN endpoint must validate against the
+	// local interfaces. A stale or spoofed presence entry pointing
+	// off-LAN fails closed here.
+	tab := discovery.NewCandidateTable(discovery.RoutePolicy{AllowLoopback: true}, 16, 5*time.Minute)
+	if _, err := tab.AddManual(peer.peerDeviceID, endpoint); err != nil {
+		r.fail("local endpoint rejected: " + err.Error())
+		return
+	}
+
+	requirePadding := r.svc.requirePaddingConfig() || r.svc.isDeviceRequirePadding(peer.peerDeviceID)
+
+	out, err := localtransfer.Transfer(ctx, localtransfer.Options{
+		Identity:       peer.opaqueOpts.LocalIdentity,
+		Store:          r.svc.DeviceService().GetStore(),
+		Resolver:       r.svc.DeviceService().GetCredentialStore(),
+		Table:          tab,
+		PeerDeviceID:   peer.peerDeviceID,
+		PeerLabel:      peer.label,
+		Role:           rendezvous.RoleOfferer,
+		Sources:        sources,
+		RequirePadding: requirePadding,
+		Private:        requirePadding,
+		OnTransport:    r.onTransport,
+		OnConnect:      func() { r.publish("connect") },
+		OnProgress: func(n int64) {
+			r.mu.Lock()
+			r.doneBytes = n
+			r.recordSample(n)
+			r.mu.Unlock()
+			emitProgress()
+		},
+	})
+	if err != nil {
+		r.fail(err.Error())
+		if r.svc.notifier != nil {
+			r.svc.notifier.NotifyFailure("Transfer Failed", err.Error())
+		}
+		return
+	}
+
+	r.mu.Lock()
+	var done int64
+	for i, f := range out.Files {
+		done += f.Size
+		if i < len(r.files) {
+			r.files[i].Size = f.Size
+		}
+	}
+	r.doneBytes = done
+	r.filesDone = len(out.Files)
+	if out.Handshake != nil {
+		r.fingerprint = fingerprint(out.Handshake.Master)
+	}
+	r.mu.Unlock()
+
+	r.publish("done", func(ev *TransferEvent) {
+		ev.Digest = out.Digest
+		ev.Percent = 100
+	})
+
+	if r.svc.notifier != nil {
+		summary := fmt.Sprintf("Sent %d file(s) (%s) to %s over the local network", len(out.Files), humanBytes(r.totalBytes), peer.label)
+		r.svc.notifier.NotifySuccess("Transfer Complete", summary, "")
+	}
 }
 
 // SendHandoffToDevice sends an explicit encrypted text or link handoff to a
@@ -1193,6 +1328,47 @@ func (s *TransferService) Shutdown(timeout time.Duration) error {
 	}
 
 	return nil
+}
+
+// StartNativeReceiverWithPolicy starts the background listener from a base
+// config, then applies the persisted network policy: in local-only mode the
+// public signaling rendezvous is not started (LAN discovery only), so the
+// background receiver performs zero public egress (V21-PR06). The base
+// config is retained so ApplyNetworkPolicy can re-apply on policy changes.
+func (s *TransferService) StartNativeReceiverWithPolicy(base receiver.Config) error {
+	s.mu.Lock()
+	cp := base
+	s.nativeReceiverBase = &cp
+	s.mu.Unlock()
+	return s.ApplyNetworkPolicy()
+}
+
+// ApplyNetworkPolicy restarts the background receiver so its network
+// behavior matches the persisted policy. Safe to call when the receiver was
+// never started (it just records the policy for the next start).
+func (s *TransferService) ApplyNetworkPolicy() error {
+	policy := netpolicy.Online
+	if cfg, err := s.GetConfig(); err == nil {
+		if p, perr := netpolicy.Parse(cfg.NetworkPolicy); perr == nil {
+			policy = p
+		}
+	}
+	s.mu.Lock()
+	base := s.nativeReceiverBase
+	s.mu.Unlock()
+	if base == nil {
+		return nil
+	}
+	live := *base
+	if policy == netpolicy.LocalOnly {
+		// No public rendezvous: the listener keeps LAN discovery only.
+		live.Server = ""
+		live.Dialer = nil
+	}
+	if err := s.StopNativeReceiver(); err != nil {
+		return err
+	}
+	return s.StartNativeReceiver(live)
 }
 
 // StartNativeReceiver starts the background listener using the shared native receiver package.
