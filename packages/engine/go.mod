@@ -6,6 +6,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/pion/webrtc/v4 v4.2.20
 	github.com/sendbeam/wire v0.0.0
+	golang.org/x/sys v0.46.0
 )
 
 require (
@@ -29,7 +30,6 @@ require (
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )
 
