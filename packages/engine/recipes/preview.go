@@ -59,7 +59,11 @@ func Preview(r Recipe) string {
 func triggerText(r Recipe) string {
 	switch r.Trigger.Kind {
 	case TriggerWatch:
-		return "watch (parameters reserved; not active in schema v1)"
+		if wp, err := ParseWatchParams(r.Trigger.Watch); err == nil {
+			return fmt.Sprintf("watch (debounce %s, cooldown %s, recursive subdirectories: %v)",
+				wp.Debounce, wp.Cooldown, wp.Recursive)
+		}
+		return "watch (invalid parameters)"
 	case TriggerSchedule:
 		return "schedule (parameters reserved; not active in schema v1)"
 	default:

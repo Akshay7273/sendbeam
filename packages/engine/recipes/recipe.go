@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -22,8 +23,9 @@ import (
 
 // RecipeSchemaVersion is the current Recipe schema. Readers refuse
 // (quarantine) records whose schema they do not understand rather than
-// truncating them. Watch/schedule trigger detail lands in a later PR with
-// a schema bump if the wire shape has to change.
+// truncating them. Watch trigger detail (V22-PR04) validated inside the
+// existing trigger.watch map shape, so no schema bump was needed;
+// schedule detail (V22-PR05) may need one if its wire shape changes.
 const RecipeSchemaVersion = 1
 
 // RecipeStatus is the lifecycle state of a recipe.
@@ -81,12 +83,13 @@ type RecipeRunInfo struct {
 
 // TriggerReason names what started a recipe dispatch. Manual is the human
 // at the keyboard; watch, schedule and retry are automated reasons that
-// the native routine runner (V22-PR03) serves. Watch and schedule trigger
-// sources arrive in V22-PR04/PR05 — the runner API is ready for them.
+// the native routine runner (V22-PR03) serves. Watch trigger sources
+// arrived in V22-PR04; schedule sources arrive in V22-PR05.
 type TriggerReason string
 
-// Trigger kinds. "watch" and "schedule" detail lands in V22-PR04/PR05;
-// until then their reserved parameter maps must be empty (PR01).
+// Trigger kinds. "schedule" detail lands in V22-PR05; until then its
+// reserved parameter map must be empty. Watch parameters are validated by
+// ParseWatchParams.
 const (
 	TriggerManual   TriggerReason = "manual"
 	TriggerWatch    TriggerReason = "watch"
@@ -112,13 +115,155 @@ type RecipeRecipient struct {
 	Label    string `json:"label"`
 }
 
-// RecipeTrigger describes what may start a run. Watch and Schedule are
-// reserved parameter maps for V22-PR04/PR05; they MUST be empty in PR01
-// and validation rejects non-empty maps.
+// RecipeTrigger describes what may start a run. Watch carries the
+// debounce/cooldown parameters defined below (V22-PR04); Schedule stays a
+// reserved parameter map until V22-PR05 and must be empty.
 type RecipeTrigger struct {
 	Kind     TriggerReason  `json:"kind"`
 	Watch    map[string]any `json:"watch,omitempty"`
 	Schedule map[string]any `json:"schedule,omitempty"`
+}
+
+// Watch trigger parameter keys and their bounds. The watched roots are
+// always the recipe's own sources — explicitly composed by the user —
+// never anything the watcher discovers on its own.
+const (
+	// WatchParamDebounceMS names the quiet window (milliseconds) after the
+	// last filesystem event before a debounced dispatch fires.
+	WatchParamDebounceMS = "debounce_ms"
+	// WatchParamCooldownMS names the minimum interval (milliseconds)
+	// between two dispatches of the same recipe (flap protection).
+	WatchParamCooldownMS = "cooldown_ms"
+	// WatchParamRecursive names whether subdirectories of source roots are
+	// watched. When false, only top-level events arm the debounce timer;
+	// the resolver's per-source Recursive flag still governs what a
+	// dispatch actually sends.
+	WatchParamRecursive = "recursive"
+
+	// DefaultWatchDebounce is the quiet window when debounce_ms is unset.
+	DefaultWatchDebounce = 2000 * time.Millisecond
+	// MinWatchDebounce / MaxWatchDebounce bound debounce_ms.
+	MinWatchDebounce = 250 * time.Millisecond
+	MaxWatchDebounce = 60000 * time.Millisecond
+	// DefaultWatchCooldown is the flap-protection interval when
+	// cooldown_ms is unset.
+	DefaultWatchCooldown = 10000 * time.Millisecond
+	// MinWatchCooldown / MaxWatchCooldown bound cooldown_ms. Zero is
+	// allowed: it disables flap protection.
+	MinWatchCooldown = 0 * time.Millisecond
+	MaxWatchCooldown = 3600000 * time.Millisecond
+	// DefaultWatchRecursive is the subdirectory-watching default when the
+	// recursive flag is unset.
+	DefaultWatchRecursive = true
+)
+
+// WatchParams is the parsed, validated v1 watch trigger configuration.
+type WatchParams struct {
+	// Debounce is the quiet window after the last filesystem event before
+	// dispatching.
+	Debounce time.Duration
+	// Cooldown is the minimum interval between two dispatches of the same
+	// recipe.
+	Cooldown time.Duration
+	// Recursive reports whether subdirectories of source roots are
+	// watched. It governs *detection* scope only: what a dispatch sends
+	// is still governed by each source's own Recursive flag at resolve
+	// time. A subdir change can therefore trigger a dispatch whose plan
+	// contains only top-level files — wasteful but never wrong.
+	Recursive bool
+}
+
+// ParseWatchParams validates a raw trigger.watch parameter map and
+// returns the effective configuration with defaults applied. It fails
+// closed: unknown keys, non-JSON-number/bool values, fractional
+// milliseconds and out-of-range values are all rejected. A nil or empty
+// map yields the defaults.
+func ParseWatchParams(watch map[string]any) (WatchParams, error) {
+	wp := WatchParams{
+		Debounce:  DefaultWatchDebounce,
+		Cooldown:  DefaultWatchCooldown,
+		Recursive: DefaultWatchRecursive,
+	}
+	for key, val := range watch {
+		switch key {
+		case WatchParamDebounceMS:
+			ms, err := watchParamMillis(key, val)
+			if err != nil {
+				return WatchParams{}, err
+			}
+			d := time.Duration(ms) * time.Millisecond
+			if d < MinWatchDebounce || d > MaxWatchDebounce {
+				return WatchParams{}, wire.Errorf(wire.CodeStorage,
+					"recipes: trigger.watch debounce_ms %d out of range [%d, %d]",
+					ms, MinWatchDebounce.Milliseconds(), MaxWatchDebounce.Milliseconds())
+			}
+			wp.Debounce = d
+		case WatchParamCooldownMS:
+			ms, err := watchParamMillis(key, val)
+			if err != nil {
+				return WatchParams{}, err
+			}
+			d := time.Duration(ms) * time.Millisecond
+			if d < MinWatchCooldown || d > MaxWatchCooldown {
+				return WatchParams{}, wire.Errorf(wire.CodeStorage,
+					"recipes: trigger.watch cooldown_ms %d out of range [%d, %d]",
+					ms, MinWatchCooldown.Milliseconds(), MaxWatchCooldown.Milliseconds())
+			}
+			wp.Cooldown = d
+		case WatchParamRecursive:
+			b, ok := val.(bool)
+			if !ok {
+				return WatchParams{}, wire.Errorf(wire.CodeStorage,
+					"recipes: trigger.watch recursive must be a JSON boolean, got %T", val)
+			}
+			wp.Recursive = b
+		default:
+			return WatchParams{}, wire.Errorf(wire.CodeStorage,
+				"recipes: unknown trigger.watch parameter %q (supported: debounce_ms, cooldown_ms, recursive)", key)
+		}
+	}
+	return wp, nil
+}
+
+// watchParamMillis converts a JSON number parameter to whole milliseconds.
+// Fractional values are rejected: sub-millisecond debounce/cooldown is
+// meaningless and usually a units bug (seconds passed as milliseconds).
+func watchParamMillis(key string, val any) (int64, error) {
+	var f float64
+	switch v := val.(type) {
+	case float64:
+		f = v
+	case float32:
+		f = float64(v)
+	case int:
+		f = float64(v)
+	case int8:
+		f = float64(v)
+	case int16:
+		f = float64(v)
+	case int32:
+		f = float64(v)
+	case int64:
+		f = float64(v)
+	case uint:
+		f = float64(v)
+	case uint8:
+		f = float64(v)
+	case uint16:
+		f = float64(v)
+	case uint32:
+		f = float64(v)
+	case uint64:
+		f = float64(v)
+	default:
+		return 0, wire.Errorf(wire.CodeStorage,
+			"recipes: trigger.watch %s must be a JSON number, got %T", key, val)
+	}
+	if f != float64(int64(f)) {
+		return 0, wire.Errorf(wire.CodeStorage,
+			"recipes: trigger.watch %s must be whole milliseconds, got %v", key, val)
+	}
+	return int64(f), nil
 }
 
 // RecipeBudgets caps what one recipe may consume. Budgets are material
@@ -278,6 +423,29 @@ func (r Recipe) ScopeHash() string {
 	}
 	h.writeString("trigger")
 	h.writeString(string(r.Trigger.Kind))
+	if r.Trigger.Kind == TriggerWatch {
+		// Watch configuration is material scope: changing debounce,
+		// cooldown or recursion revokes the automation grant through the
+		// normal ApplyUpdate material-change rule.
+		h.writeString("triggerWatch")
+		if wp, err := ParseWatchParams(r.Trigger.Watch); err == nil {
+			h.writeInt64(wp.Debounce.Milliseconds())
+			h.writeInt64(wp.Cooldown.Milliseconds())
+			h.writeBool(wp.Recursive)
+		} else {
+			// An unvalidated record: validation rejects it, but the hash
+			// must still be deterministic, so hash the raw map canonically.
+			keys := make([]string, 0, len(r.Trigger.Watch))
+			for k := range r.Trigger.Watch {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				h.writeString(k)
+				h.writeString(fmt.Sprintf("%v", r.Trigger.Watch[k]))
+			}
+		}
+	}
 	p, err := netpolicy.Parse(r.NetworkPolicy)
 	if err != nil {
 		p = netpolicy.Online
@@ -437,10 +605,17 @@ func validateRecipe(r Recipe, requireContent bool) error {
 	default:
 		return wire.Errorf(wire.CodeStorage, "recipes: unknown trigger kind %q", r.Trigger.Kind)
 	}
-	// PR01: watch/schedule detail is not designed yet; the reserved maps
-	// must be empty so no unreviewed trigger semantics can sneak in.
-	if len(r.Trigger.Watch) > 0 {
-		return wire.Errorf(wire.CodeStorage, "recipes: trigger.watch parameters are not supported in schema version 1 (watch detail lands in a later PR)")
+	// Watch parameters are validated when the trigger kind is "watch"; a
+	// non-empty watch map on any other kind is meaningless and rejected
+	// fail-closed. Schedule detail is still reserved (V22-PR05): its map
+	// must be empty.
+	if r.Trigger.Kind == TriggerWatch {
+		if _, err := ParseWatchParams(r.Trigger.Watch); err != nil {
+			return err
+		}
+	} else if len(r.Trigger.Watch) > 0 {
+		return wire.Errorf(wire.CodeStorage,
+			"recipes: trigger.watch parameters require trigger kind \"watch\", got %q", r.Trigger.Kind)
 	}
 	if len(r.Trigger.Schedule) > 0 {
 		return wire.Errorf(wire.CodeStorage, "recipes: trigger.schedule parameters are not supported in schema version 1 (schedule detail lands in a later PR)")

@@ -55,12 +55,12 @@ whether the scope hash still matches) and the last-run ledger entry.
 
 Every dispatch attempt records what started it:
 
-| Reason     | Meaning                                                                          |
-| ---------- | -------------------------------------------------------------------------------- |
-| `manual`   | The human at the keyboard (CLI `run`, desktop Run now). Never needs a grant.     |
-| `watch`    | A watched-folder trigger fired. Needs a valid grant. Sources arrive in V22-PR04. |
-| `schedule` | A schedule fired. Needs a valid grant. Sources arrive in V22-PR05.               |
-| `retry`    | Re-attempt of a previously refused/failed automated run. Needs a valid grant.    |
+| Reason     | Meaning                                                                       |
+| ---------- | ----------------------------------------------------------------------------- |
+| `manual`   | The human at the keyboard (CLI `run`, desktop Run now). Never needs a grant.  |
+| `watch`    | A watched-folder trigger fired (V22-PR04). Needs a valid grant.               |
+| `schedule` | A schedule fired. Needs a valid grant. Sources arrive in V22-PR05.            |
+| `retry`    | Re-attempt of a previously refused/failed automated run. Needs a valid grant. |
 
 Disabled recipes refuse **every** trigger reason, including manual.
 Approval-required recipes refuse automated reasons until re-approved (and
@@ -97,10 +97,90 @@ job id if one was enqueued, the outcome, and a short detail. Nothing is
 ever silent, and the routine-management UI (V22-PR06) reads this ledger for
 recent decisions. `sendbeam recipe show <id>` prints it.
 
-Watch and schedule trigger _sources_ arrive in V22-PR04/PR05 — the runner
-API is ready for them; until then the `watch`/`schedule` trigger
-parameters stay reserved and rejected, and only manual (and retry, via the
-API) dispatches occur.
+Watch trigger _sources_ arrived in V22-PR04 (below); schedule sources
+still arrive in V22-PR05 — until then the `schedule` trigger parameters
+stay reserved and rejected.
+
+## Watched-folder triggers (V22-PR04)
+
+A recipe with trigger kind `watch` turns explicitly selected new/changed
+files into ordinary one-way delivery jobs. This is **not sync**: it never
+mirrors deletions, never overwrites on the receiver by sender authority,
+and never watches received output — source deletion never deletes remote
+files.
+
+**How it works.** A `Watcher` (native OS events via `fsnotify`)
+observes the recipe's own sources — nothing else. On create/write/rename/
+chmod inside the watched scope it re-arms a **debounce** timer; when the
+window goes quiet it asks the routine runner for one `watch` dispatch —
+unless the **cooldown** window since the last attempt has not elapsed, in
+which case the burst is skipped (flap protection). The watcher **never
+sends files and never reads file contents**; each dispatch re-loads the
+recipe, re-validates the grant, status, expiry, recipient trust, and
+budgets, re-resolves the sources fresh (with symlink-escape protection),
+and enqueues exactly one ordinary outbox job.
+
+**Trigger parameters** (`trigger.watch` in the recipe JSON; shown by
+`sendbeam recipe show`):
+
+| Parameter     | Default | Range       | Meaning                                                  |
+| ------------- | ------- | ----------- | -------------------------------------------------------- |
+| `debounce_ms` | 2000    | 250 – 60000 | Quiet window after the last fs event before dispatching. |
+| `cooldown_ms` | 10000   | 0 – 3600000 | Minimum interval between two dispatches of the recipe.   |
+| `recursive`   | true    | —           | Watch subdirectories of source roots.                    |
+
+Parameters must be JSON numbers/booleans; unknown keys are rejected
+fail-closed. Watch configuration is **material scope**: changing any of
+these revokes the auto-send grant through the normal material-change rule
+(consent version bumped, status back to `approval-required`).
+
+**What triggers a run — and what doesn't:**
+
+- In-scope create/write/rename/chmod events trigger (after debounce).
+  Rename counts as a create of the new name; editor save bursts coalesce
+  into one dispatch.
+- Remove events are ignored — the resolver runs fresh at dispatch anyway.
+- Events for paths the resolver would exclude (include/exclude filters)
+  never arm the timer; neither do events outside the watched roots.
+- Symlink escapes are ignored: a path resolving outside its source root
+  can never arm the timer, and the resolver independently skips such
+  files at dispatch. Symlinked directories are never watched.
+- The watch-level `recursive` flag governs **detection** scope only; each
+  source's own `Recursive` flag still governs what a dispatch **sends**.
+  (A subdir change with a non-recursive source can trigger a dispatch
+  whose plan holds only top-level files — wasteful but never wrong.)
+- The debounce window is also the stability mechanism: a file still being
+  written keeps generating events, so the quiet window only starts once
+  writes settle. Stability is not proven — a file changed between resolve
+  and read fails or defers at the transfer layer, never as a falsely
+  verified delivery.
+
+**Grant requirement.** A watch without a grant never starts:
+`Start` fails fast when the recipe is disabled, still approval-required,
+or lacks a valid auto-send grant. Revoking the grant (or a material
+change) mid-watch makes the next debounced dispatch refuse, recorded in
+the last-run ledger.
+
+**Foreground vs desktop-hosted.** `sendbeam recipe watch <id>` runs the
+watcher in the foreground until Ctrl+C and prints what it sees
+(`change detected in <root>, waiting for quiet…`, `dispatching…`,
+`dispatched job <id>`, refusal reasons). The desktop hosts watchers
+in-process via `RecipeService.StartWatch` / `StopWatch` / `IsWatching` —
+per-process by design: watches live only as long as the desktop process
+does. There is no daemon yet (packaging is V22-PR08 scope); the CLI
+foreground command covers headless use.
+
+**Limitations:**
+
+- No cross-device watching: only local paths the user composed into the
+  recipe are observed.
+- No missed-event reconciliation scan yet: events missed while the
+  watcher is down (process not running, OS event overflow) do not
+  backfill — the next observed change dispatches the then-current tree.
+- No guaranteed capture of every historical version: rapid
+  create-then-delete inside one debounce window may never dispatch.
+- Watcher permission errors surface explicitly instead of watching
+  nothing silently.
 
 ## The one-shot workflow
 
@@ -210,6 +290,7 @@ sendbeam recipe grant <id>
 sendbeam recipe revoke <id>
 sendbeam recipe preview <id> [--json]
 sendbeam recipe run <id> [--json]
+sendbeam recipe watch <id>
 sendbeam recipe export <id> [--out FILE]
 sendbeam recipe import <file>
 ```
@@ -225,17 +306,22 @@ The desktop app exposes the same operations through the Wails-bound
 `RunRecipe` (returns the job id), `ApproveRecipe`, `GrantAutomation`,
 `RevokeAutomation`, `LastRun`, `DeleteRecipe` — all
 backed by the same engine functions as the CLI, sharing the desktop trust
-store and the production outbox. The `Recipe` DTO carries the automation
+store and the production outbox. Watched-folder triggers are hosted
+in-process via `StartWatch(id)`, `StopWatch(id)`, `IsWatching(id)`
+(per-process: no daemon yet). The `Recipe` DTO carries the automation
 grant and the last-run ledger entry. Frontend UI markup is pending: this repo
 carries no TypeScript source for the desktop frontend (only the built
 `dist/`), so the bindings are the complete service surface for now.
 
-## Limitations (V22-PR03 scope)
+## Limitations (V22-PR04 scope)
 
-- **No watcher or scheduler yet.** The runner API accepts `watch` and
-  `schedule` trigger reasons and enforces their grants, but the trigger
-  sources themselves arrive in V22-PR04/PR05; the `watch`/`schedule`
-  trigger parameters are reserved and rejected until then.
+- **No scheduler yet.** The runner API accepts the `schedule` trigger
+  reason and enforces its grant, but schedule trigger sources arrive in
+  V22-PR05; the `schedule` trigger parameters are reserved and rejected
+  until then.
+- **No daemon.** Watchers are per-process: the CLI foreground command
+  and the desktop-hosted watchers both end when their process ends.
+  Missed events while down do not backfill.
 - **Auto-dispatch needs an explicit grant.** Nothing runs automatically
   without `sendbeam recipe grant <id>` (or the desktop equivalent), and
   any material change revokes it.
