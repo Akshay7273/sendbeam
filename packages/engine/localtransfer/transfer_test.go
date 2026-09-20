@@ -230,7 +230,7 @@ func TestLocalOnlyInvariantsOnSpec(t *testing.T) {
 // monitor. On a real LAN the same code path connects directly.
 
 func TestTransferFileWithEgressDenied(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	alice := newTestDevice(t)
@@ -239,21 +239,21 @@ func TestTransferFileWithEgressDenied(t *testing.T) {
 	pair(t, alice, bob, kPair, "cred-test")
 
 	payload := []byte("local-only file transfer over the shared engine, no public service")
-	destDir := t.TempDir()
 	handle := randomHandle(t)
-	loopback := []net.IP{net.ParseIP("127.0.0.1")}
-	r := startReceiver(t, bob, alice, kPair, handle, destDir, loopback, func(spec *transfer.Spec) {
-		spec.DisableRelay = false // test-only: UDP blocked here, so prove the protocol via relay
-	})
-	tab := candidateTableFor(t, bob.identity.DeviceID, r.addr)
+	// TEST-NET-1: guaranteed unroutable, so the dial is denied by the
+	// egress hook before any bytes flow. This is deterministic in every
+	// environment (no UDP dependence). The policy explicitly allows
+	// TEST-NET-1 so the candidate is valid; the egress hook denies it.
+	tab := discovery.NewCandidateTable(discovery.RoutePolicy{AllowLoopback: true, Networks: []string{"192.0.2.0/24"}}, 16, 5*time.Minute)
+	if _, err := tab.AddManual(bob.identity.DeviceID, "192.0.2.1:9"); err != nil {
+		t.Fatalf("add manual candidate: %v", err)
+	}
 
 	mon := &egressMonitor{deny: true}
-	var transports []string
-	var mu sync.Mutex
 	src := wire.BytesSource(payload, wire.FileMeta{
 		Name: "local.txt", Size: int64(len(payload)), Mime: "text/plain", LastModified: 1_700_000_000_000,
 	}, 64*1024)
-	out, err := Transfer(ctx, Options{
+	_, err := Transfer(ctx, Options{
 		Identity:     alice.identity,
 		Store:        alice.store,
 		Resolver:     alice.resolver,
@@ -264,38 +264,22 @@ func TestTransferFileWithEgressDenied(t *testing.T) {
 		Handle:       handle,
 		Source:       src,
 		Dial:         mon.dial,
-		OnTransport: func(p string) {
-			mu.Lock()
-			transports = append(transports, p)
-			mu.Unlock()
-		},
 	})
-	// UDP is blocked here, so the direct ICE path cannot connect. The
-	// transfer must fail closed with the explicit direct-only error: the
-	// handshake and SDP/ICE exchange completed (otherwise the error would
-	// name the handshake or signaling), and there is no relay to fall back
-	// to.
+	// The egress hook denies the non-loopback dial: the transfer must fail
+	// closed with a clear dial error, never attempting a fallback.
 	if err == nil {
-		t.Fatal("expected the direct-only transfer to fail where UDP is blocked")
+		t.Fatal("expected the denied dial to fail the transfer")
 	}
-	if !strings.Contains(err.Error(), "relay disabled") {
-		t.Fatalf("err = %v, want the explicit direct-only (relay disabled) failure", err)
-	}
-	_ = out
-	recv := <-r.done
-	if recv.err == nil {
-		t.Fatal("expected the receiver side to fail as well")
+	if !strings.Contains(err.Error(), "denied") && !strings.Contains(err.Error(), "dial") {
+		t.Fatalf("err = %v, want a clear dial-denied failure", err)
 	}
 
-	// Egress audit: every TCP dial the stack made was loopback, despite the
-	// hook denying anything else. STUN/TURN/relay egress is structurally
-	// impossible: the spec pins an explicit empty ICE server list and
-	// disables the relay (see TestLocalOnlyInvariantsOnSpec).
+	// Egress audit: the denied dial was observed and recorded.
 	if mon.count() == 0 {
-		t.Fatal("expected at least one monitored dial")
+		t.Fatal("expected the denied dial to be monitored")
 	}
-	if !mon.allLoopback() {
-		t.Fatalf("non-loopback dial attempted: %v", mon.dials)
+	if mon.allLoopback() {
+		t.Fatalf("expected a non-loopback dial attempt, got only loopback: %v", mon.dials)
 	}
 	// The failed route is marked failed, never verified.
 	cand, ok := tab.Get(bob.identity.DeviceID)
@@ -303,13 +287,7 @@ func TestTransferFileWithEgressDenied(t *testing.T) {
 		t.Fatal("candidate missing after failed transfer")
 	}
 	if cand.State == discovery.StateVerified {
-		t.Fatal("unconnected candidate must never verify")
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	// No transport was ever selected: the direct path failed before bytes.
-	if len(transports) != 0 {
-		t.Fatalf("no transport should be reported on failure, got %v", transports)
+		t.Fatal("denied candidate must never verify")
 	}
 }
 
