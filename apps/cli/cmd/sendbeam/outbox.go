@@ -319,7 +319,7 @@ func runOutboxDispatch(args []string, stdout, stderr io.Writer) int {
 		concurrencyLimit = 1
 	}
 	perTarget := *timeout
-	sender := func(ctx context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) outbox.SendOutcome {
+	sender := func(ctx context.Context, _ jobs.Job, attempt jobs.RecipientAttempt, paths []string) outbox.SendOutcome {
 		return outboxTargetSend(ctx, env, localID, attempt, paths, cfg, perTarget)
 	}
 	ob := outbox.New(store, sender)
@@ -393,7 +393,7 @@ func outboxTargetSend(ctx context.Context, env *CLIEnvironment, localID *wire.De
 	res := transfer.RunBroadcast(tctx, targets, transfer.BroadcastOptions{
 		Concurrency:   1,
 		TargetTimeout: perTarget,
-		OnTargetProgress: func(id string, bytes int64) {
+		OnTargetProgress: func(_ string, bytes int64) {
 			transferred = bytes
 		},
 	})
