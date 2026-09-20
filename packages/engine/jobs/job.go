@@ -409,6 +409,20 @@ func MarkInterruptedAfterCrash(j *Job, now time.Time) int {
 	return n
 }
 
+// QueueJob moves a draft job to queued so a dispatcher may pick it up. Only
+// draft jobs may be queued; every other state fails closed. The outbox calls
+// this exactly once at enqueue time — jobs never return to draft.
+func QueueJob(j *Job, now time.Time) error {
+	now = now.UTC()
+	if j.Status != JobDraft {
+		return wire.Errorf(wire.CodeStorage,
+			"jobs: cannot queue job in status %q (only draft jobs may be queued)", j.Status)
+	}
+	j.Status = JobQueued
+	j.UpdatedAt = now
+	return nil
+}
+
 // NewJob constructs a validated job in draft state.
 func NewJob(jobID string, files []JobFile, attempts []RecipientAttempt, policy RetryPolicy, now time.Time) (Job, error) {
 	if !isLowerHex32(jobID) {
