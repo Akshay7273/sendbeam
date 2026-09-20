@@ -46,6 +46,10 @@ func main() {
 		os.Exit(runDevices(os.Args[2:]))
 	case "pair":
 		os.Exit(runPair(os.Args[2:]))
+	case "pair-local":
+		os.Exit(runPairLocal(os.Args[2:]))
+	case "config":
+		os.Exit(runConfig(os.Args[2:]))
 	case "unpair":
 		os.Exit(runUnpair(os.Args[2:]))
 	case "listen":
