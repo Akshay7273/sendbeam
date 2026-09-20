@@ -228,11 +228,19 @@ func isLowerHex(s string, n int) bool {
 // same bytes EncodeControl produces), so it is byte-identical across Go and TypeScript and
 // pins the file set a journal's checkpoints refer to. It is a binding claim, not a trust
 // anchor: resume validation (PR06/PR07) binds it against authenticated transfer state.
+//
+// V22-PR06: the advisory provenance label is explicitly EXCLUDED from the
+// fingerprint. The fingerprint binds the file set — geometry, digests,
+// content-kind envelope — and the same bytes sent by a different routine
+// (or by hand, with no provenance at all) must fingerprint identically so
+// resume journals and sender records keep working unchanged. Provenance is
+// a display label, never file-set identity.
 func ManifestFingerprint(manifest Manifest) (string, error) {
 	validated, err := ValidateManifest(manifest)
 	if err != nil {
 		return "", err
 	}
+	validated.Provenance = nil
 	encoded, err := EncodeControl(&validated)
 	if err != nil {
 		return "", err

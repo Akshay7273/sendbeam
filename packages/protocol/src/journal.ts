@@ -207,10 +207,19 @@ function validateEnvelope(e: JournalResumeSecret, label: string): void {
  * Canonical SHA-256 (hex) of a validated manifest — the same bytes JSON.stringify
  * produces for the canonical manifest, byte-identical to the Go twin, so it pins the
  * file set a journal's checkpoints refer to. A binding claim, not a trust anchor.
+ *
+ * V22-PR06: the advisory provenance label is explicitly EXCLUDED from the
+ * fingerprint. The fingerprint binds the file set, and the same bytes sent
+ * by a different routine (or by hand, with no provenance at all) must
+ * fingerprint identically so resume journals keep working unchanged.
  */
 export async function manifestFingerprint(manifest: Manifest): Promise<string> {
   const canonical = validateManifest(manifest);
-  return bytesToHex(await sha256(utf8(JSON.stringify(canonical))));
+  // The advisory provenance label is dropped before hashing: the
+  // fingerprint binds the file set, not the routine that sent it.
+  const withoutProvenance: Manifest = { ...canonical };
+  delete withoutProvenance.provenance;
+  return bytesToHex(await sha256(utf8(JSON.stringify(withoutProvenance))));
 }
 
 async function fingerprintFromFiles(

@@ -28,7 +28,7 @@ type watchEnqueuer struct {
 	recipients []EnqueueRecipient
 }
 
-func (f *watchEnqueuer) Enqueue(_ context.Context, paths []string, recipients []EnqueueRecipient, _ jobs.RetryPolicy, _ netpolicy.Policy) (jobs.Job, error) {
+func (f *watchEnqueuer) Enqueue(_ context.Context, paths []string, recipients []EnqueueRecipient, _ jobs.RetryPolicy, _ netpolicy.Policy, _ *wire.Provenance) (jobs.Job, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++

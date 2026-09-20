@@ -61,6 +61,11 @@ type Options struct {
 	PeerLabel string
 	// Role is rendezvous.RoleOfferer (send) or rendezvous.RoleJoiner (receive).
 	Role rendezvous.Role
+	// Provenance is the advisory routine origin label (V22-PR06): nil for
+	// ordinary one-off sends. It is stamped on the wire manifest (offerer)
+	// so the receiver's consent surface can show where the transfer came
+	// from. Informational only — never a trust signal.
+	Provenance *wire.Provenance
 	// Handle is the opaque session handle; empty mints a random one.
 	Handle string
 
@@ -278,6 +283,9 @@ func (o Options) buildSpec(handle string, peerPub, kPair []byte, credRef string,
 		OnResume:           o.OnResume,
 		OnSendManifest:     o.OnSendManifest,
 		OnResumeCredential: o.OnResumeCredential,
+		// V22-PR06: the routine origin label rides the wire manifest
+		// (offerer); nil for ordinary one-off sends.
+		Provenance: o.Provenance,
 		// Local-only invariants, enforced on the actual engine — not flags
 		// on a UI. Explicit empty ICE servers: host candidates only, no
 		// STUN/TURN. DisableRelay: no relay path exists to fall back to.

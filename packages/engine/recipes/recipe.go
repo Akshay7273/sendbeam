@@ -81,6 +81,13 @@ type RecipeRunInfo struct {
 	Status RunStatus `json:"status"`
 	// Detail is a short human-readable note (e.g. the refusal reason).
 	Detail string `json:"detail,omitempty"`
+	// BytesSent is the actual payload bytes queued by this dispatch (the
+	// freshly resolved plan's total), set only for dispatched runs.
+	// V22-PR06 exposes it so "recipe show" can print "last run sent X of
+	// Y bytes" (Y = the current per-run budget). Zero/omitted for
+	// refused, failed, and skipped runs and for ledger entries written
+	// before this field existed.
+	BytesSent int64 `json:"bytesSent,omitempty"`
 }
 
 // TriggerReason names what started a recipe dispatch. Manual is the human

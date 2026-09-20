@@ -9,12 +9,17 @@ import (
 	"path/filepath"
 
 	"github.com/sendbeam/engine/netpolicy"
+	"github.com/sendbeam/engine/receiver"
 )
 
 const cliConfigFileName = "config.json"
 
 type cliSettings struct {
 	NetworkPolicy string `json:"network_policy,omitempty"`
+	// AutoAcceptPolicy is the routine-aware auto-accept policy (V22-PR06):
+	// nil/zero means routine auto-accept is off and every transfer goes
+	// to manual consent. Stored 0600 alongside the other CLI settings.
+	AutoAcceptPolicy *receiver.AutoAcceptPolicy `json:"auto_accept_policy,omitempty"`
 }
 
 func loadCLISettings(configDir string) cliSettings {

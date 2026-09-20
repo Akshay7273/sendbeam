@@ -339,9 +339,16 @@ func (l *Listener) evaluateConsent(ctx context.Context, dev *wire.TrustRecord, r
 		TransferID: req.TransferID,
 		Files:      req.Files,
 		TotalSize:  req.TotalSize,
+		// V20-PR06: the handoff kind was dropped by this reconstruction —
+		// restored so the consent handler sees the full request.
+		ContentKind: req.ContentKind,
+		// V22-PR06: the routine origin label was dropped by this
+		// reconstruction — restored so the consent handler (and the
+		// routine auto-accept policy) sees the full request.
+		Provenance: req.Provenance,
 	}
 
-	return EvaluateConsent(ctx, l.cfg.TrustStore, l.cfg.Tombstones, l.cfg.AutoAccept, l.cfg.DestDir, dev.DeviceID, manifest, func(cctx context.Context, creq transfer.ConsentRequest) (transfer.ConsentDecision, error) {
+	return EvaluateConsent(ctx, l.cfg.TrustStore, l.cfg.Tombstones, l.cfg.AutoAccept, l.cfg.AutoAcceptPolicy, l.cfg.DestDir, dev.DeviceID, manifest, func(cctx context.Context, creq transfer.ConsentRequest) (transfer.ConsentDecision, error) {
 		if l.cfg.ConsentHandler != nil {
 			return l.cfg.ConsentHandler(cctx, creq)
 		}

@@ -135,11 +135,11 @@ func (rn *Runner) Dispatch(ctx context.Context, recipeID string, reason TriggerR
 	case TriggerManual, TriggerWatch, TriggerSchedule, TriggerRetry:
 	default:
 		err := wire.Errorf(wire.CodeStorage, "recipes: unknown trigger reason %q", string(reason))
-		rn.record(recipeID, reason, RunStatusRefused, "", err.Error())
+		rn.record(recipeID, reason, RunStatusRefused, "", err.Error(), 0)
 		return jobs.Job{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		rn.record(recipeID, reason, RunStatusFailed, "", err.Error())
+		rn.record(recipeID, reason, RunStatusFailed, "", err.Error(), 0)
 		return jobs.Job{}, err
 	}
 
@@ -147,18 +147,18 @@ func (rn *Runner) Dispatch(ctx context.Context, recipeID string, reason TriggerR
 	if rn.stopped {
 		rn.mu.Unlock()
 		err := wire.Errorf(wire.CodeAuth, "recipes: routine runner is stopped — dispatch refused")
-		rn.record(recipeID, reason, RunStatusRefused, "", err.Error())
+		rn.record(recipeID, reason, RunStatusRefused, "", err.Error(), 0)
 		return jobs.Job{}, err
 	}
 	if _, ok := rn.inFlight[recipeID]; ok {
 		rn.mu.Unlock()
-		rn.record(recipeID, reason, RunStatusSkipped, "", "already running, skipped")
+		rn.record(recipeID, reason, RunStatusSkipped, "", "already running, skipped", 0)
 		return jobs.Job{}, ErrAlreadyRunning
 	}
 	if rn.running >= rn.maxConcurrent {
 		rn.mu.Unlock()
 		rn.record(recipeID, reason, RunStatusRefused, "",
-			"runner at capacity ("+strconv.Itoa(rn.maxConcurrent)+" concurrent dispatch(es)) — refusing instead of queueing")
+			"runner at capacity ("+strconv.Itoa(rn.maxConcurrent)+" concurrent dispatch(es)) — refusing instead of queueing", 0)
 		return jobs.Job{}, ErrRunnerBusy
 	}
 	rn.inFlight[recipeID] = struct{}{}
@@ -168,10 +168,10 @@ func (rn *Runner) Dispatch(ctx context.Context, recipeID string, reason TriggerR
 
 	job, err := RunWithTrigger(ctx, rn.deps, rn.eq, recipeID, reason)
 	if err != nil {
-		rn.record(recipeID, reason, dispatchOutcome(err), "", err.Error())
+		rn.record(recipeID, reason, dispatchOutcome(err), "", err.Error(), 0)
 		return jobs.Job{}, err
 	}
-	rn.record(recipeID, reason, RunStatusDispatched, job.JobID, "")
+	rn.record(recipeID, reason, RunStatusDispatched, job.JobID, "", job.TotalSize)
 	return job, nil
 }
 
@@ -191,16 +191,17 @@ func (rn *Runner) release(recipeID string) {
 // best-effort: the dispatch outcome is already decided, and a ledger
 // write failure must not mask or rewrite it, so the error is explicitly
 // dropped. A nil store (misconfiguration) records nothing.
-func (rn *Runner) record(recipeID string, reason TriggerReason, status RunStatus, jobID, detail string) {
+func (rn *Runner) record(recipeID string, reason TriggerReason, status RunStatus, jobID, detail string, bytesSent int64) {
 	if rn.deps.Store == nil {
 		return
 	}
 	info := RecipeRunInfo{
-		At:      rn.now().UTC(),
-		Trigger: reason,
-		JobID:   jobID,
-		Status:  status,
-		Detail:  detail,
+		At:        rn.now().UTC(),
+		Trigger:   reason,
+		JobID:     jobID,
+		Status:    status,
+		Detail:    detail,
+		BytesSent: bytesSent,
 	}
 	_ = rn.deps.Store.RecordRun(recipeID, info)
 }

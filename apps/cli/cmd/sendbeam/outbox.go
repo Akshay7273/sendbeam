@@ -384,6 +384,11 @@ func runOutboxDispatch(args []string, stdout, stderr io.Writer) int {
 	}
 	perTarget := *timeout
 	sender := func(ctx context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) outbox.SendOutcome {
+		// V22-PR06: the job's routine origin label (nil for ordinary
+		// one-off sends) rides the wire manifest on both routes. Copied
+		// per invocation: DispatchOnce may run senders concurrently.
+		cfg := cfg
+		cfg.provenance = job.Provenance
 		// V21-PR07 per-job route binding (second line of defense after
 		// the outbox dispatch gate):
 		// - a local-only job is dispatched through the offline sender

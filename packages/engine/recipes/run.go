@@ -22,9 +22,12 @@ type EnqueueRecipient struct {
 // Enqueuer is the single job-queue seam used by recipe runs. It is defined
 // here (not in the CLI) so the engine never imports the CLI: the CLI
 // adapts its real *outbox.Outbox to this interface, and tests inject a
-// recording fake. One Run call enqueues exactly ONE job.
+// recording fake. One Run call enqueues exactly ONE job. The provenance is
+// the routine origin label (V22-PR06): the dispatcher passes the routine's
+// identity so the job and (at dispatch) the wire manifest can carry where
+// the transfer came from.
 type Enqueuer interface {
-	Enqueue(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, networkPolicy netpolicy.Policy) (jobs.Job, error)
+	Enqueue(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, networkPolicy netpolicy.Policy, provenance *wire.Provenance) (jobs.Job, error)
 }
 
 // RunDeps are the recipe-run dependencies: the recipe store and the trust
@@ -34,6 +37,11 @@ type RunDeps struct {
 	Trust trust.Store
 	// Now is the clock for time checks (expiry); tests inject a fixed one.
 	Now func() time.Time
+	// SenderLabel is this device's own label, stamped on the provenance
+	// the dispatch carries. Empty is legal — the provenance label falls
+	// back to the configured device name — but the CLI and desktop
+	// adapters always set it.
+	SenderLabel string
 }
 
 // Run executes an explicit one-shot recipe run. The human at the keyboard
@@ -104,7 +112,7 @@ func RunWithTrigger(ctx context.Context, deps RunDeps, eq Enqueuer, recipeID str
 	case RecipeManual:
 		// Proceed.
 	case RecipeDisabled:
-		return jobs.Job{}, wire.Errorf(wire.CodeAuth, "recipes: recipe %q is disabled — enable it before running", r.Name)
+		return jobs.Job{}, wire.Errorf(wire.CodeAuth, "recipes: recipe %q is disabled — run `recipe enable %s` first", r.Name, r.ID)
 	case RecipeApprovalRequired:
 		if reason == TriggerManual {
 			return jobs.Job{}, wire.Errorf(wire.CodeAuth,
@@ -173,7 +181,23 @@ func RunWithTrigger(ctx context.Context, deps RunDeps, eq Enqueuer, recipeID str
 	for i, c := range plan.Recipients {
 		recipients[i] = EnqueueRecipient(c)
 	}
-	return eq.Enqueue(ctx, paths, recipients, jobs.DefaultRetryPolicy(), np)
+	// V22-PR06: attach the routine origin label to this dispatch. The
+	// enqueuer stamps it on the job and, at dispatch time, on the wire
+	// manifest so the receiver's consent surface can show where the
+	// transfer came from. SenderLabel degrades to the recipe's origin
+	// device only when the caller did not set one.
+	provenance := Provenance{
+		RoutineID:   r.ID,
+		RoutineName: r.Name,
+		SenderLabel: deps.SenderLabel,
+		Trigger:     reason,
+	}
+	wireProv := provenance.Wire()
+	job, err := eq.Enqueue(ctx, paths, recipients, jobs.DefaultRetryPolicy(), np, &wireProv)
+	if err != nil {
+		return jobs.Job{}, err
+	}
+	return job, nil
 }
 
 // grantRevokedByMaterialChange reports whether the recipe's automation

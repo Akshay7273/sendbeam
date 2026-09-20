@@ -42,6 +42,13 @@ type Config struct {
 	// AutoAccept when true automatically accepts transfers from trusted devices.
 	AutoAccept bool
 
+	// AutoAcceptPolicy is the routine-aware auto-accept policy (V22-PR06):
+	// narrowly scoped auto-accept for transfers that carry a recipe
+	// provenance, from explicitly allowlisted sender devices only. The
+	// zero value is safe (accepts nothing automatically) and is the
+	// default; see ValidateAutoAcceptPolicy.
+	AutoAcceptPolicy AutoAcceptPolicy
+
 	// Once when true causes the receiver to stop listening after ONE verified delivery.
 	Once bool
 

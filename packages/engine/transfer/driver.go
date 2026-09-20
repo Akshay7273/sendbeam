@@ -77,6 +77,11 @@ type Spec struct {
 	// receiver captures the verified payload in memory instead of the
 	// destination directory and holds it for deliberate receiver actions.
 	ContentKind string
+	// Provenance is the advisory routine origin label (V22-PR06): nil for
+	// ordinary one-off sends. The driver stamps it on the wire manifest so
+	// the receiver's consent surface can show where the transfer came
+	// from. It is informational only — never a trust signal.
+	Provenance *wire.Provenance
 	// OnSendManifest, when set, is wired into the wire sender's OnManifest hook: it runs
 	// with the validated manifest strictly before its frame is transmitted, so a sender can
 	// persist or verify its restart record before the id is advertised. An error aborts the
@@ -1034,6 +1039,10 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 		// V20-PR06: the handoff envelope kind rides the ordinary manifest; the
 		// envelope invariants are enforced by the wire validator.
 		ContentKind: d.spec.ContentKind,
+		// V22-PR06: the routine origin label rides the ordinary manifest;
+		// the provenance invariants are enforced by the wire validator.
+		// Nil for ordinary one-off sends.
+		Provenance: d.spec.Provenance,
 		// Advertise a stable random id in the manifest so a receiver that crashes mid-file
 		// can journal its verified progress and resume it (V13-PR02); the wire layer mints
 		// and validates it without any protocol change. A restart (V13-PR04) reuses the

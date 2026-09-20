@@ -17,6 +17,7 @@ import (
 	"github.com/sendbeam/engine/netpolicy"
 	"github.com/sendbeam/engine/outbox"
 	"github.com/sendbeam/engine/recipes"
+	"github.com/sendbeam/wire"
 )
 
 // runRecipe implements `sendbeam recipe <subcommand>`: saved handoff
@@ -48,6 +49,10 @@ func runRecipe(args []string, stdout, stderr io.Writer) int {
 		return runRecipeGrant(args[1:], stdout, stderr)
 	case "revoke":
 		return runRecipeRevoke(args[1:], stdout, stderr)
+	case "disable":
+		return runRecipeDisable(args[1:], stdout, stderr)
+	case "enable":
+		return runRecipeEnable(args[1:], stdout, stderr)
 	case "preview":
 		return runRecipePreview(args[1:], stdout, stderr)
 	case "run":
@@ -84,6 +89,8 @@ func recipeUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe approve")+" <id>")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe grant")+" <id>      "+s.dim("(explicit auto-send consent for the routine runner)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe revoke")+" <id>     "+s.dim("(withdraw auto-send consent)"))
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe disable")+" <id>    "+s.dim("(switch the routine off: no future dispatch of any kind)"))
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe enable")+" <id>     "+s.dim("(re-enable to approval-required; auto-send consent revoked)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe preview")+" <id> [--json]   "+s.dim("(dry-run: sends nothing)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe run")+" <id> [--json]       "+s.dim("(explicit one-shot: enqueues one job)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe watch")+" <id>              "+s.dim("(foreground: dispatch on watched-folder changes until Ctrl+C)"))
@@ -161,19 +168,46 @@ func resolveRecipeRecipients(ctx context.Context, env *CLIEnvironment, to, label
 	return out, nil
 }
 
-// outboxEnqueuer adapts the real *outbox.Outbox to the recipes.Enqueuer
-// interface so recipe runs enqueue through the production path — one job,
-// one attempt per recipient — with no second queue.
-type outboxEnqueuer struct {
-	ob *outbox.Outbox
+// localDeviceLabel is this device's own label for the routine origin
+// stamp (V22-PR06): the hostname, falling back to "CLI Device" when the
+// hostname is unavailable — the same convention the pairing commands use.
+func localDeviceLabel() string {
+	if hostname, err := os.Hostname(); err == nil && hostname != "" {
+		return hostname
+	}
+	return "CLI Device"
 }
 
-func (a outboxEnqueuer) Enqueue(ctx context.Context, paths []string, recipients []recipes.EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy) (jobs.Job, error) {
+// outboxEnqueuer adapts the real *outbox.Outbox to the recipes.Enqueuer
+// interface so recipe runs enqueue through the production path — one job,
+// one attempt per recipient — with no second queue. The routine origin
+// label (V22-PR06) is stamped on the job via EnqueueWithProvenance; nil
+// provenance would mean an ordinary one-off send, which recipe dispatch
+// never produces.
+type outboxEnqueuer struct {
+	ob *outbox.Outbox
+	// senderLabel is this device's own label (localDeviceLabel), passed
+	// at construction. It backstops the provenance the engine built: if
+	// the engine's SenderLabel is empty, it is filled here so the job's
+	// provenance label is never blank.
+	senderLabel string
+}
+
+func (a outboxEnqueuer) Enqueue(ctx context.Context, paths []string, recipients []recipes.EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance) (jobs.Job, error) {
 	refs := make([]outbox.RecipientRef, len(recipients))
 	for i, r := range recipients {
 		refs[i] = outbox.RecipientRef{DeviceID: r.DeviceID, Label: r.Label}
 	}
-	return a.ob.Enqueue(ctx, paths, refs, policy, np)
+	if provenance != nil && provenance.SenderLabel == "" {
+		label := a.senderLabel
+		if label == "" {
+			label = localDeviceLabel()
+		}
+		cpy := *provenance
+		cpy.SenderLabel = label
+		provenance = &cpy
+	}
+	return a.ob.EnqueueWithProvenance(ctx, paths, refs, policy, np, provenance)
 }
 
 func runRecipeList(args []string, stdout, stderr io.Writer) int {
@@ -278,13 +312,20 @@ func runRecipeShow(args []string, stdout, stderr io.Writer) int {
 		lr := r.LastRun
 		line := fmt.Sprintf("Last run: %s via %s — %s",
 			lr.At.UTC().Format(time.RFC3339), lr.Trigger, lr.Status)
-		if lr.JobID != "" {
-			line += fmt.Sprintf(" (job %s)", shortJobID(lr.JobID))
-		}
 		if lr.Detail != "" {
 			line += " — " + lr.Detail
 		}
 		_, _ = fmt.Fprintln(stdout, line)
+		// V22-PR06: show what the last dispatch actually queued against
+		// the budget, with the full job id and the exact cancel command
+		// — the job id is actionable here, not just a label.
+		if lr.Status == recipes.RunStatusDispatched && lr.JobID != "" {
+			_, _ = fmt.Fprintf(stdout, "  Last run sent %s of %s per-run budget (job %s).\n",
+				humanBytes(lr.BytesSent), humanBytes(r.Budgets.MaxBytesPerRun), lr.JobID)
+			_, _ = fmt.Fprintf(stdout, "  To stop it: %s\n", s.cyan("sendbeam outbox cancel "+lr.JobID))
+		} else if lr.JobID != "" {
+			_, _ = fmt.Fprintf(stdout, "  Job: %s\n", lr.JobID)
+		}
 	}
 	return 0
 }
@@ -698,7 +739,7 @@ func runRecipeApprove(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if r.Status == recipes.RecipeDisabled {
-		_, _ = fmt.Fprintf(stderr, "sendbeam recipe approve: recipe %q is disabled; edit it to re-enable before approving\n", r.Name)
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe approve: recipe %q is disabled; run `sendbeam recipe enable %s` first, then approve\n", r.Name, shortRecipeID(r.ID))
 		return 1
 	}
 	// The human at the keyboard IS the approval: this explicit command is
@@ -803,6 +844,96 @@ func shortScopeHash(h string) string {
 	return h
 }
 
+// runRecipeDisable implements `sendbeam recipe disable <id>`: the routine
+// is switched off — status "disabled" — so every future dispatch (watch,
+// schedule, retry, and manual alike) is refused and the watcher's dynamic
+// reload plus the scheduler's reconciliation drop it. A dispatch already
+// admitted keeps running to completion: disable stops the NEXT send, never
+// the one already moving bytes. The automation grant is left untouched
+// (but inert); `recipe enable` revokes it explicitly as the safe default.
+func runRecipeDisable(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("recipe disable", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configDir := fs.String("config-dir", "", "path to custom configuration directory")
+	positionals := parseArgs(fs, args)
+	if len(positionals) != 1 {
+		_, _ = fmt.Fprintln(stderr, "sendbeam recipe disable: need exactly one <id>")
+		fs.Usage()
+		return 2
+	}
+	store, err := openRecipeStore(*configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe disable: %v\n", err)
+		return 1
+	}
+	r, err := loadRecipe(store, positionals[0])
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe disable: %v\n", err)
+		return 1
+	}
+	if r.Status == recipes.RecipeDisabled {
+		_, _ = fmt.Fprintf(stdout, "Recipe %q is already disabled (id %s).\n", r.Name, shortRecipeID(r.ID))
+		return 0
+	}
+	recipes.Disable(&r)
+	if err := store.Save(r); err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe disable: %v\n", err)
+		return 1
+	}
+	s := newStyleFromWriter(stdout)
+	_, _ = fmt.Fprintf(stdout, "%s recipe %q (id %s): no future dispatch of any kind will run.\n",
+		s.yellow("Disabled"), r.Name, s.cyan(shortRecipeID(r.ID)))
+	_, _ = fmt.Fprintln(stdout, "  An in-flight dispatch, if any, runs to completion; re-enable with `sendbeam recipe enable <id>`.")
+	return 0
+}
+
+// runRecipeEnable implements `sendbeam recipe enable <id>`: a disabled
+// routine returns to life through the safe default — status
+// "approval-required" and its automation consent revoked, even if it was
+// granted before. Nothing dispatches until a person re-reviews: manual
+// runs need `recipe approve <id>` first, and automated dispatch needs a
+// fresh `recipe grant <id>` after that.
+func runRecipeEnable(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("recipe enable", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configDir := fs.String("config-dir", "", "path to custom configuration directory")
+	positionals := parseArgs(fs, args)
+	if len(positionals) != 1 {
+		_, _ = fmt.Fprintln(stderr, "sendbeam recipe enable: need exactly one <id>")
+		fs.Usage()
+		return 2
+	}
+	store, err := openRecipeStore(*configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe enable: %v\n", err)
+		return 1
+	}
+	r, err := loadRecipe(store, positionals[0])
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe enable: %v\n", err)
+		return 1
+	}
+	if r.Status != recipes.RecipeDisabled {
+		_, _ = fmt.Fprintf(stdout, "Recipe %q is not disabled (status %s); nothing to enable (id %s).\n",
+			r.Name, string(r.Status), shortRecipeID(r.ID))
+		return 0
+	}
+	hadGrant := r.Grant.AutoSend
+	recipes.Enable(&r)
+	if err := store.Save(r); err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe enable: %v\n", err)
+		return 1
+	}
+	s := newStyleFromWriter(stdout)
+	_, _ = fmt.Fprintf(stdout, "%s recipe %q (id %s): status is now %s.\n",
+		s.green("Enabled"), r.Name, s.cyan(shortRecipeID(r.ID)), s.yellow(string(r.Status)))
+	if hadGrant {
+		_, _ = fmt.Fprintln(stdout, "  Its previous auto-send consent was revoked as the safe default.")
+	}
+	_, _ = fmt.Fprintln(stdout, "  Next steps: `sendbeam recipe approve <id>` for manual runs, then `sendbeam recipe grant <id>` to allow automation.")
+	return 0
+}
+
 func runRecipePreview(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("recipe preview", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -886,7 +1017,15 @@ func runRecipeRun(args []string, stdout, stderr io.Writer) int {
 	// recipient. No second queue, no daemon needed — the job waits in the
 	// outbox until `sendbeam outbox dispatch` sends it.
 	ob := outbox.New(jobStore, nil)
-	job, err := recipes.Run(ctx, recipes.RunDeps{Store: store, Trust: env.TrustStore}, outboxEnqueuer{ob: ob}, positionals[0])
+	// The routine runner (not the bare RunWithTrigger) so the dispatch
+	// records the last-run ledger — status, job id, bytes sent — that
+	// `sendbeam recipe show` prints with the cancel command.
+	rn := recipes.NewRunner(
+		recipes.RunDeps{Store: store, Trust: env.TrustStore, SenderLabel: localDeviceLabel()},
+		outboxEnqueuer{ob: ob, senderLabel: localDeviceLabel()},
+		recipes.RunnerOptions{},
+	)
+	job, err := rn.Dispatch(ctx, positionals[0], recipes.TriggerManual)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam recipe run: %v\n", err)
 		return 1
@@ -953,8 +1092,8 @@ func watchRecipe(ctx context.Context, id, configDir string, stdout, stderr io.Wr
 	}
 	ob := outbox.New(jobStore, nil)
 	runner := recipes.NewRunner(
-		recipes.RunDeps{Store: store, Trust: env.TrustStore},
-		outboxEnqueuer{ob: ob},
+		recipes.RunDeps{Store: store, Trust: env.TrustStore, SenderLabel: localDeviceLabel()},
+		outboxEnqueuer{ob: ob, senderLabel: localDeviceLabel()},
 		recipes.RunnerOptions{},
 	)
 	printEvent := func(format string, args ...any) {
@@ -1115,8 +1254,8 @@ func scheduleRecipes(ctx context.Context, configDir string, stdout, stderr io.Wr
 		return 1
 	}
 	runner := recipes.NewRunner(
-		recipes.RunDeps{Store: store, Trust: env.TrustStore},
-		outboxEnqueuer{ob: outbox.New(jobStore, nil)},
+		recipes.RunDeps{Store: store, Trust: env.TrustStore, SenderLabel: localDeviceLabel()},
+		outboxEnqueuer{ob: outbox.New(jobStore, nil), senderLabel: localDeviceLabel()},
 		recipes.RunnerOptions{},
 	)
 	s := newStyleFromWriter(stdout)

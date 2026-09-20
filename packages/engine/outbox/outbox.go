@@ -133,7 +133,20 @@ func randomJobID() string {
 // semantics), fingerprinted, and bound to one queued attempt per recipient.
 // The job starts dispatching only via DispatchOnce.
 func (o *Outbox) Enqueue(ctx context.Context, paths []string, recipients []RecipientRef, policy jobs.RetryPolicy, networkPolicy netpolicy.Policy) (jobs.Job, error) {
+	return o.EnqueueWithProvenance(ctx, paths, recipients, policy, networkPolicy, nil)
+}
+
+// EnqueueWithProvenance is Enqueue plus the routine origin label (V22-PR06):
+// recipe dispatch passes the saved routine's identity here; ordinary
+// one-off sends call Enqueue, which passes nil — an ordinary one-off send.
+// A non-nil provenance is validated (malformed labels fail closed before
+// anything is persisted) and stored on the job so dispatch can stamp it on
+// the wire manifest and consent surfaces can display it.
+func (o *Outbox) EnqueueWithProvenance(ctx context.Context, paths []string, recipients []RecipientRef, policy jobs.RetryPolicy, networkPolicy netpolicy.Policy, provenance *wire.Provenance) (jobs.Job, error) {
 	_ = ctx
+	if err := wire.ValidateProvenance(provenance); err != nil {
+		return jobs.Job{}, wire.Errorf(wire.CodeStorage, "outbox: invalid provenance: %v", err)
+	}
 	now := o.clock()
 	if len(recipients) == 0 {
 		return jobs.Job{}, wire.Errorf(wire.CodeStorage, "outbox: at least one recipient is required")
@@ -180,6 +193,10 @@ func (o *Outbox) Enqueue(ctx context.Context, paths []string, recipients []Recip
 	// the default policy are byte-identical to v2.0 jobs; any other
 	// policy is stored by name and enforced at dispatch.
 	job.NetworkPolicy = canonicalNetworkPolicy(networkPolicy)
+	// V22-PR06: stamp the routine origin label on the job (nil for
+	// ordinary one-off sends). It rides the wire manifest at dispatch and
+	// the checksum covers it, so it cannot be flipped after the fact.
+	job.Provenance = provenance
 	if err := jobs.QueueJob(&job, now); err != nil {
 		return jobs.Job{}, err
 	}

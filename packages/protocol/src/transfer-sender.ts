@@ -20,6 +20,7 @@ import {
   type ControlOp,
   type Fail,
   type Manifest,
+  type Provenance,
   type ResumeState,
 } from './transfer.js';
 import { manifestFingerprint } from './journal.js';
@@ -67,6 +68,13 @@ export interface TransferSenderOptions {
    * manifest; the envelope invariants (single small file) are enforced by validateManifest.
    */
   contentKind?: 'text' | 'link';
+  /**
+   * V22-PR06: stamps the sender's routine origin label on the manifest.
+   * Absent for ordinary one-off sends. The label is advisory only —
+   * excluded from the manifest fingerprint — and validated by
+   * validateManifest before any byte is sent.
+   */
+  provenance?: Provenance;
   blockSize?: number;
   frameSize?: number;
   window?: number;
@@ -323,6 +331,10 @@ export class TransferSender {
       // V20-PR06: the handoff envelope kind rides the ordinary manifest; an unknown or
       // malformed kind fails in validateManifest above before any byte is sent.
       ...(this.o.contentKind !== undefined ? { contentKind: this.o.contentKind } : {}),
+      // V22-PR06: the routine origin label rides the ordinary manifest; a malformed
+      // provenance fails in validateManifest above before any byte is sent. Key order
+      // matches the Go struct so the JSON bytes stay identical.
+      ...(this.o.provenance !== undefined ? { provenance: this.o.provenance } : {}),
       files: entries,
       totalSize,
     });

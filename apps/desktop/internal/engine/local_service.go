@@ -307,6 +307,9 @@ func (s *LocalService) consentHandler(transferID string) transfer.ConsentHandler
 			"destDir":      req.DestDir,
 			"contentKind":  req.ContentKind,
 			"local":        true,
+			// V22-PR06: the routine origin label (nil for ordinary one-off
+			// sends) so the UI can show where the transfer came from.
+			"provenance": provenanceEvent(req.Provenance),
 		})
 
 		select {
@@ -327,8 +330,21 @@ func (s *LocalService) consentHandler(transferID string) transfer.ConsentHandler
 	}
 }
 
-// RespondLocalConsent records the user's decision for a pending local
-// incoming transfer. Unknown IDs are an error; late answers are dropped.
+// provenanceEvent renders the routine origin label for the consent event
+// payload (V22-PR06): nil for ordinary one-off sends so the UI can show
+// an explicit one-off marker; a small map otherwise.
+func provenanceEvent(p *wire.Provenance) map[string]any {
+	if p == nil {
+		return nil
+	}
+	return map[string]any{
+		"routineId":   p.RoutineID,
+		"routineName": p.RoutineName,
+		"senderLabel": p.SenderLabel,
+		"trigger":     p.Trigger,
+		"display":     p.Display(),
+	}
+}
 func (s *LocalService) RespondLocalConsent(transferID string, decision LocalConsentDecision) error {
 	s.mu.Lock()
 	w, ok := s.pending[transferID]

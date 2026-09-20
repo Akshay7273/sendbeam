@@ -22,6 +22,70 @@ func spaceDecline(destDir string, manifest wire.Manifest) *ConsentDecision {
 	return nil
 }
 
+// AutoAcceptPolicy is the routine-aware auto-accept policy (V22-PR06):
+// narrowly scoped auto-accept for transfers that carry a recipe
+// provenance. It is independent of — and narrower than — the legacy
+// global AutoAccept flag and per-peer TrustPolicy.AutoAccept, which accept
+// ANY transfer from a trusted device. This policy accepts only transfers
+// that (a) carry a valid routine provenance, (b) come from an explicitly
+// allowlisted sender device, and (c) pass the same trust and tombstone
+// validation as every other transfer (that validation runs first, in
+// EvaluateConsent, before this policy is consulted).
+//
+// The zero value is safe: Enabled=false auto-accepts nothing, and an
+// empty AllowedDevices list auto-accepts nothing even when enabled.
+type AutoAcceptPolicy struct {
+	// Enabled is the master switch. Default false: every transfer goes
+	// to manual consent unless the user explicitly opts in.
+	Enabled bool `json:"enabled"`
+	// AllowRoutineTransfers permits provenance-carrying transfers from
+	// allowlisted devices to skip the consent prompt. It is separate
+	// from Enabled so the policy can be enabled-but-empty (accept
+	// nothing) versus disabled entirely.
+	AllowRoutineTransfers bool `json:"allowRoutineTransfers"`
+	// AllowedDevices is the explicit allowlist of sender device ids
+	// whose routine transfers may auto-accept. Empty accepts none.
+	AllowedDevices []string `json:"allowedDevices,omitempty"`
+}
+
+// ValidateAutoAcceptPolicy checks an auto-accept policy for shape: the
+// allowlist entries must be non-empty strings. A nil/empty allowlist is
+// valid (it simply accepts nothing). Validation never broadens: doubt
+// fails closed to manual consent at evaluation time.
+func ValidateAutoAcceptPolicy(p AutoAcceptPolicy) error {
+	for i, id := range p.AllowedDevices {
+		if id == "" {
+			return wire.Errorf(wire.CodeStorage, "receiver: auto-accept policy allowlist entry %d is empty", i)
+		}
+	}
+	return nil
+}
+
+// autoAcceptRoutine reports whether the routine auto-accept policy accepts
+// this transfer: the policy is enabled, routine transfers are allowed, the
+// manifest carries a valid routine provenance, and the peer device is on
+// the explicit allowlist. It never errors — any doubt (malformed
+// provenance, unlisted sender, disabled policy) falls through to the
+// legacy paths and then to manual consent. Trust and tombstone validation
+// have already passed before this is consulted.
+func autoAcceptRoutine(p AutoAcceptPolicy, peerDeviceID string, manifest wire.Manifest) bool {
+	if !p.Enabled || !p.AllowRoutineTransfers {
+		return false
+	}
+	if manifest.Provenance == nil {
+		return false
+	}
+	if err := wire.ValidateProvenance(manifest.Provenance); err != nil {
+		return false
+	}
+	for _, id := range p.AllowedDevices {
+		if id != "" && id == peerDeviceID {
+			return true
+		}
+	}
+	return false
+}
+
 // EvaluateConsent evaluates whether an incoming transfer should be auto-accepted or requires
 // user consent, strictly enforcing peer revocation and policy restrictions.
 func EvaluateConsent(
@@ -29,6 +93,7 @@ func EvaluateConsent(
 	store trust.Store,
 	tombstones trust.TombstoneStore,
 	globalAutoAccept bool,
+	routinePolicy AutoAcceptPolicy,
 	defaultDestDir string,
 	peerDeviceID string,
 	manifest wire.Manifest,
@@ -95,7 +160,25 @@ func EvaluateConsent(
 		}
 	}
 
-	// 4. Fall through to explicit user consent prompt. The disk-space
+	// 4. Routine auto-accept (V22-PR06): narrowly scoped to
+	// provenance-carrying transfers from explicitly allowlisted sender
+	// devices. Trust and tombstone validation already passed above; the
+	// legacy broad paths did not accept, so this is strictly narrower
+	// than them — it can only accept transfers the broad paths declined
+	// to accept automatically. Anything doubtful falls through to manual
+	// consent below.
+	if autoAcceptRoutine(routinePolicy, dev.DeviceID, manifest) {
+		destDir := defaultDestDir
+		if dev.Policy.AutoAcceptDestDir != "" {
+			destDir = dev.Policy.AutoAcceptDestDir
+		}
+		if decline := spaceDecline(destDir, manifest); decline != nil {
+			return *decline, nil
+		}
+		return ConsentDecision{Accepted: true, DestDir: destDir}, nil
+	}
+
+	// 5. Fall through to explicit user consent prompt. The disk-space
 	// preflight runs before prompting: a transfer that cannot fit will
 	// fail, so declining fast with the reason beats a doomed prompt.
 	if decline := spaceDecline(defaultDestDir, manifest); decline != nil {
@@ -113,6 +196,11 @@ func EvaluateConsent(
 		Files:        manifest.Files,
 		TotalSize:    manifest.TotalSize,
 		DestDir:      defaultDestDir,
+		ContentKind:  manifest.ContentKind,
+		// V22-PR06: the routine origin label rides the consent surface so
+		// the UI can show where the transfer came from. Nil for ordinary
+		// one-off sends; the manifest was wire-validated on decode.
+		Provenance: manifest.Provenance,
 	}
 
 	return handler(ctx, req)

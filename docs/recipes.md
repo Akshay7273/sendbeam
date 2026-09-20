@@ -422,3 +422,110 @@ carries no TypeScript source for the desktop frontend (only the built
 - Preview is an estimate, not a lock: re-resolution at run time is
   deliberate, so always re-preview after changing sources if the exact
   file set matters.
+
+## Routine controls (V22-PR06)
+
+### Provenance: where a transfer came from
+
+Every recipe dispatch stamps the transfer with an **origin label**
+— provenance — carrying the recipe's id and name, this device's label,
+and the trigger reason (`manual`, `watch`, `schedule`, or `retry`).
+The receiver's consent surface always shows it:
+
+```sh
+# recipe dispatch:
+Routine: Nightly exports (trigger: watch) from akshay-laptop
+
+# ordinary one-off send — an explicit marker, never a blank:
+One-off send (not from a saved routine)
+```
+
+**Provenance is an advisory display label, not authentication.**
+It says where the sender _claims_ the transfer came from; trust still
+comes from the pairing/trust store, never from this label. The routine
+id is 32 lowercase hex; labels are capped at 256 characters; a
+malformed provenance fails the transfer closed at manifest decode.
+
+**Provenance is excluded from the manifest fingerprint.** The
+fingerprint binds the _file set_, so the same bytes sent by a different
+routine — or by hand, with no provenance at all — fingerprint
+identically. Resume journals keep working unchanged across recipes.
+
+**Old receivers are unaffected.** The provenance field is optional on
+the wire; a receiver that predates this release decodes the manifest
+fine and simply never displays the label or enforces the policy below.
+One-off sends (`sendbeam send`, `outbox enqueue`) carry no provenance,
+exactly as before.
+
+### Disable and enable
+
+```sh
+sendbeam recipe disable <id>   # switch the routine off, for every trigger
+sendbeam recipe enable <id>    # back to approval-required (see below)
+```
+
+- `disable` sets the status to `disabled`. Every future dispatch —
+  manual, watch, schedule, and retry — is refused. The existing
+  automation grant is left in place but inert: disabling is "switched
+  off", not "consent withdrawn", and the audit trail can tell the two
+  apart. A dispatch already admitted (a job already enqueued) runs to
+  completion; disable never cancels in-flight work — cancel the job
+  explicitly with `sendbeam outbox cancel <full-job-id>`.
+- `enable` returns the routine to `approval-required` **and revokes its
+  automation consent**. Nothing dispatches until a person re-reviews:
+  `recipe approve <id>` first (manual runs), then a fresh
+  `recipe grant <id>` (automation). There is no silent re-arm.
+
+### Last-run budget visibility
+
+`sendbeam recipe show <id>` prints what the last dispatch actually
+queued against the per-run budget, with the full job id and the exact
+cancel command:
+
+```sh
+Last run sent 1.4 GiB of 10.0 GiB per-run budget (job 09b6d6df5ed19d46e4714cafe266bb5f).
+To stop it: sendbeam outbox cancel 09b6d6df5ed19d46e4714cafe266bb5f
+```
+
+### Routine auto-accept (receiver side)
+
+Receivers can skip manual consent for routine transfers — but only
+from devices _you_ name. The policy is **off by default** and stays off
+until you turn it on:
+
+```sh
+sendbeam receive-policy show
+sendbeam receive-policy set --enable --allow-device <sender-device-id>
+sendbeam receive-policy set --allow-device <id1> --allow-device <id2>  # replace the list
+sendbeam receive-policy set --clear-devices
+sendbeam receive-policy set --disable
+```
+
+- `receive-policy set --enable` also allows routine transfers by
+  default (`--allow-routine=false` narrows it without disabling).
+- With the policy enabled, a transfer is auto-accepted **only if** it
+  carries a valid provenance **and** its sender's device id is on the
+  allowlist. A one-off send, a malformed provenance, or a sender not on
+  the list all fall back to manual consent.
+- Trust and tombstone validation run **first**, always: a revoked or
+  unknown sender is refused no matter what the policy says.
+- The stored policy is fail-closed: a malformed stored allowlist is
+  treated as "no policy", never as permission. The config file is
+  written with mode `0600`.
+- The CLI's legacy global `--auto-accept` on `sendbeam listen` still
+  accepts transfers from trusted devices as before, independent of this
+  policy. **Sender consent and receiver acceptance are independent:**
+  your auto-send _grant_ (your permission for your device to send)
+  never implies the other side's acceptance, and their receive policy
+  never implies your grant.
+
+### Limitations
+
+- Provenance labels what the sender sent; it does not prove the
+  sender's routine setup, and it must never be treated as a trust
+  signal.
+- `enable` always re-requires approval _and_ a fresh grant — there is
+  no "resume exactly where you were" shortcut after a disable.
+- The desktop service methods (`DisableRecipe`, `EnableRecipe`) and the
+  consent events carry provenance; the visual consent UI ships with the
+  frontend source.

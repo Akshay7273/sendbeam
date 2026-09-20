@@ -1,4 +1,4 @@
-import { FrameType, type FileEntry, type Manifest } from './transfer.js';
+import { FrameType, type FileEntry, type Manifest, type Provenance } from './transfer.js';
 
 export const MAX_TRANSFER_FILES = 4096;
 export const MAX_TRANSFER_PATH_BYTES = 1024;
@@ -16,6 +16,48 @@ export const MAX_HANDOFF_BYTES = 256 * 1024;
 /** V20-PR06: reports whether kind is a known handoff content kind. */
 export function isHandoffKind(kind: string | undefined): kind is 'text' | 'link' {
   return kind === CONTENT_KIND_TEXT || kind === CONTENT_KIND_LINK;
+}
+
+/**
+ * V22-PR06: bounds the display labels a manifest provenance may carry —
+ * long enough for any sane routine/device name, short enough that a
+ * malicious peer cannot bloat the consent surface. Mirrors Go
+ * wire.maxProvenanceLabelLen.
+ */
+export const MAX_PROVENANCE_LABEL_CHARS = 256;
+
+/** V22-PR06: the dispatch reasons a manifest provenance may name. */
+export const VALID_PROVENANCE_TRIGGERS = ['manual', 'watch', 'schedule', 'retry'] as const;
+
+const isLowerHex = (s: string, n: number): boolean => s.length === n && /^[0-9a-f]+$/.test(s);
+
+/**
+ * V22-PR06: validates a manifest provenance for shape — the routine id
+ * must be 32 lowercase hex, the labels non-empty within the label
+ * ceiling, and the trigger a known dispatch reason. An absent provenance
+ * is valid (an ordinary one-off send). Mirrors Go wire.ValidateProvenance.
+ */
+export function validateProvenance(provenance: Provenance | undefined): void {
+  if (provenance === undefined) return;
+  if (!isLowerHex(provenance.routineId, 32)) {
+    throw new Error('manifest provenance has an invalid routineId');
+  }
+  for (const [label, value] of [
+    ['routineName', provenance.routineName],
+    ['senderLabel', provenance.senderLabel],
+  ] as const) {
+    if (value === '') throw new Error(`manifest provenance has an empty ${label}`);
+    if ([...value].length > MAX_PROVENANCE_LABEL_CHARS) {
+      throw new Error(
+        `manifest provenance ${label} exceeds the ${MAX_PROVENANCE_LABEL_CHARS}-character ceiling`,
+      );
+    }
+  }
+  if (!VALID_PROVENANCE_TRIGGERS.includes(provenance.trigger)) {
+    throw new Error(
+      `manifest provenance has an unknown trigger ${JSON.stringify(provenance.trigger)}`,
+    );
+  }
 }
 
 const utf8 = new TextEncoder();
@@ -61,6 +103,10 @@ export function validateManifest(manifest: Manifest): Manifest {
   if (manifest.contentKind !== undefined && !isHandoffKind(manifest.contentKind)) {
     throw new Error('manifest has an unknown contentKind');
   }
+  // V22-PR06: the provenance origin label is validated so a malformed label
+  // can never pass as a routine transfer. An absent provenance is an
+  // ordinary one-off send.
+  validateProvenance(manifest.provenance);
   if (manifest.files.length === 0 || manifest.files.length > MAX_TRANSFER_FILES) {
     throw new Error('manifest has an invalid file count');
   }
@@ -116,6 +162,8 @@ export function validateManifest(manifest: Manifest): Manifest {
     type: FrameType.Manifest,
     ...(manifest.transferId !== undefined ? { transferId: manifest.transferId } : {}),
     ...(manifest.contentKind !== undefined ? { contentKind: manifest.contentKind } : {}),
+    // V22-PR06: key order matches the Go struct so the JSON bytes stay identical.
+    ...(manifest.provenance !== undefined ? { provenance: manifest.provenance } : {}),
     files,
     totalSize,
   };

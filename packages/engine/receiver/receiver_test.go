@@ -698,7 +698,7 @@ func TestEvaluateConsentUnit(t *testing.T) {
 	}
 
 	// 1. Global auto-accept
-	dec, err := EvaluateConsent(context.Background(), storeBob, tombstonesBob, true, "/default", idAlice.DeviceID, manifest, nil)
+	dec, err := EvaluateConsent(context.Background(), storeBob, tombstonesBob, true, AutoAcceptPolicy{}, "/default", idAlice.DeviceID, manifest, nil)
 	if err != nil || !dec.Accepted || dec.DestDir != "/default" {
 		t.Fatalf("expected global auto accept, got dec=%+v err=%v", dec, err)
 	}
@@ -713,7 +713,7 @@ func TestEvaluateConsentUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	handlerCalled := false
-	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, "/default", idAlice.DeviceID, manifest, func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
+	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, AutoAcceptPolicy{}, "/default", idAlice.DeviceID, manifest, func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
 		handlerCalled = true
 		return ConsentDecision{Accepted: false, Reason: "prompted"}, nil
 	})
@@ -732,7 +732,7 @@ func TestEvaluateConsentUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	handlerCalled = false
-	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, "/default", idAlice.DeviceID, manifest, func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
+	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, AutoAcceptPolicy{}, "/default", idAlice.DeviceID, manifest, func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
 		handlerCalled = true
 		return ConsentDecision{Accepted: false, Reason: "mime blocked"}, nil
 	})
@@ -749,7 +749,7 @@ func TestEvaluateConsentUnit(t *testing.T) {
 	if err := tombstonesBob.StoreTombstone(context.Background(), tombstone); err != nil {
 		t.Fatal(err)
 	}
-	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, true, "/default", idAlice.DeviceID, manifest, nil)
+	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, true, AutoAcceptPolicy{}, "/default", idAlice.DeviceID, manifest, nil)
 	if !errors.Is(err, wire.ErrTrustedPeerRevoked) {
 		t.Fatalf("expected ErrTrustedPeerRevoked from tombstone, got err=%v", err)
 	}
@@ -979,7 +979,7 @@ func TestEvaluateConsentDeclinesOnDiskSpace(t *testing.T) {
 	}
 
 	// 1. Global auto-accept path declines.
-	dec, err := EvaluateConsent(context.Background(), storeBob, tombstonesBob, true, tmpDir, idAlice.DeviceID, huge, nil)
+	dec, err := EvaluateConsent(context.Background(), storeBob, tombstonesBob, true, AutoAcceptPolicy{}, tmpDir, idAlice.DeviceID, huge, nil)
 	if err != nil {
 		t.Fatalf("decline should not error, got %v", err)
 	}
@@ -992,7 +992,7 @@ func TestEvaluateConsentDeclinesOnDiskSpace(t *testing.T) {
 
 	// 2. Prompt path declines without invoking the handler.
 	handlerCalled := false
-	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, tmpDir, idAlice.DeviceID, huge,
+	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, AutoAcceptPolicy{}, tmpDir, idAlice.DeviceID, huge,
 		func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
 			handlerCalled = true
 			return ConsentDecision{Accepted: true}, nil
@@ -1008,7 +1008,7 @@ func TestEvaluateConsentDeclinesOnDiskSpace(t *testing.T) {
 	small := huge
 	small.TotalSize = 500
 	small.Files = []wire.FileEntry{{Idx: 0, Name: "small.bin", Size: 500, BlockSize: 1 << 20, Blocks: 1, LastModified: 1}}
-	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, tmpDir, idAlice.DeviceID, small,
+	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, AutoAcceptPolicy{}, tmpDir, idAlice.DeviceID, small,
 		func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
 			handlerCalled = true
 			return ConsentDecision{Accepted: false, Reason: "prompted"}, nil
