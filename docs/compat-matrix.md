@@ -276,3 +276,23 @@ SendBeam v1.9 completes end-to-end trusted-device handoffs across Browser, CLI, 
   died with `connection timed out` at ~7.8 s. The stall point varied (≈52 KiB–527 KiB)
   because it was a race, not a fixed buffer. Direct (UDP) transfers were unaffected,
   which made the relay failure look like a relay bug rather than a lab bug.
+
+## v2.1 offline network policies
+
+Scope: native CLI and desktop on a reachable local network. The browser has no
+offline claim. Guest Wi-Fi / client-isolated networks and blocked multicast
+without a manual `--peer-addr` endpoint fail honestly; they are not claimed to
+work.
+
+| Effective policy | Local route available | Local route missing | Public egress while active |
+| ---------------- | --------------------- | ------------------- | -------------------------- |
+| `online` (default) | online directly | online directly | yes (normal operation) |
+| `prefer-local` | local first; explicit online fallback on failure | online directly (stated, not silent) | only on the fallback leg |
+| `local-only` | local only | clear failure, no fallback | **none** — no rendezvous, STUN/TURN, relay, update check, or telemetry |
+
+Outbox jobs bind a policy at enqueue and are held (not leased, sent, or
+charged retry budget) when the dispatch pass cannot serve them. Interrupted
+local sends resume through the authenticated resume contract; a fresh session
+under a reused transfer id re-sends rather than reusing unverified progress.
+`TestTransferFileWithEgressDenied` asserts fail-closed behavior with a denied
+egress hook deterministically (TEST-NET-1, no UDP dependence).
