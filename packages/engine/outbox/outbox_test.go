@@ -48,7 +48,7 @@ func testRecipients() []RecipientRef {
 }
 
 func okSender(digest string) SendFunc {
-	return func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	return func(_ context.Context, job jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		return SendOutcome{Status: transfer.StatusOk, Digest: digest, BytesTransferred: job.TotalSize}
 	}
 }
@@ -105,7 +105,7 @@ func TestEnqueue_RejectsNoRecipients(t *testing.T) {
 func TestDispatch_OfflineRecipientBackoff(t *testing.T) {
 	clk := &testClock{t: time.Date(2026, 9, 20, 6, 0, 0, 0, time.UTC)}
 	calls := 0
-	offline := func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	offline := func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		calls++
 		return SendOutcome{Status: transfer.StatusOffline, Error: "peer not found"}
 	}
@@ -212,7 +212,7 @@ func TestDispatch_OkCompletesJob(t *testing.T) {
 func TestDispatch_RefusedIsTerminal(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
 	calls := 0
-	refused := func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	refused := func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		calls++
 		return SendOutcome{Status: transfer.StatusRefused, Error: "peer declined"}
 	}
@@ -244,7 +244,7 @@ func TestDispatch_RefusedIsTerminal(t *testing.T) {
 func TestDispatch_CancelStopsDispatch(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
 	calls := 0
-	never := func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	never := func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		calls++
 		return SendOutcome{Status: transfer.StatusOk}
 	}
@@ -276,7 +276,7 @@ func TestDispatch_CancelStopsDispatch(t *testing.T) {
 func TestDispatch_ExpiredJobFailsAttempts(t *testing.T) {
 	clk := &testClock{t: time.Date(2026, 9, 20, 6, 0, 0, 0, time.UTC)}
 	calls := 0
-	never := func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	never := func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		calls++
 		return SendOutcome{Status: transfer.StatusOk}
 	}
@@ -306,7 +306,7 @@ func TestDispatch_ExpiredJobFailsAttempts(t *testing.T) {
 func TestDispatch_ChangedSourceFailsJob(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
 	calls := 0
-	never := func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	never := func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		calls++
 		return SendOutcome{Status: transfer.StatusOk}
 	}
@@ -350,14 +350,14 @@ func TestDispatch_RequiresSender(t *testing.T) {
 
 func TestDispatch_RestartRequeuesInterrupted(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
-	hang := func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	hang := func(_ context.Context, _ jobs.Job, attempt jobs.RecipientAttempt, _ []string) SendOutcome {
 		// Simulate a crash mid-dispatch: leave the attempt active in the store
 		// and never report an outcome.
 		return SendOutcome{Status: transfer.StatusOffline, Error: "simulated"}
 	}
 	_ = hang
 	calls := 0
-	ob := newTestOutbox(t, clk, func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	ob := newTestOutbox(t, clk, func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		calls++
 		return SendOutcome{Status: transfer.StatusOk, Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	})
@@ -392,7 +392,7 @@ func TestDispatch_RestartRequeuesInterrupted(t *testing.T) {
 func TestRetryFailed_RequeuesWithFreshBudget(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
 	calls := 0
-	failOnce := func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	failOnce := func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		calls++
 		if calls == 1 {
 			return SendOutcome{Status: transfer.StatusFailed, Error: "auth error"}
@@ -441,7 +441,7 @@ func TestRetryFailed_RequeuesWithFreshBudget(t *testing.T) {
 
 func TestRetryFailed_DeviceFilter(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
-	ob := newTestOutbox(t, clk, func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	ob := newTestOutbox(t, clk, func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		return SendOutcome{Status: transfer.StatusFailed, Error: "x"}
 	})
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
@@ -490,7 +490,7 @@ func TestEnqueue_DuplicateRecipientsRejected(t *testing.T) {
 func TestDispatch_CorruptSidecarFailsJob(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
 	calls := 0
-	ob := newTestOutbox(t, clk, func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	ob := newTestOutbox(t, clk, func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		calls++
 		return SendOutcome{Status: transfer.StatusOk, Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	})
@@ -517,7 +517,7 @@ func TestDispatch_CorruptSidecarFailsJob(t *testing.T) {
 func TestDispatch_MissingSourceFailsJob(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
 	calls := 0
-	ob := newTestOutbox(t, clk, func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	ob := newTestOutbox(t, clk, func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		calls++
 		return SendOutcome{Status: transfer.StatusOk, Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	})
@@ -543,7 +543,7 @@ func TestDispatch_MissingSourceFailsJob(t *testing.T) {
 
 func TestDispatch_AttemptExhaustionFailsJob(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
-	ob := newTestOutbox(t, clk, func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	ob := newTestOutbox(t, clk, func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		return SendOutcome{Status: transfer.StatusFailed, Error: "peer unreachable"}
 	})
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
@@ -569,7 +569,7 @@ func TestDispatch_AttemptExhaustionFailsJob(t *testing.T) {
 
 func TestDispatch_MixedOutcomes(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
-	ob := newTestOutbox(t, clk, func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	ob := newTestOutbox(t, clk, func(_ context.Context, _ jobs.Job, attempt jobs.RecipientAttempt, _ []string) SendOutcome {
 		if strings.HasSuffix(attempt.DeviceID, "0000000000000001") {
 			return SendOutcome{Status: transfer.StatusOk, Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 		}
@@ -602,7 +602,7 @@ func TestDispatch_MixedOutcomes(t *testing.T) {
 
 func TestDispatch_OkWithoutDigestFails(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
-	ob := newTestOutbox(t, clk, func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	ob := newTestOutbox(t, clk, func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		return SendOutcome{Status: transfer.StatusOk, Digest: "not-hex"}
 	})
 	p := writeTempFile(t, t.TempDir(), "a.txt", "data")
@@ -628,7 +628,7 @@ func TestDispatch_CancelDuringSendDropsResult(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
-	ob := newTestOutbox(t, clk, func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	ob := newTestOutbox(t, clk, func(_ context.Context, _ jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		once.Do(func() { close(started) })
 		<-release
 		return SendOutcome{Status: transfer.StatusOk, Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
@@ -662,7 +662,7 @@ func TestDispatch_ParallelJobs(t *testing.T) {
 	clk := &testClock{t: time.Now().UTC()}
 	var mu sync.Mutex
 	var seen []string
-	ob := newTestOutbox(t, clk, func(_ context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) SendOutcome {
+	ob := newTestOutbox(t, clk, func(_ context.Context, job jobs.Job, _ jobs.RecipientAttempt, _ []string) SendOutcome {
 		mu.Lock()
 		seen = append(seen, job.JobID)
 		mu.Unlock()
