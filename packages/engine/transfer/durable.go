@@ -520,6 +520,13 @@ func (d *DurableDestination) Prepare(manifest wire.Manifest) error {
 	if err != nil {
 		return err
 	}
+	// V20-PR04 receive preflight: fail fast when the destination cannot be
+	// staged — unwritable directory or insufficient disk space — before any
+	// journal or partial state is created and before any byte flows. A
+	// mid-write ENOSPC in a half-staged transfer is strictly worse.
+	if err := PreflightReceive(d.outRoot, validated.TotalSize); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.prepared {

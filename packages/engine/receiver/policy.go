@@ -5,9 +5,22 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sendbeam/engine/transfer"
 	"github.com/sendbeam/engine/trust"
 	"github.com/sendbeam/wire"
 )
+
+// spaceDecline runs the read-only disk-space preflight for a consent-time
+// destination directory. It returns a decline decision when the manifest
+// cannot fit, or nil when the transfer may proceed to consent. The check is
+// advisory — the full preflight in DurableDestination.Prepare stays the hard
+// guarantee — so an unqueryable filesystem never blocks consent here.
+func spaceDecline(destDir string, manifest wire.Manifest) *ConsentDecision {
+	if err := transfer.PreflightSpaceAvailable(destDir, manifest.TotalSize); err != nil {
+		return &ConsentDecision{Accepted: false, Reason: err.Error()}
+	}
+	return nil
+}
 
 // EvaluateConsent evaluates whether an incoming transfer should be auto-accepted or requires
 // user consent, strictly enforcing peer revocation and policy restrictions.
@@ -45,6 +58,9 @@ func EvaluateConsent(
 		if dev.Policy.AutoAcceptDestDir != "" {
 			destDir = dev.Policy.AutoAcceptDestDir
 		}
+		if decline := spaceDecline(destDir, manifest); decline != nil {
+			return *decline, nil
+		}
 		return ConsentDecision{Accepted: true, DestDir: destDir}, nil
 	}
 
@@ -72,11 +88,20 @@ func EvaluateConsent(
 			if destDir == "" {
 				destDir = defaultDestDir
 			}
+			if decline := spaceDecline(destDir, manifest); decline != nil {
+				return *decline, nil
+			}
 			return ConsentDecision{Accepted: true, DestDir: destDir}, nil
 		}
 	}
 
-	// 4. Fall through to explicit user consent prompt
+	// 4. Fall through to explicit user consent prompt. The disk-space
+	// preflight runs before prompting: a transfer that cannot fit will
+	// fail, so declining fast with the reason beats a doomed prompt.
+	if decline := spaceDecline(defaultDestDir, manifest); decline != nil {
+		return *decline, nil
+	}
+
 	if handler == nil {
 		return ConsentDecision{Accepted: false, Reason: "no consent handler configured"}, nil
 	}

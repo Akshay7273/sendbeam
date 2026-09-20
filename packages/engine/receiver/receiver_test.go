@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -963,4 +964,56 @@ func TestReceiverRequirePaddingMutualSuccess(t *testing.T) {
 	}
 }
 
+func TestEvaluateConsentDeclinesOnDiskSpace(t *testing.T) {
+	tmpDir := t.TempDir()
+	idAlice, _, _, storeBob, _, tombstonesBob := setupPairedPeers(t, tmpDir)
 
+	// A manifest no real disk can hold: the read-only preflight must decline
+	// before any auto-accept or user prompt.
+	huge := wire.Manifest{
+		TransferID: "huge-1",
+		Files: []wire.FileEntry{
+			{Idx: 0, Name: "big.bin", Size: 1 << 60, BlockSize: 1 << 20, Blocks: 1 << 40, LastModified: 1},
+		},
+		TotalSize: 1 << 60,
+	}
+
+	// 1. Global auto-accept path declines.
+	dec, err := EvaluateConsent(context.Background(), storeBob, tombstonesBob, true, tmpDir, idAlice.DeviceID, huge, nil)
+	if err != nil {
+		t.Fatalf("decline should not error, got %v", err)
+	}
+	if dec.Accepted {
+		t.Fatalf("expected disk-space decline, got accept: %+v", dec)
+	}
+	if !strings.Contains(dec.Reason, "insufficient disk space") {
+		t.Fatalf("reason should name disk space, got %q", dec.Reason)
+	}
+
+	// 2. Prompt path declines without invoking the handler.
+	handlerCalled := false
+	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, tmpDir, idAlice.DeviceID, huge,
+		func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
+			handlerCalled = true
+			return ConsentDecision{Accepted: true}, nil
+		})
+	if err != nil {
+		t.Fatalf("decline should not error, got %v", err)
+	}
+	if dec.Accepted || handlerCalled {
+		t.Fatalf("expected pre-prompt decline, got dec=%+v handlerCalled=%v", dec, handlerCalled)
+	}
+
+	// 3. A fittable manifest still flows to the handler.
+	small := huge
+	small.TotalSize = 500
+	small.Files = []wire.FileEntry{{Idx: 0, Name: "small.bin", Size: 500, BlockSize: 1 << 20, Blocks: 1, LastModified: 1}}
+	dec, err = EvaluateConsent(context.Background(), storeBob, tombstonesBob, false, tmpDir, idAlice.DeviceID, small,
+		func(_ context.Context, _ ConsentRequest) (ConsentDecision, error) {
+			handlerCalled = true
+			return ConsentDecision{Accepted: false, Reason: "prompted"}, nil
+		})
+	if err != nil || !handlerCalled {
+		t.Fatalf("small manifest should reach the handler, got dec=%+v err=%v handlerCalled=%v", dec, err, handlerCalled)
+	}
+}
