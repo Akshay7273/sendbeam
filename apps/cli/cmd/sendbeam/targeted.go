@@ -36,6 +36,9 @@ type targetSendConfig struct {
 	requirePadding bool
 	jitter         time.Duration
 	dialWriter     io.Writer
+	// contentKind marks a targeted send as an encrypted text/link handoff
+	// (V20-PR06); empty for ordinary file sends.
+	contentKind string
 }
 
 // resolveSendTargets resolves each query to a trusted device and loads the
@@ -86,10 +89,14 @@ func buildBroadcastTargets(env *CLIEnvironment, localID *wire.DeviceIdentity, re
 			PeerPublicKey:     r.peerPubKey,
 			KPair:             r.kPair,
 			PairCredentialRef: rec.PairCredentialRef,
-			LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume"},
-			ReplayCache:       replayCache,
-			Tombstones:        env.Tombstones,
-			TrustStore:        env.TrustStore,
+			// V20-PR06: advertise handoff support so the negotiated
+			// intersection can grant it; without this the driver's
+			// fail-closed downgrade check would refuse every targeted
+			// handoff even to a capable peer.
+			LocalCaps:   []string{"sendbeam/3", "rendezvous", "resume", wire.HandoffCapability},
+			ReplayCache: replayCache,
+			Tombstones:  env.Tombstones,
+			TrustStore:  env.TrustStore,
 		}
 		requirePad := cfg.requirePadding || rec.Policy.RequirePadding
 		spec := transfer.Spec{
@@ -97,6 +104,7 @@ func buildBroadcastTargets(env *CLIEnvironment, localID *wire.DeviceIdentity, re
 			PeerDeviceID:   rec.DeviceID,
 			PeerLabel:      rec.LocalLabel,
 			Sources:        sources,
+			ContentKind:    cfg.contentKind,
 			ICEServers:     cfg.ice,
 			ForceRelay:     cfg.relayOnly,
 			Private:        cfg.privateMode || requirePad,

@@ -26,6 +26,11 @@ export interface IncomingTransferRequest {
   fileCount: number;
   totalBytes: number;
   files: Array<{ name: string; size: number }>;
+  /**
+   * V20-PR06: present for encrypted text/link handoff envelopes. The consent UI
+   * renders these inertly with deliberate Copy/Save/Open instead of a download.
+   */
+  contentKind?: 'text' | 'link';
 }
 
 export type BroadcastDeviceStatus =

@@ -1052,3 +1052,54 @@ func (h *testBlindHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+// V20-PR06: explicit encrypted text/link handoffs through the send command.
+func TestExecuteSend_TextLinkMutuallyExclusive(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := executeSend([]string{"--text", "hi", "--link", "https://example.com"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "mutually exclusive") {
+		t.Fatalf("expected mutual-exclusion error, got: %s", stderr.String())
+	}
+}
+
+func TestExecuteSend_TextCannotCombineWithFiles(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := executeSend([]string{"--text", "hi", "somefile.txt"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "cannot be combined with file paths") {
+		t.Fatalf("expected combination error, got: %s", stderr.String())
+	}
+}
+
+func TestExecuteSend_LinkCannotCombineWithFiles(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := executeSend([]string{"--link", "https://example.com", "somefile.txt"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+}
+
+func TestExecuteSend_BadLinkRejected(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	// The URL fails validation before any network or identity work begins.
+	code := executeSend([]string{"--link", "ftp://example.com/x"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "http(s)") {
+		t.Fatalf("expected URL-scheme error, got: %s", stderr.String())
+	}
+}
+
+func TestExecuteSend_EmptyTextRejected(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := executeSend([]string{"--text", ""}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("expected exit code 2 for empty --text value, got %d", code)
+	}
+}

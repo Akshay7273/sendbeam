@@ -10,6 +10,7 @@ import {
   deriveRendezvousHandleForTime,
   getOrCreateBrowserIdentity,
   hexToBytes,
+  HANDOFF_FEATURE,
 } from '@sendbeam/protocol';
 import { getBrowserStores } from './devices.js';
 import type { BroadcastDeviceState, BroadcastDeviceStatus, TrustedDeviceUI } from './types.js';
@@ -90,6 +91,11 @@ export function classifyBroadcastError(err: unknown): {
 export interface TargetedSendOptions {
   target: TrustedDeviceUI;
   files: File[];
+  /**
+   * V20-PR06: marks the send as an encrypted text/link handoff. `files` must
+   * carry exactly one handoff envelope payload; it is validated by the worker.
+   */
+  contentKind?: 'text' | 'link';
   serverUrl?: string;
   iceServers?: RTCIceServer[];
   timeoutMs?: number;
@@ -119,7 +125,7 @@ export async function startTargetedSend(opts: TargetedSendOptions): Promise<Targ
     peerPublicKey: peer.peerPublicKey,
     kPair: peer.kPair,
     pairCredentialRef: peer.record.pairCredentialRef,
-    localCapabilities: ['sendbeam/3', 'transfer.v1', 'padding'],
+    localCapabilities: ['sendbeam/3', 'transfer.v1', 'padding', HANDOFF_FEATURE],
     timeoutMs: opts.timeoutMs ?? 45_000,
   });
 
@@ -139,6 +145,7 @@ export async function startTargetedSend(opts: TargetedSendOptions): Promise<Targ
       const ctrl = runSend(res, signaling, {
         files: opts.files,
         requirePadding: peer.record.policy?.requirePadding ?? false,
+        ...(opts.contentKind !== undefined ? { contentKind: opts.contentKind } : {}),
         ...(opts.iceServers ? { iceServers: opts.iceServers } : {}),
       });
       activeTransfer = ctrl;
@@ -175,6 +182,8 @@ export interface BroadcastSendOptions {
   timeoutMs?: number;
   localIdentity?: DeviceIdentity;
   onTargetUpdate?: (state: BroadcastDeviceState) => void;
+  /** V20-PR06: marks the broadcast as an encrypted text/link handoff. */
+  contentKind?: 'text' | 'link';
 }
 
 export interface BroadcastSendResult {
@@ -242,7 +251,7 @@ export async function runBroadcastSend(
         peerPublicKey: peer.peerPublicKey,
         kPair: peer.kPair,
         pairCredentialRef: peer.record.pairCredentialRef,
-        localCapabilities: ['sendbeam/3', 'transfer.v1', 'padding'],
+        localCapabilities: ['sendbeam/3', 'transfer.v1', 'padding', HANDOFF_FEATURE],
         timeoutMs: opts.timeoutMs ?? 45_000,
       });
 
@@ -254,6 +263,8 @@ export async function runBroadcastSend(
       const transferCtrl = runSend(res, signaling, {
         files,
         requirePadding: peer.record.policy?.requirePadding ?? false,
+        // V20-PR06: CLI parity — a broadcast handoff reaches each trusted target.
+        ...(opts.contentKind !== undefined ? { contentKind: opts.contentKind } : {}),
         ...(opts.iceServers ? { iceServers: opts.iceServers } : {}),
       });
 

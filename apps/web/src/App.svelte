@@ -7,6 +7,7 @@
     Role,
   } from '@sendbeam/protocol';
   import { FEATURE_PADDING, RendezvousError, TransferError } from '@sendbeam/protocol';
+  import { MAX_HANDOFF_BYTES } from '@sendbeam/protocol';
 
   import { offer, join, type RendezvousController } from './lib/session/rendezvous.js';
   import type { SignalChannel } from './lib/signaling/client.js';
@@ -37,6 +38,7 @@
   import TransferCenterModal from './lib/transfer/TransferCenterModal.svelte';
   import { isWailsV3Available } from './lib/wails/wails-adapter.js';
   import IncomingTransferModal from './lib/trust/IncomingTransferModal.svelte';
+  import HandoffView from './lib/handoff/HandoffView.svelte';
   import type {
     TrustedDeviceUI,
     IncomingTransferRequest,
@@ -168,6 +170,11 @@
   let targetedStatus = $state<BroadcastDeviceStatus>('pending');
   let targetedSession = $state<TargetedSendSession | null>(null);
 
+  // V20-PR06: handoff composer state — explicit encrypted text/link sends.
+  let handoffMode = $state<'files' | 'text' | 'link'>('files');
+  let handoffText = $state('');
+  let handoffLink = $state('');
+
   // Multi-send broadcast state
   let broadcastRecipients = $state<TrustedDeviceUI[]>([]);
   let broadcastStates = $state.raw<BroadcastDeviceState[]>([]);
@@ -194,7 +201,54 @@
     }
   }
 
-  async function runTargetedTransfer(dev: TrustedDeviceUI, files: File[]) {
+  // V20-PR06: build a single validated handoff envelope file from composer input.
+  // Returns null when the input is empty, oversized, or (for links) not a
+  // whitespace-free http(s) URL with a host — matching the CLI send validation.
+  function handoffFileFor(mode: 'text' | 'link', raw: string): File | null {
+    // V20-PR06: text preserves the exact user bytes (only whitespace-only
+    // input is rejected); links are trimmed before URL validation.
+    if (mode === 'text') {
+      if (raw.trim().length === 0) return null;
+      const bytes = new TextEncoder().encode(raw);
+      if (bytes.length === 0 || bytes.length > MAX_HANDOFF_BYTES) return null;
+      return new File([raw], 'text.txt', { type: 'text/plain;charset=utf-8' });
+    }
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return null;
+    const bytes = new TextEncoder().encode(trimmed);
+    if (bytes.length === 0 || bytes.length > MAX_HANDOFF_BYTES) return null;
+    let url: URL;
+    try {
+      url = new URL(trimmed);
+    } catch {
+      return null;
+    }
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !url.hostname) return null;
+    if (/\s/.test(trimmed)) return null;
+    return new File([trimmed], 'link.txt', { type: 'text/plain;charset=utf-8' });
+  }
+
+  const handoffValid = $derived(
+    handoffMode === 'text'
+      ? handoffFileFor('text', handoffText) !== null
+      : handoffMode === 'link'
+        ? handoffFileFor('link', handoffLink) !== null
+        : false,
+  );
+
+  function sendHandoff(): void {
+    const mode = handoffMode;
+    if (mode === 'files' || !targetedRecipient) return;
+    const file = handoffFileFor(mode, mode === 'link' ? handoffLink : handoffText);
+    if (!file) return;
+    void runTargetedTransfer(targetedRecipient, [file], mode);
+  }
+
+  async function runTargetedTransfer(
+    dev: TrustedDeviceUI,
+    files: File[],
+    contentKind?: 'text' | 'link',
+  ) {
     reset();
     targetedRecipient = dev;
     pickedFiles = files;
@@ -206,6 +260,7 @@
       const sess = await startTargetedSend({
         target: dev,
         files,
+        ...(contentKind !== undefined ? { contentKind } : {}),
         ...(ice ? { iceServers: ice } : {}),
         onStateChange: (st) => {
           targetedStatus = st;
@@ -757,6 +812,9 @@
     fingerprint = '';
     peerCaps = undefined;
     errorText = '';
+    handoffMode = 'files';
+    handoffText = '';
+    handoffLink = '';
     failureDiag = '';
     durableDiscarded = false;
     senderRecordList = [];
@@ -1273,15 +1331,69 @@
         {#if pickedFiles.length === 0}
           <div class="pick-box">
             <p class="muted">
-              Choose the files you want to beam to <strong>@{targetedRecipient.localLabel}</strong>.
+              Choose what to beam to <strong>@{targetedRecipient.localLabel}</strong>.
             </p>
-            <div class="pick-actions">
-              <label class="primary btn file-input-label">
-                <span>Choose files</span>
-                <input type="file" multiple onchange={onPickTargetedFiles} style="display: none" />
-              </label>
-              <button class="ghost" onclick={backHome}>Cancel</button>
+            <div class="compose-tabs" role="tablist" aria-label="What to send">
+              <button
+                class={handoffMode === 'files' ? 'tab active' : 'tab'}
+                role="tab"
+                aria-selected={handoffMode === 'files'}
+                onclick={() => (handoffMode = 'files')}>Files</button
+              >
+              <button
+                class={handoffMode === 'text' ? 'tab active' : 'tab'}
+                role="tab"
+                aria-selected={handoffMode === 'text'}
+                onclick={() => (handoffMode = 'text')}>Text</button
+              >
+              <button
+                class={handoffMode === 'link' ? 'tab active' : 'tab'}
+                role="tab"
+                aria-selected={handoffMode === 'link'}
+                onclick={() => (handoffMode = 'link')}>Link</button
+              >
             </div>
+            {#if handoffMode === 'files'}
+              <div class="pick-actions">
+                <label class="primary btn file-input-label">
+                  <span>Choose files</span>
+                  <input
+                    type="file"
+                    multiple
+                    onchange={onPickTargetedFiles}
+                    style="display: none"
+                  />
+                </label>
+                <button class="ghost" onclick={backHome}>Cancel</button>
+              </div>
+            {:else}
+              <div class="handoff-compose">
+                {#if handoffMode === 'text'}
+                  <textarea
+                    bind:value={handoffText}
+                    rows={4}
+                    placeholder="Type the text note — encrypted end to end, up to 256 KiB."
+                    aria-label="Text to send"></textarea>
+                {:else}
+                  <input
+                    type="url"
+                    bind:value={handoffLink}
+                    placeholder="https://… — encrypted end to end, never opened automatically"
+                    aria-label="Link to send"
+                  />
+                {/if}
+                <p class="muted handoff-hint">
+                  The receiver sees it only after verification and chooses what to do with it —
+                  nothing is opened, copied, or saved automatically.
+                </p>
+                <div class="pick-actions">
+                  <button class="primary btn" disabled={!handoffValid} onclick={sendHandoff}>
+                    Send {handoffMode === 'link' ? 'link' : 'text'}
+                  </button>
+                  <button class="ghost" onclick={backHome}>Cancel</button>
+                </div>
+              </div>
+            {/if}
           </div>
         {:else}
           <div class="targeted-transfer-info">
@@ -1484,7 +1596,9 @@
       {/if}
 
       {#if outcome}
-        {#if downloadUrl}
+        {#if outcome.handoff}
+          <HandoffView handoff={outcome.handoff} />
+        {:else if downloadUrl}
           <div class="outcome">
             <p class="muted">
               Received
@@ -2499,6 +2613,49 @@
     display: flex;
     gap: 0.75rem;
     align-items: center;
+  }
+  .compose-tabs {
+    display: flex;
+    gap: 0.4rem;
+    padding: 0.25rem;
+    border-radius: 0.6rem;
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .compose-tabs .tab {
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    padding: 0.45rem 1rem;
+    border-radius: 0.45rem;
+    cursor: pointer;
+    font: inherit;
+  }
+  .compose-tabs .tab.active {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+  }
+  .handoff-compose {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    width: 100%;
+    max-width: 28rem;
+  }
+  .handoff-compose textarea,
+  .handoff-compose input[type='url'] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.65rem 0.8rem;
+    border-radius: 0.6rem;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: rgba(0, 0, 0, 0.25);
+    color: #fff;
+    font: inherit;
+    resize: vertical;
+  }
+  .handoff-hint {
+    font-size: 0.85rem;
+    margin: 0;
   }
   .file-input-label {
     cursor: pointer;

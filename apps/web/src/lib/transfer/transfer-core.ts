@@ -167,6 +167,14 @@ export function runTransferCore(port: Port, deps: TransferCoreDeps): Promise<voi
 
     async function startSend(msg: StartSendMsg): Promise<void> {
       try {
+        // V20-PR06: a handoff is a fresh ephemeral send — it cannot resume or
+        // reattach. Reject a confused host instead of mixing the two.
+        if (
+          msg.contentKind !== undefined &&
+          (msg.resumeAttempt !== undefined || msg.transferId !== undefined)
+        ) {
+          throw new TransferError('integrity', 'handoff sends do not resume or reattach');
+        }
         const sources = msg.files.map((file) => deps.fileSource(file));
         let manifestFiles: FileEntry[] = [];
         let transferId = msg.transferId ?? '';
@@ -210,18 +218,29 @@ export function runTransferCore(port: Port, deps: TransferCoreDeps): Promise<voi
           sendCounterStart: sendCounter,
           recvCounterStart: recvCounter,
           createDigest: deps.createDigest,
+          // V20-PR06: an encrypted text/link handoff rides the ordinary sender; the
+          // kind is stamped on the manifest and validated by validateManifest.
+          ...(msg.contentKind !== undefined ? { contentKind: msg.contentKind } : {}),
           // Mint a stable transfer id so the manifest opts into resumption and a crashed
           // receiver can journal and resume this exact transfer (V13-PR03). A restart
           // reuses the caller's id instead (V13-PR04).
-          newTransferId: () => {
-            transferId = mintTransferId();
-            return transferId;
-          },
+          // V20-PR06: handoffs are ephemeral — no transfer id is minted and none is
+          // advertised, so there is nothing for a resume handshake or a sender
+          // record to bind to. A fresh re-send is the recovery path.
+          ...(msg.contentKind === undefined
+            ? {
+                newTransferId: () => {
+                  transferId = mintTransferId();
+                  return transferId;
+                },
+              }
+            : {}),
           // Fresh sends carry `msg.transferId`; an explicit cross-session resume reuses the
           // interrupted id from the attempt (set above) so the manifest binds to the same
           // journal/fingerprint the peer authenticated. Omitting it would mint a NEW id and
           // silently abandon the interrupted transfer's durable state.
-          ...(transferId !== '' ? { transferId } : {}),
+          // V20-PR06: never for handoffs — see above.
+          ...(msg.contentKind === undefined && transferId !== '' ? { transferId } : {}),
           onResume: (reused) => {
             reusedBaseline = reused;
             // Surface the verified checkpoint immediately — before the first new block.
@@ -232,6 +251,9 @@ export function runTransferCore(port: Port, deps: TransferCoreDeps): Promise<voi
             manifestFiles = manifest.files;
             const store = deps.senderRecords;
             if (!store) return;
+            // V20-PR06: handoffs are ephemeral — never recorded, never resumed.
+            // A re-send is the recovery path.
+            if (msg.contentKind !== undefined) return;
             // Persist or verify the sender record strictly before the manifest frame goes
             // out: the stable id + canonical source identity are durable before the id is
             // advertised, and a changed source aborts the send with nothing transmitted.
@@ -345,6 +367,9 @@ export function runTransferCore(port: Port, deps: TransferCoreDeps): Promise<voi
                 mime: file.mime,
               })),
               totalSize: manifest.totalSize,
+              // V20-PR06: the consent UI renders handoff envelopes inertly with
+              // deliberate Copy/Save/Open instead of a destination prompt.
+              ...(manifest.contentKind !== undefined ? { contentKind: manifest.contentKind } : {}),
             });
             if (isBrowserDestination(destination) && destination.durableMeta) {
               const meta = destination.durableMeta();
@@ -383,7 +408,11 @@ export function runTransferCore(port: Port, deps: TransferCoreDeps): Promise<voi
           })),
           totalSize: result.totalSize,
           digest: result.digest,
-          ...(output?.kind === 'opfs' || output?.kind === 'blob' ? { output } : {}),
+          // V20-PR06: a verified handoff payload rides the done message so the host
+          // can hold it for deliberate Copy/Save/Open — never written to disk.
+          ...(output?.kind === 'opfs' || output?.kind === 'blob' || output?.kind === 'handoff'
+            ? { output }
+            : {}),
         });
         resolve();
       } catch (e) {

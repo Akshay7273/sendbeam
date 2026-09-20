@@ -48,11 +48,15 @@ type SenderOptions struct {
 	// when TransferID is empty; leaving both unset disables resumption.
 	TransferID    string
 	NewTransferID func() string
-	BlockSize     int
-	FrameSize     int
-	Window        int
-	AckTimeout    time.Duration
-	MaxRetries    int
+	// ContentKind marks the send as an encrypted text/link handoff (V20-PR06):
+	// empty for ordinary file sends. The kind is stamped on the manifest; the
+	// envelope invariants (single small file) are enforced by ValidateManifest.
+	ContentKind string
+	BlockSize   int
+	FrameSize   int
+	Window      int
+	AckTimeout  time.Duration
+	MaxRetries  int
 	// DoneTimeout bounds the wait for the receiver's Done after Complete; zero selects
 	// DefaultDoneTimeout.
 	DoneTimeout time.Duration
@@ -249,6 +253,9 @@ func (s *Sender) Run(ctx context.Context) (string, error) {
 	}
 	base := NewManifest(entries, totalSize)
 	base.TransferID = s.transferID
+	// V20-PR06: the handoff envelope kind rides the ordinary manifest; an unknown
+	// or malformed kind fails in ValidateManifest below before any byte is sent.
+	base.ContentKind = s.o.ContentKind
 	manifest, err := ValidateManifest(*base)
 	if err != nil {
 		s.fail(err)

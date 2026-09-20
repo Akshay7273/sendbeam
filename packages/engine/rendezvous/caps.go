@@ -27,13 +27,17 @@ type Caps struct {
 // FeaturePadding is the capability string announced for wire traffic padding.
 const FeaturePadding = wire.PaddingCapability
 
+// FeatureHandoff is the capability string announced by receivers that
+// understand encrypted text/link handoff envelopes (V20-PR06).
+const FeatureHandoff = wire.HandoffCapability
+
 // DefaultCaps returns the capabilities a CLI peer announces by default.
 func DefaultCaps() Caps {
 	return Caps{
 		Version:   wire.ProtocolVersion,
 		MaxFrame:  defaultFrameBytes,
 		BlockSize: defaultBlockBytes,
-		Features:  []string{"folders", "relay"},
+		Features:  []string{"folders", "relay", FeatureHandoff},
 		SinkHints: []string{"direct-file"},
 	}
 }

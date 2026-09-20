@@ -99,11 +99,18 @@ function asManifest(m: Record<string, unknown>): Manifest {
       `control frame: manifest has ${m.files.length} files, maximum is ${MAX_TRANSFER_FILES}`,
     );
   // transferId is optional; when present it must be a string and keeps its position right after
-  // `type` so the re-encoded wire bytes match the original ordering.
+  // `type` so the re-encoded wire bytes match the original ordering. contentKind is optional
+  // too and keeps its position right after transferId (V20-PR06); unknown kinds fail here so
+  // they can never pass as an ordinary file set.
   const transferId = m.transferId === undefined ? undefined : str(m, 'transferId');
+  const contentKindRaw = m.contentKind === undefined ? undefined : str(m, 'contentKind');
+  if (contentKindRaw !== undefined && contentKindRaw !== 'text' && contentKindRaw !== 'link') {
+    throw new Error('control frame: bad manifest contentKind');
+  }
   return {
     type: FrameType.Manifest,
     ...(transferId !== undefined ? { transferId } : {}),
+    ...(contentKindRaw !== undefined ? { contentKind: contentKindRaw as 'text' | 'link' } : {}),
     files: m.files.map(asFileEntry),
     totalSize: num(m, 'totalSize'),
   };

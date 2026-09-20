@@ -775,10 +775,11 @@ function asIntegrityError(e: unknown): TransferError {
 }
 
 // manifestsEqual reports whether two validated manifests describe the same
-// transfer: same id, same total size, and identical file entries.
+// transfer: same id, same content kind, same total size, and identical file entries.
 function manifestsEqual(a: Manifest, b: Manifest): boolean {
   if (
     a.transferId !== b.transferId ||
+    a.contentKind !== b.contentKind ||
     a.totalSize !== b.totalSize ||
     a.files.length !== b.files.length
   ) {

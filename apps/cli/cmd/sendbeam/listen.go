@@ -84,6 +84,11 @@ func executeListenWithContext(ctx context.Context, args []string, stdin io.Reade
 				"total_size":     req.TotalSize,
 				"dest_dir":       req.DestDir,
 			}
+			// V20-PR06: the handoff kind travels with the consent request so the
+			// receiver can render an inert preview and deliberate actions.
+			if req.ContentKind != "" {
+				evt["content_kind"] = req.ContentKind
+			}
 			enc, _ := json.Marshal(evt)
 			_, _ = fmt.Fprintln(stdout, string(enc))
 
@@ -105,12 +110,22 @@ func executeListenWithContext(ctx context.Context, args []string, stdin io.Reade
 		}
 
 		s := newStyleFromWriter(stdout)
-		_, _ = fmt.Fprintf(stdout, "\n%s from %s (%s):\n", s.bold("Incoming transfer"), s.bold(req.PeerLabel), req.PeerDeviceID)
-		for _, f := range req.Files {
-			_, _ = fmt.Fprintf(stdout, "  • %s (%s)\n", f.Name, humanBytes(f.Size))
+		if req.ContentKind != "" {
+			// V20-PR06: a handoff announces its kind, never its content, at
+			// consent time — the payload only exists after verification.
+			_, _ = fmt.Fprintf(stdout, "\n%s (%s, %s) from %s (%s):\n",
+				s.bold("Incoming "+handoffKindLabel(req.ContentKind)+" handoff"),
+				humanBytes(req.TotalSize), s.dim("encrypted"), s.bold(req.PeerLabel), req.PeerDeviceID)
+			_, _ = fmt.Fprintf(stdout, "The %s will be shown as plain text after verification — it is never opened automatically.\n", handoffKindLabel(req.ContentKind))
+			_, _ = fmt.Fprintf(stdout, "Accept handoff? [y/N]: ")
+		} else {
+			_, _ = fmt.Fprintf(stdout, "\n%s from %s (%s):\n", s.bold("Incoming transfer"), s.bold(req.PeerLabel), req.PeerDeviceID)
+			for _, f := range req.Files {
+				_, _ = fmt.Fprintf(stdout, "  • %s (%s)\n", f.Name, humanBytes(f.Size))
+			}
+			_, _ = fmt.Fprintf(stdout, "Total: %d file(s), %s\n", len(req.Files), humanBytes(req.TotalSize))
+			_, _ = fmt.Fprintf(stdout, "Accept transfer into %s? [y/N]: ", req.DestDir)
 		}
-		_, _ = fmt.Fprintf(stdout, "Total: %d file(s), %s\n", len(req.Files), humanBytes(req.TotalSize))
-		_, _ = fmt.Fprintf(stdout, "Accept transfer into %s? [y/N]: ", req.DestDir)
 
 		scanner := bufio.NewScanner(stdin)
 		if scanner.Scan() {
@@ -178,8 +193,37 @@ func executeListenWithContext(ctx context.Context, args []string, stdin io.Reade
 				label = rec.LocalLabel
 			}
 			if *jsonOutput {
-				_, _ = fmt.Fprintf(stdout, `{"event":"transfer_complete","peer_device_id":%q,"name":%q,"size":%d,"digest":%q,"path":%q}`+"\n",
-					peerDeviceID, outcome.Name, outcome.Size, outcome.Digest, outcome.Path)
+				// V20-PR06: the verified handoff payload is included so scripts
+				// can consume it; it is the receiver's own data over their
+				// encrypted channel.
+				evt := map[string]any{
+					"event":          "transfer_complete",
+					"peer_device_id": peerDeviceID,
+					"name":           outcome.Name,
+					"size":           outcome.Size,
+					"digest":         outcome.Digest,
+					"path":           outcome.Path,
+				}
+				if outcome.ContentKind != "" {
+					evt["content_kind"] = outcome.ContentKind
+					evt["content"] = outcome.Content
+				}
+				enc, _ := json.Marshal(evt)
+				_, _ = fmt.Fprintln(stdout, string(enc))
+			} else if outcome.ContentKind != "" {
+				// V20-PR06: the verified handoff is rendered as inert literal
+				// text. The CLI never opens links or touches the clipboard.
+				s := newStyleFromWriter(stdout)
+				_, _ = fmt.Fprintf(stdout, "[%s] %s handoff from %s (%s, %s):\n",
+					time.Now().Format("15:04:05"), s.bold("Verified "+handoffKindLabel(outcome.ContentKind)),
+					s.bold(label), humanBytes(outcome.Size), s.green("Verified"))
+				if outcome.ContentKind == wire.ContentKindLink {
+					_, _ = fmt.Fprintf(stdout, "  Link (not opened): %s\n", outcome.Content)
+				} else {
+					for _, line := range strings.Split(outcome.Content, "\n") {
+						_, _ = fmt.Fprintf(stdout, "  %s\n", line)
+					}
+				}
 			} else {
 				s := newStyleFromWriter(stdout)
 				_, _ = fmt.Fprintf(stdout, "[%s] Transfer complete from %s: %s (%s) -> %s\n",

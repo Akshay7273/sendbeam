@@ -12,6 +12,7 @@
 
 import {
   FEATURE_PADDING,
+  HANDOFF_FEATURE,
   validatePaddingPolicy,
   decodeResumeSecretEnvelope,
   deriveResumeRoot,
@@ -57,6 +58,13 @@ export interface TransferOutcome {
   savedDirectly?: boolean;
   /** Release a temporary browser-staged output after its download link is gone. */
   cleanup?: () => Promise<void>;
+  /**
+   * V20-PR06: "text" or "link" when the completed transfer was an encrypted handoff.
+   * On the receive side `handoff` carries the verified payload for deliberate
+   * Copy/Save/Open actions — it was never written to disk.
+   */
+  contentKind?: 'text' | 'link';
+  handoff?: { contentKind: 'text' | 'link'; text: string };
 }
 
 /** A transfer in progress. `done` settles once; `progress` is polled by the UI for a live bar. */
@@ -98,6 +106,11 @@ export interface SendOptions {
   files: File[];
   /** Reuse the stable transfer id of an interrupted send; the worker re-verifies the source. */
   transferId?: string;
+  /**
+   * V20-PR06: marks the send as an encrypted text/link handoff. The worker stamps the kind
+   * on the manifest; the envelope invariants are enforced by validateManifest.
+   */
+  contentKind?: 'text' | 'link';
   /** How this send's source can be reopened after an interruption (persisted with the record). */
   reattachment?: SenderReattachment;
   /**
@@ -129,6 +142,7 @@ export function runSend(
   return run(rendezvous, signaling, {
     role: 'send',
     requirePadding,
+    ...(opts.contentKind !== undefined ? { contentKind: opts.contentKind } : {}),
     total: opts.files.reduce((total, file) => total + file.size, 0),
     ...(opts.iceServers ? { iceServers: opts.iceServers } : {}),
     start: async () => ({
@@ -137,6 +151,8 @@ export function runSend(
       ...(isPaddingNegotiated(rendezvous) || requirePadding ? { padding: true } : {}),
       ...(requirePadding ? { requirePadding: true } : {}),
       ...(opts.transferId !== undefined ? { transferId: opts.transferId } : {}),
+      // V20-PR06: the handoff envelope kind rides the ordinary start message.
+      ...(opts.contentKind !== undefined ? { contentKind: opts.contentKind } : {}),
       ...(opts.reattachment !== undefined ? { reattachment: opts.reattachment } : {}),
       ...(opts.resumeAttempt !== undefined
         ? { resumeAttempt: await hostResumeAttempt(opts.resumeAttempt) }
@@ -161,6 +177,8 @@ export function runReceive(
     onConsent?: (manifest: {
       files: Array<{ name: string; size: number }>;
       totalSize: number;
+      /** V20-PR06: present for encrypted text/link handoff envelopes. */
+      contentKind?: 'text' | 'link';
     }) => Promise<boolean> | boolean;
   } = {},
 ): TransferController {
@@ -189,6 +207,8 @@ export function runReceive(
 interface RunSpec {
   role: 'send' | 'receive';
   requirePadding?: boolean;
+  /** V20-PR06: set for encrypted text/link handoff sends; fail closed when the peer lacks the capability. */
+  contentKind?: 'text' | 'link';
   /** Known upfront only when sending. */
   total?: number;
   /** Operator-published ICE servers for direct-path candidate gathering. */
@@ -196,6 +216,8 @@ interface RunSpec {
   onConsent?: (manifest: {
     files: Array<{ name: string; size: number }>;
     totalSize: number;
+    /** V20-PR06: present for encrypted text/link handoff envelopes. */
+    contentKind?: 'text' | 'link';
   }) => Promise<boolean> | boolean;
   start: () => Promise<HostToWorker>;
 }
@@ -319,6 +341,17 @@ function run(
     try {
       if (spec.requirePadding) {
         validatePaddingPolicy(rendezvous.remoteCaps.features, true);
+      }
+      // V20-PR06: a handoff must not silently downgrade into a saved text.txt /
+      // link.txt on an older receiver. Refuse to send when the peer did not
+      // advertise the handoff capability.
+      if (
+        spec.contentKind !== undefined &&
+        !rendezvous.remoteCaps.features.includes(HANDOFF_FEATURE)
+      ) {
+        throw new Error(
+          'The receiver does not support encrypted text/link handoffs — update the receiver app.',
+        );
       }
       const auth = rendezvous.authKeys
         ? new SignalAuthenticator(0, rendezvous.authKeys)
@@ -494,6 +527,8 @@ function run(
                 spec.onConsent({
                   files: msg.files,
                   totalSize: msg.totalSize,
+                  // V20-PR06: the consent UI needs the envelope kind.
+                  ...(msg.contentKind !== undefined ? { contentKind: msg.contentKind } : {}),
                 }),
               )
                 .then((accepted) => {
@@ -581,6 +616,22 @@ function run(
             digest: msg.digest,
             files: msg.files,
             file,
+          });
+        } else if (output?.kind === 'handoff') {
+          // V20-PR06: a verified handoff payload arrives in memory. Close the
+          // channel and hold the content for deliberate Copy/Save/Open —
+          // nothing is written to disk and nothing is opened automatically.
+          await writer?.drain();
+          signaling.close();
+          relay?.close();
+          peer?.close();
+          finish({
+            name: output.contentKind === 'link' ? 'link.txt' : 'text.txt',
+            size: msg.totalSize,
+            digest: msg.digest,
+            files: msg.files,
+            contentKind: output.contentKind,
+            handoff: { contentKind: output.contentKind, text: output.text },
           });
         } else {
           await writer?.drain();

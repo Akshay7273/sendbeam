@@ -9,14 +9,24 @@
   }
 
   let { request, onAccept, onDecline }: Props = $props();
+
+  // V20-PR06: a handoff envelope is rendered inertly — kind and size only.
+  // The payload is not available before verification and is never auto-opened.
+  const isHandoff = $derived(request?.contentKind !== undefined);
 </script>
 
 {#if request}
   <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="incoming-title">
     <div class="modal-content">
       <div class="incoming-header">
-        <div class="incoming-icon">📥</div>
-        <h3 id="incoming-title">Incoming Transfer</h3>
+        <div class="incoming-icon">{isHandoff ? '✉️' : '📥'}</div>
+        <h3 id="incoming-title">
+          {isHandoff
+            ? request.contentKind === 'link'
+              ? 'Incoming Link'
+              : 'Incoming Text'
+            : 'Incoming Transfer'}
+        </h3>
         <p class="sender-info">
           From <strong>{request.senderLabel}</strong>
           <code class="fp-badge">{request.senderFingerprint}</code>
@@ -24,34 +34,51 @@
       </div>
 
       <div class="transfer-details">
-        <div class="meta-row">
-          <span>Files:</span>
-          <strong>{request.fileCount} file(s)</strong>
-        </div>
-        <div class="meta-row">
-          <span>Total Size:</span>
-          <strong>{humanBytes(request.totalBytes)}</strong>
-        </div>
-
-        {#if request.files.length > 0}
-          <div class="file-list">
-            {#each request.files.slice(0, 5) as file, i (i)}
-              <div class="file-item">
-                <span class="file-name">{file.name}</span>
-                <span class="file-size">{humanBytes(file.size)}</span>
-              </div>
-            {/each}
-            {#if request.files.length > 5}
-              <div class="more-files">
-                + {request.files.length - 5} more file(s)
-              </div>
-            {/if}
+        {#if isHandoff}
+          <div class="meta-row">
+            <span>Content:</span>
+            <strong>{request.contentKind === 'link' ? 'Link' : 'Text note'}</strong>
           </div>
+          <div class="meta-row">
+            <span>Size:</span>
+            <strong>{humanBytes(request.totalBytes)}</strong>
+          </div>
+          <p class="handoff-note">
+            Encrypted {request.contentKind === 'link' ? 'link' : 'text'} — it will be shown only after
+            verification. It will not be opened, copied, or saved automatically.
+          </p>
+        {:else}
+          <div class="meta-row">
+            <span>Files:</span>
+            <strong>{request.fileCount} file(s)</strong>
+          </div>
+          <div class="meta-row">
+            <span>Total Size:</span>
+            <strong>{humanBytes(request.totalBytes)}</strong>
+          </div>
+
+          {#if request.files.length > 0}
+            <div class="file-list">
+              {#each request.files.slice(0, 5) as file, i (i)}
+                <div class="file-item">
+                  <span class="file-name">{file.name}</span>
+                  <span class="file-size">{humanBytes(file.size)}</span>
+                </div>
+              {/each}
+              {#if request.files.length > 5}
+                <div class="more-files">
+                  + {request.files.length - 5} more file(s)
+                </div>
+              {/if}
+            </div>
+          {/if}
         {/if}
       </div>
 
       <div class="modal-actions">
-        <button class="btn-accept" onclick={onAccept}>Accept & Download</button>
+        <button class="btn-accept" onclick={onAccept}>
+          {isHandoff ? 'Accept & Verify' : 'Accept & Download'}
+        </button>
         <button class="btn-decline" onclick={onDecline}>Decline</button>
       </div>
     </div>
@@ -166,6 +193,13 @@
     color: #a1a1aa;
     text-align: center;
     margin-top: 0.25rem;
+  }
+
+  .handoff-note {
+    margin: 0.5rem 0 0 0;
+    font-size: 0.8125rem;
+    color: #a1a1aa;
+    line-height: 1.45;
   }
 
   .modal-actions {
