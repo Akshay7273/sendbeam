@@ -188,9 +188,7 @@ describe('forced-ZIP64 archive round-trips through real unzip', () => {
     ]);
     // The forced archive must actually contain ZIP64 records.
     expect(view(archive).getUint16(4, true)).toBe(45);
-    expect(
-      view(archive).getUint32(archive.length - 22, true),
-    ).toBe(0x06054b50); // classic EOCD closes the chain
+    expect(view(archive).getUint32(archive.length - 22, true)).toBe(0x06054b50); // classic EOCD closes the chain
 
     const dir = mkdtempSync(join(tmpdir(), 'sendbeam-zip64-test-'));
     try {
@@ -245,9 +243,7 @@ describe('in-memory ZIP fallback writes valid CRCs', () => {
       const path = join(dir, 'mem.zip');
       writeFileSync(path, bytes);
       expect(execFileSync('unzip', ['-t', path], { encoding: 'utf8' })).toContain('No errors');
-      expect(execFileSync('unzip', ['-p', path, 'folder/a.bin'])).toEqual(
-        Buffer.from([1, 2, 3]),
-      );
+      expect(execFileSync('unzip', ['-p', path, 'folder/a.bin'])).toEqual(Buffer.from([1, 2, 3]));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

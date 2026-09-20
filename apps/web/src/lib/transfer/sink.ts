@@ -366,15 +366,16 @@ export class ArchiveDestination implements BrowserDestination {
     if (!this.writable || this.active)
       throw new TransferError('sink_error', 'ZIP not ready to close');
     const centralOffset = this.position;
-    let zip64 =
-      this.entries.length > zip64Limits.count || centralOffset > zip64Limits.size;
+    let zip64 = this.entries.length > zip64Limits.count || centralOffset > zip64Limits.size;
     for (const entry of this.entries) {
       zip64 ||= entryNeedsZip64(entry);
       await this.append(centralHeader(entry));
     }
     const centralSize = this.position - centralOffset;
     zip64 ||= centralSize > zip64Limits.size;
-    await this.append(endOfCentralDirectory(this.entries.length, centralSize, centralOffset, zip64));
+    await this.append(
+      endOfCentralDirectory(this.entries.length, centralSize, centralOffset, zip64),
+    );
     await this.writable.close();
   }
 
