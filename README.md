@@ -118,6 +118,26 @@ and resumes automatically when you rejoin the same room, and
 `sendbeam transfers list|inspect|resume|discard` manages that state (see
 [docs/durable-receive.md](docs/durable-receive.md)).
 
+### Nearby & offline (v2.1)
+
+On a reachable local network, native clients can pair and transfer without any
+public rendezvous, STUN, TURN, or relay:
+
+```bash
+sendbeam send photo.jpg @laptop --network-policy local-only --peer-addr 192.168.1.42:9741
+sendbeam receive-local --out ./downloads   # context-cancellable, binds a real LAN address
+```
+
+Policies: `online` (default), `prefer-local` (try the LAN route first, fall back
+online explicitly), `local-only` (never touch the public path — no signaling,
+STUN/TURN, relay, update check, or telemetry while active). Outbox jobs bind a
+policy at enqueue; `sendbeam outbox dispatch --network-policy … --peer-addr …`
+holds jobs it cannot serve instead of sending them down the wrong route.
+Interrupted local sends resume with an authenticated resume context; local-only
+never falls back online. See [docs/RELEASE-v2.1.md](docs/RELEASE-v2.1.md) for the
+release gate, evidence, and honest limitations (browser has no offline claim;
+guest Wi-Fi / client-isolated networks fail honestly).
+
 ## Desktop
 
 SendBeam Desktop provides a native desktop interface for Windows, macOS, and Linux built
