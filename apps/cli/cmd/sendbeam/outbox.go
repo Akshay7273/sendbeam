@@ -16,6 +16,7 @@ import (
 	"github.com/sendbeam/engine/jobs"
 	"github.com/sendbeam/engine/outbox"
 	"github.com/sendbeam/engine/transfer"
+	"github.com/sendbeam/engine/transfercenter"
 	"github.com/sendbeam/wire"
 )
 
@@ -40,6 +41,10 @@ func runOutbox(args []string, stdout, stderr io.Writer) int {
 		return runOutboxCancel(args[1:], stdout, stderr)
 	case "retry":
 		return runOutboxRetry(args[1:], stdout, stderr)
+	case "prune":
+		return runOutboxPrune(args[1:], stdout, stderr)
+	case "forget":
+		return runOutboxForget(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		outboxUsage(stdout)
 		return 0
@@ -56,15 +61,19 @@ func outboxUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "Usage:")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam outbox enqueue")+" <file-or-folder>... --to @device [--to @device...] [flags]")
-	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam outbox list")+" [--json]")
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam outbox list")+" [--state queued|active|interrupted|verified|completed|failed|cancelled|paused|draft|broken|all] [--json]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam outbox show")+" <job-id> [--json]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam outbox dispatch")+" [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam outbox cancel")+" <job-id>")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam outbox retry")+" <job-id> [@device...]")
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam outbox prune")+" [--older-than 720h] [--dry-run] [--json]")
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam outbox forget")+" <job-id>")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "Enqueue stores the job durably and returns immediately. Dispatch runs one")
 	_, _ = fmt.Fprintln(w, "pass over due attempts: offline or busy recipients are retried later with")
 	_, _ = fmt.Fprintln(w, "exponential backoff until attempts run out, the job expires, or you cancel it.")
+	_, _ = fmt.Fprintln(w, "Prune enforces history retention on terminal jobs only; forget deletes one")
+	_, _ = fmt.Fprintln(w, "terminal job's history explicitly. Neither ever touches live work.")
 }
 
 // openOutboxStore opens the jobs store backing the outbox. With --config-dir
@@ -169,6 +178,7 @@ func runOutboxList(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("outbox list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "print jobs as JSON")
+	stateFilter := fs.String("state", "all", "only show jobs in this transfer-center state")
 	configDir := fs.String("config-dir", "", "path to custom configuration directory")
 	_ = parseArgs(fs, args)
 
@@ -177,7 +187,8 @@ func runOutboxList(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "sendbeam outbox list: %v\n", err)
 		return 1
 	}
-	entries, err := store.List()
+	center := transfercenter.New(store, outbox.New(store, nil))
+	snap, err := center.Snapshot()
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam outbox list: %v\n", err)
 		return 1
@@ -185,22 +196,50 @@ func runOutboxList(args []string, stdout, stderr io.Writer) int {
 	if *jsonOutput {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(entries)
+		_ = enc.Encode(snap)
 		return 0
 	}
 	s := newStyleFromWriter(stdout)
-	if len(entries) == 0 {
+	if snap.Summary.Total == 0 {
 		_, _ = fmt.Fprintln(stdout, "No queued jobs.")
 		return 0
 	}
-	for _, e := range entries {
-		if !e.JobOK {
-			_, _ = fmt.Fprintf(stdout, "%s  %s\n", s.red("BROKEN"), shortJobID(e.JobID))
+	want := transfercenter.DisplayState(strings.ToLower(*stateFilter))
+	if want != "all" {
+		known := false
+		for _, g := range snap.Groups {
+			if g.State == want {
+				known = true
+			}
+		}
+		if !known {
+			_, _ = fmt.Fprintf(stderr, "sendbeam outbox list: unknown state %q\n", *stateFilter)
+			return 2
+		}
+	}
+	shown := 0
+	for _, g := range snap.Groups {
+		if want != "all" && g.State != want {
 			continue
 		}
-		_, _ = fmt.Fprintf(stdout, "%s  %-8s %d file(s) %s  %d/%d/%d done/failed/total recipients\n",
-			s.cyan(shortJobID(e.JobID)), outboxStatusLabel(e.Status),
-			e.Files, humanBytes(e.TotalSize), e.Completed, e.Failed, e.Recipients)
+		if len(g.Jobs) == 0 {
+			continue
+		}
+		_, _ = fmt.Fprintf(stdout, "%s\n", s.bold("== "+string(g.State)+" =="))
+		for _, j := range g.Jobs {
+			if j.State == transfercenter.StateBroken {
+				_, _ = fmt.Fprintf(stdout, "%s  %s\n", s.red("BROKEN"), shortJobID(j.JobID))
+				shown++
+				continue
+			}
+			_, _ = fmt.Fprintf(stdout, "%s  %-8s %d file(s) %s  %d/%d/%d done/failed/total recipients\n",
+				s.cyan(shortJobID(j.JobID)), string(j.State),
+				j.Files, humanBytes(j.TotalSize), j.Delivered, j.Failed, j.Recipients)
+			shown++
+		}
+	}
+	if shown == 0 {
+		_, _ = fmt.Fprintf(stdout, "No jobs in state %q.\n", *stateFilter)
 	}
 	return 0
 }
@@ -221,38 +260,40 @@ func runOutboxShow(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "sendbeam outbox show: %v\n", err)
 		return 1
 	}
-	ob := outbox.New(store, nil)
-	job, ok, err := ob.Get(positionals[0])
+	center := transfercenter.New(store, outbox.New(store, nil))
+	detail, err := center.Get(positionals[0])
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam outbox show: %v\n", err)
-		return 1
-	}
-	if !ok {
-		_, _ = fmt.Fprintf(stderr, "sendbeam outbox show: no job %q\n", positionals[0])
 		return 1
 	}
 	if *jsonOutput {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(jobSummary(job))
+		_ = enc.Encode(detail)
 		return 0
 	}
 	s := newStyleFromWriter(stdout)
-	_, _ = fmt.Fprintf(stdout, "%s  %s\n", s.bold("Job"), s.cyan(job.JobID))
-	_, _ = fmt.Fprintf(stdout, "  status:     %s\n", outboxStatusLabel(job.Status))
-	_, _ = fmt.Fprintf(stdout, "  files:      %d (%s)\n", len(job.Files), humanBytes(job.TotalSize))
-	_, _ = fmt.Fprintf(stdout, "  created:    %s\n", job.CreatedAt.Local().Format(time.RFC3339))
-	if !job.Policy.ExpiresAt.IsZero() {
-		_, _ = fmt.Fprintf(stdout, "  expires:    %s\n", job.Policy.ExpiresAt.Local().Format(time.RFC3339))
+	_, _ = fmt.Fprintf(stdout, "%s  %s\n", s.bold("Job"), s.cyan(detail.JobID))
+	_, _ = fmt.Fprintf(stdout, "  state:      %s\n", detail.State)
+	_, _ = fmt.Fprintf(stdout, "  files:      %d (%s)\n", detail.Files, humanBytes(detail.TotalSize))
+	_, _ = fmt.Fprintf(stdout, "  created:    %s\n", detail.CreatedAt.Local().Format(time.RFC3339))
+	if detail.ExpiresAt != nil {
+		_, _ = fmt.Fprintf(stdout, "  expires:    %s\n", detail.ExpiresAt.Local().Format(time.RFC3339))
 	}
-	_, _ = fmt.Fprintf(stdout, "  recipients: %d\n", len(job.Attempts))
-	for _, a := range job.Attempts {
+	if detail.LastError != "" {
+		_, _ = fmt.Fprintf(stdout, "  last error: %s\n", detail.LastError)
+	}
+	if detail.NextRetryAt != nil && detail.NextRetryAt.After(time.Now()) {
+		_, _ = fmt.Fprintf(stdout, "  next retry: %s\n", detail.NextRetryAt.Local().Format(time.Kitchen))
+	}
+	_, _ = fmt.Fprintf(stdout, "  recipients: %d (%d delivered, %d failed)\n", detail.Recipients, detail.Delivered, detail.Failed)
+	for _, a := range detail.Attempts {
 		line := fmt.Sprintf("    %s (%s): %s, %d/%d attempts",
-			a.Label, shortJobID(a.DeviceID), attemptStatusLabel(a.Status), a.Attempts, job.Policy.MaxAttempts)
-		if a.Status == jobs.AttemptFailed && a.LastError != "" {
+			a.Label, shortJobID(a.DeviceID), a.State, a.Attempts, a.MaxAttempts)
+		if a.LastError != "" {
 			line += " — " + a.LastError
 		}
-		if a.Status == jobs.AttemptQueued && !a.NextRetryAt.IsZero() && a.NextRetryAt.After(time.Now()) {
+		if a.State == transfercenter.StateQueued && a.NextRetryAt != nil && a.NextRetryAt.After(time.Now()) {
 			line += " (retry at " + a.NextRetryAt.Local().Format(time.Kitchen) + ")"
 		}
 		_, _ = fmt.Fprintln(stdout, line)
@@ -481,6 +522,84 @@ func runOutboxRetry(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// runOutboxPrune implements `sendbeam outbox prune`: explicit history
+// retention. Only terminal jobs older than the retention window are removed;
+// live, leased, and unreadable jobs are never touched.
+func runOutboxPrune(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("outbox prune", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	olderThan := fs.Duration("older-than", 0, "override retention for all terminal classes (default: 30d completed/failed, 7d cancelled)")
+	dryRun := fs.Bool("dry-run", false, "list what would be pruned without deleting")
+	jsonOutput := fs.Bool("json", false, "print the prune report as JSON")
+	configDir := fs.String("config-dir", "", "path to custom configuration directory")
+	_ = parseArgs(fs, args)
+
+	store, err := openOutboxStore(*configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam outbox prune: %v\n", err)
+		return 1
+	}
+	policy := transfercenter.DefaultRetentionPolicy()
+	if *olderThan > 0 {
+		policy = transfercenter.RetentionPolicy{
+			CompletedFor: *olderThan,
+			FailedFor:    *olderThan,
+			CancelledFor: *olderThan,
+		}
+	}
+	center := transfercenter.New(store, outbox.New(store, nil))
+	rep, err := center.Prune(time.Now().UTC(), policy, *dryRun)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam outbox prune: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(rep)
+		return 0
+	}
+	s := newStyleFromWriter(stdout)
+	if *dryRun {
+		_, _ = fmt.Fprintln(stdout, s.bold("Dry run — nothing deleted."))
+	}
+	if len(rep.Pruned) == 0 {
+		_, _ = fmt.Fprintln(stdout, "Nothing to prune: no terminal jobs past retention.")
+		return 0
+	}
+	for _, id := range rep.Pruned {
+		_, _ = fmt.Fprintf(stdout, "%s %s\n", s.yellow("Pruned"), s.cyan(shortJobID(id)))
+	}
+	return 0
+}
+
+// runOutboxForget implements `sendbeam outbox forget`: delete one terminal
+// job's history explicitly. Live jobs are refused — cancel first.
+func runOutboxForget(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("outbox forget", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configDir := fs.String("config-dir", "", "path to custom configuration directory")
+	positionals := parseArgs(fs, args)
+	if len(positionals) != 1 {
+		_, _ = fmt.Fprintln(stderr, "sendbeam outbox forget: need exactly one <job-id>")
+		fs.Usage()
+		return 2
+	}
+	store, err := openOutboxStore(*configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam outbox forget: %v\n", err)
+		return 1
+	}
+	center := transfercenter.New(store, outbox.New(store, nil))
+	if err := center.Forget(positionals[0]); err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam outbox forget: %v\n", err)
+		return 1
+	}
+	s := newStyleFromWriter(stdout)
+	_, _ = fmt.Fprintf(stdout, "%s %s\n", s.yellow("Forgot"), s.cyan(shortJobID(positionals[0])))
+	return 0
+}
+
 // jobSummary is the JSON shape for `outbox enqueue/show --json`.
 type jobSummaryJSON struct {
 	JobID      string                 `json:"job_id"`
@@ -529,42 +648,4 @@ func shortJobID(id string) string {
 		return id[:12]
 	}
 	return id
-}
-
-func outboxStatusLabel(st jobs.JobStatus) string {
-	switch st {
-	case jobs.JobQueued:
-		return "queued"
-	case jobs.JobDispatching:
-		return "sending"
-	case jobs.JobPaused:
-		return "paused"
-	case jobs.JobCompleted:
-		return "done"
-	case jobs.JobFailed:
-		return "failed"
-	case jobs.JobCancelled:
-		return "cancelled"
-	default:
-		return string(st)
-	}
-}
-
-func attemptStatusLabel(st jobs.AttemptStatus) string {
-	switch st {
-	case jobs.AttemptQueued:
-		return "queued"
-	case jobs.AttemptActive:
-		return "sending"
-	case jobs.AttemptInterrupted:
-		return "interrupted"
-	case jobs.AttemptVerified:
-		return "verified"
-	case jobs.AttemptCompleted:
-		return "delivered"
-	case jobs.AttemptFailed:
-		return "failed"
-	default:
-		return string(st)
-	}
 }

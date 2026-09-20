@@ -159,6 +159,56 @@ export interface DeviceServiceAdapter {
   unpairDevice(deviceId: string, purge: boolean): Promise<void>;
 }
 
+export interface TransferCenterAttemptView {
+  deviceId: string;
+  shortDeviceId: string;
+  label: string;
+  state: string;
+  attempts: number;
+  maxAttempts: number;
+  lastError?: string;
+  bytesTransferred?: number;
+  nextRetryAt?: string;
+  updatedAt: string;
+}
+
+export interface TransferCenterJobView {
+  jobId: string;
+  shortJobId: string;
+  state: string;
+  files: number;
+  totalSize: number;
+  recipients: number;
+  delivered: number;
+  failed: number;
+  pending: number;
+  hasLease: boolean;
+  nextRetryAt?: string;
+  lastError?: string;
+  expiresAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  needsAttention: boolean;
+}
+
+export interface TransferCenterJobDetail extends TransferCenterJobView {
+  attempts: TransferCenterAttemptView[];
+  fileList: { name: string; size: number }[];
+}
+
+export interface TransferCenterSnapshot {
+  takenAt: string;
+  groups: { state: string; jobs: TransferCenterJobView[] }[];
+  summary: { total: number; byState: Record<string, number>; broken: number };
+}
+
+export interface TransferCenterPruneReport {
+  dryRun: boolean;
+  pruned: string[];
+  kept: string[];
+  skipped: string[];
+}
+
 export interface TransferServiceAdapter {
   send(paths: string[], server?: string): Promise<TransferHandle>;
   sendToDevice(paths: string[], deviceId: string, server?: string): Promise<TransferHandle>;
@@ -184,6 +234,15 @@ export interface TransferServiceAdapter {
   revealCompleted(id: string): Promise<void>;
   getConfig(): Promise<DesktopConfig>;
   saveConfig(cfg: DesktopConfig): Promise<void>;
+  transferCenterList(): Promise<TransferCenterSnapshot>;
+  transferCenterShow(jobId: string): Promise<TransferCenterJobDetail>;
+  transferCenterCancel(jobId: string): Promise<void>;
+  transferCenterRetry(jobId: string, deviceIds?: string[]): Promise<number>;
+  transferCenterPrune(
+    olderThanHours?: number,
+    dryRun?: boolean,
+  ): Promise<TransferCenterPruneReport>;
+  transferCenterForget(jobId: string): Promise<void>;
 }
 
 export interface UpdateServiceAdapter {
@@ -298,6 +357,25 @@ export function createTransferServiceAdapter(call: WailsCaller): TransferService
       call(`${WAILS_SERVICES.Transfer}.RevealCompleted`, id) as Promise<void>,
     getConfig: () => call(`${WAILS_SERVICES.Transfer}.GetConfig`) as Promise<DesktopConfig>,
     saveConfig: (cfg) => call(`${WAILS_SERVICES.Transfer}.SaveConfig`, cfg) as Promise<void>,
+    transferCenterList: () =>
+      call(`${WAILS_SERVICES.Transfer}.TransferCenterList`) as Promise<TransferCenterSnapshot>,
+    transferCenterShow: (jobId) =>
+      call(
+        `${WAILS_SERVICES.Transfer}.TransferCenterShow`,
+        jobId,
+      ) as Promise<TransferCenterJobDetail>,
+    transferCenterCancel: (jobId) =>
+      call(`${WAILS_SERVICES.Transfer}.TransferCenterCancel`, jobId) as Promise<void>,
+    transferCenterRetry: (jobId, deviceIds = []) =>
+      call(`${WAILS_SERVICES.Transfer}.TransferCenterRetry`, jobId, deviceIds) as Promise<number>,
+    transferCenterPrune: (olderThanHours = 0, dryRun = false) =>
+      call(
+        `${WAILS_SERVICES.Transfer}.TransferCenterPrune`,
+        olderThanHours,
+        dryRun,
+      ) as Promise<TransferCenterPruneReport>,
+    transferCenterForget: (jobId) =>
+      call(`${WAILS_SERVICES.Transfer}.TransferCenterForget`, jobId) as Promise<void>,
   };
 }
 

@@ -34,6 +34,8 @@
   import markUrl from './lib/assets/sendbeam-mark.svg';
   import { onMount } from 'svelte';
   import DevicesModal from './lib/trust/DevicesModal.svelte';
+  import TransferCenterModal from './lib/transfer/TransferCenterModal.svelte';
+  import { isWailsV3Available } from './lib/wails/wails-adapter.js';
   import IncomingTransferModal from './lib/trust/IncomingTransferModal.svelte';
   import type {
     TrustedDeviceUI,
@@ -157,6 +159,7 @@
 
   // Trusted Devices state (V15-PR06 & V19-PR09)
   let showDevicesModal = $state(false);
+  let showTransferCenterModal = $state(false);
   let incomingTransfer = $state<IncomingTransferRequest | null>(null);
   let incomingCoordinator = $state<IncomingTransferCoordinator | null>(null);
 
@@ -998,6 +1001,17 @@
         <span class="devices-icon">📱</span>
         <span>Devices</span>
       </button>
+      {#if isWailsV3Available()}
+        <button
+          class="btn-devices-header"
+          onclick={() => {
+            showTransferCenterModal = true;
+          }}
+        >
+          <span class="devices-icon">📦</span>
+          <span>Transfers</span>
+        </button>
+      {/if}
     </div>
     <p class="tagline">Secure, end-to-end-encrypted, peer-to-peer file transfer.</p>
   </header>
@@ -1710,6 +1724,13 @@
     }}
     onSendToDevice={handleSendToTrustedDevice}
     onSendToDevices={handleSendToTrustedDevices}
+  />
+
+  <TransferCenterModal
+    bind:open={showTransferCenterModal}
+    onClose={() => {
+      showTransferCenterModal = false;
+    }}
   />
 
   <IncomingTransferModal
