@@ -345,6 +345,9 @@ func provenanceEvent(p *wire.Provenance) map[string]any {
 		"display":     p.Display(),
 	}
 }
+
+// RespondLocalConsent records the user's decision for a pending local
+// incoming transfer. Unknown IDs are an error; late answers are dropped.
 func (s *LocalService) RespondLocalConsent(transferID string, decision LocalConsentDecision) error {
 	s.mu.Lock()
 	w, ok := s.pending[transferID]
