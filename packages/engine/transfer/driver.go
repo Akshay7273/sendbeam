@@ -1173,11 +1173,9 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 	// V20-PR06: a verified handoff payload is handed to the receiver for
 	// deliberate actions (Copy/Save/Open) — never written to disk by the
 	// transfer itself. HandoffContent fails for ordinary file sets.
-	if destWrapper != nil {
-		if kind, text, herr := destWrapper.HandoffContent(); herr == nil {
-			out.ContentKind = kind
-			out.Content = text
-		}
+	if kind, text, herr := destWrapper.HandoffContent(); herr == nil {
+		out.ContentKind = kind
+		out.Content = text
 	}
 	return out, nil
 }

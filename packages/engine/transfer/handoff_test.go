@@ -215,7 +215,7 @@ func TestDriverLoopbackTextHandoff(t *testing.T) {
 			Session:    rendezvous.Options{Role: rendezvous.RoleJoiner, Code: "7-alpha-bravo"},
 			DestDir:    dir,
 			ICEServers: []webrtc.ICEServer{},
-			Consent: func(cctx context.Context, req ConsentRequest) (ConsentDecision, error) {
+			Consent: func(_ context.Context, req ConsentRequest) (ConsentDecision, error) {
 				consentKind = req.ContentKind
 				return ConsentDecision{Accepted: true}, nil
 			},
@@ -295,7 +295,7 @@ func TestDriverLoopbackLinkHandoff(t *testing.T) {
 			Session:    rendezvous.Options{Role: rendezvous.RoleJoiner, Code: "7-alpha-bravo"},
 			DestDir:    dir,
 			ICEServers: []webrtc.ICEServer{},
-			Consent: func(cctx context.Context, req ConsentRequest) (ConsentDecision, error) {
+			Consent: func(_ context.Context, req ConsentRequest) (ConsentDecision, error) {
 				if req.ContentKind != wire.ContentKindLink {
 					t.Errorf("consent kind = %q, want link", req.ContentKind)
 				}

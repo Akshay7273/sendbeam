@@ -8,6 +8,7 @@
 // (Copy/Save/Open) after the transfer verified. The envelope reuses the
 // existing consent, encryption, integrity, and session machinery — no
 // parallel ad-hoc crypto, no clipboard surveillance, no automatic opening.
+
 package transfer
 
 import (
@@ -116,7 +117,7 @@ func (d *HandoffDestination) Prepare(manifest wire.Manifest) error {
 }
 
 // Open hands out the single in-memory sink for the envelope's one file.
-func (d *HandoffDestination) Open(file wire.FileEntry) (wire.Sink, error) {
+func (d *HandoffDestination) Open(_ wire.FileEntry) (wire.Sink, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.opened {
@@ -146,7 +147,7 @@ func (d *HandoffDestination) Close() error {
 }
 
 // Abort discards the captured payload.
-func (d *HandoffDestination) Abort(reason string) error {
+func (d *HandoffDestination) Abort(_ string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.aborted = true
