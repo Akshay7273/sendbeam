@@ -73,8 +73,8 @@ func TestCorruptFailsClosed(t *testing.T) {
 		"torn":     func(b []byte) []byte { return b[:len(b)/2] },
 		"tampered": func(b []byte) []byte { out := append([]byte(nil), b...); out[50] ^= 0xff; return out },
 		"trailing": func(b []byte) []byte { return append(append([]byte(nil), b...), "{}"...) },
-		"empty":    func(b []byte) []byte { return nil },
-		"not-json": func(b []byte) []byte { return []byte("hello") },
+		"empty":    func([]byte) []byte { return nil },
+		"not-json": func([]byte) []byte { return []byte("hello") },
 		"bad-sum":  func(b []byte) []byte { return []byte(strings.Replace(string(b), `"checksum":"`, `"checksum":"0`, 1)) },
 		"unknown":  func(b []byte) []byte { return []byte(strings.Replace(string(b), `"jobId":`, `"evil":1,"jobId":`, 1)) },
 		"future": func(b []byte) []byte {

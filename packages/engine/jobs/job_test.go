@@ -106,7 +106,7 @@ func TestAttemptTransitions(t *testing.T) {
 		t.Fatalf("queued->active: %v", err)
 	}
 	if a.Attempts != 0 {
-		// TransitionAttempt does not bump the counter; dispatch does.
+		t.Fatalf("TransitionAttempt bumped attempt counter: %d", a.Attempts)
 	}
 	if err := TransitionAttempt(&a, AttemptCompleted, testNow); err == nil {
 		t.Fatal("active->completed accepted (must go through verified)")
