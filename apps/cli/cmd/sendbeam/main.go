@@ -24,6 +24,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/sendbeam/engine/netpolicy"
 	"github.com/sendbeam/engine/rendezvous"
 	"github.com/sendbeam/engine/transfer"
 	"github.com/sendbeam/engine/wsclient"
@@ -46,6 +47,10 @@ func main() {
 		os.Exit(runDevices(os.Args[2:]))
 	case "pair":
 		os.Exit(runPair(os.Args[2:]))
+	case "pair-local":
+		os.Exit(runPairLocal(os.Args[2:]))
+	case "config":
+		os.Exit(runConfig(os.Args[2:]))
 	case "unpair":
 		os.Exit(runUnpair(os.Args[2:]))
 	case "listen":
@@ -128,13 +133,40 @@ func runReceive(args []string) int {
 	server := fs.String("server", defaultServer, "signaling server URL")
 	insecure := fs.Bool("insecure-skip-verify", false, "skip TLS verification (self-signed dev certs only)")
 	outDir := fs.String("out", ".", "directory to write the received file into")
+	networkPolicy := fs.String("network-policy", "", "network path policy: online, prefer-local, local-only (default from config)")
+	bindAddr := fs.String("bind", "", "local listen address ip:port for --network-policy=local-only (default: first LAN interface, ephemeral port)")
 	relayOnly := fs.Bool("relay-only", false, "force the encrypted WebSocket relay")
 	privateMode := fs.Bool("private", false, "enable negotiated traffic padding for wire privacy")
 	requirePadding := fs.Bool("require-padding", false, "mandate traffic padding; fail closed on unpadded peers or frames")
 	jitter := fs.Duration("jitter", 0, "maximum random scheduling jitter for relay frames (e.g. 15ms)")
 	var iceServer iceServerList
 	fs.Var(&iceServer, "ice-server", "STUN server URL for direct-path candidates (repeatable; default stun:stun.l.google.com:19302)")
+	configDir := fs.String("config-dir", "", "path to custom configuration directory")
 	positionals := parseArgs(fs, args)
+
+	// V21-PR06: local-only receive is a different workflow — no invite code,
+	// no public signaling. It listens on the LAN and admits paired devices.
+	policy, err := resolveNetworkPolicy(*networkPolicy, *configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sendbeam receive: %v\n", err)
+		return 2
+	}
+	if policy == netpolicy.LocalOnly {
+		if len(positionals) > 0 {
+			fmt.Fprintln(os.Stderr, "sendbeam receive: --network-policy=local-only takes no invite code (paired devices connect directly)")
+			return 2
+		}
+		if err := os.MkdirAll(*outDir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "sendbeam receive: %v\n", err)
+			return 1
+		}
+		env, err := InitCLIEnvironment(*configDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sendbeam receive: %v\n", err)
+			return 1
+		}
+		return runLocalOnlyReceive(env, *outDir, *bindAddr, *requirePadding, *privateMode, os.Stdout, os.Stderr)
+	}
 
 	code := ""
 	if len(positionals) > 0 {
