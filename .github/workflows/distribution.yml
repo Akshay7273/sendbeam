@@ -596,6 +596,9 @@ jobs:
         run: |
           sha256sum -c SHA256SUMS.txt
 
+      - name: Test release verification script suite
+        run: bash ./scripts/verify-release_test.sh
+
       - name: Unpack and smoke test Linux CLI binary
         working-directory: bundle
         run: |
@@ -606,6 +609,38 @@ jobs:
           unpacked-cli/sendbeam --help
           unpacked-cli/sendbeam update --help
           unpacked-cli/sendbeam transfers list
+
+      - name: Candidate artifact clean-install proof
+        working-directory: bundle
+        run: |
+          set -euo pipefail
+          # Prove the release-candidate CLI onboards a clean install: fresh
+          # state dirs, v2.0 migrations run, identity created, no errors.
+          export XDG_CONFIG_HOME="$(mktemp -d)/config"
+          export SENDBEAM_JOBS_DIR="$(mktemp -d)/jobs"
+          mkdir -p "$XDG_CONFIG_HOME"
+          ./unpacked-cli/sendbeam onboard --json > onboard.json
+          python3 - <<'EOF'
+          import json
+          d = json.load(open('onboard.json'))
+          assert d['new_identity'] is True, d
+          assert d['device_id'].startswith('sb-dev-'), d
+          assert d['fingerprint'], d
+          assert d['state_version'] == 2, d
+          print('onboard clean-install proof OK:', d['device_id'][:20] + '...')
+          EOF
+          test -f "$XDG_CONFIG_HOME/sendbeam/state-version.json"
+          test -f "$XDG_CONFIG_HOME/sendbeam/identity.key"
+          # Second run must reuse the identity, never rotate it.
+          ./unpacked-cli/sendbeam onboard --json > onboard2.json
+          python3 - <<'EOF'
+          import json
+          a = json.load(open('onboard.json'))
+          b = json.load(open('onboard2.json'))
+          assert b['new_identity'] is False, b
+          assert a['device_id'] == b['device_id'], (a, b)
+          print('onboard identity-reuse proof OK')
+          EOF
 
       - name: Verify SPDX SBOM documents
         working-directory: bundle

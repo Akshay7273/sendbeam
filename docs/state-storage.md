@@ -87,7 +87,38 @@ SendBeam manages persistent device cryptographic identities and pairwise credent
 
 ---
 
-## 4. Managing and Clearing State
+## 4. State Generations, Migrations, and Rollback (v2.0)
+
+SendBeam versions its local state directory as a _generation_. Generation 2
+is the v2.0 generation (durable jobs, outbox, transfer center).
+
+- **Marker file:** `<ConfigDir>/state-version.json`
+  (`{"version": 2, "updated_at": "..."}`), written atomically with `0600`
+  permissions once all migrations succeed.
+- **Startup migrations:** every CLI command runs the ordered migrations in
+  `packages/engine/migrate` before any store is opened:
+  1. `trust-store` — opens the file trust store, performing the atomic
+     v1 → v2 schema upgrade on load when a v1.9 `trust.json` is found.
+  2. `jobs-store` — bootstraps the v2.0 jobs directory and validates every
+     existing job file.
+- **Backup and rollback:** each migration snapshots the files it may touch
+  before applying. If apply or verify fails, the snapshots are restored and
+  the previous generation marker is left in place. Migrations never delete
+  user state; a failed upgrade leaves the pre-upgrade state intact.
+- **Newer-state quarantine:** if the marker records a generation newer than
+  the running binary understands, startup refuses with an error and modifies
+  nothing. Older binaries never truncate or reinterpret newer state.
+- **Downgrade safety:** v1.x binaries ignore the unknown `state-version.json`
+  marker and the v2.0-only `jobs/` directory, so rolling back the binary
+  after a v2.0 upgrade loses no data. Dispatch rollback pauses work; the UI
+  never deletes jobs on rollback.
+
+First-run setup is available as `sendbeam onboard`, which runs the same
+migration path, creates the device identity only when none exists, and
+prints the device fingerprint plus next steps (`--json` for structured
+output).
+
+## 5. Managing and Clearing State
 
 ### CLI Transfers Command
 

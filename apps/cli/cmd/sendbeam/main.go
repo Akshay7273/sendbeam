@@ -56,6 +56,8 @@ func main() {
 		os.Exit(runOutbox(os.Args[2:], os.Stdout, os.Stderr))
 	case "diagnose":
 		os.Exit(runDiagnose(os.Args[2:]))
+	case "onboard":
+		os.Exit(runOnboard(os.Args[2:], os.Stdout, os.Stderr))
 	case "update":
 		os.Exit(runUpdate(os.Args[2:]))
 	case "version", "-v", "--version":
@@ -85,6 +87,7 @@ func usage(w *os.File) {
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam transfers")+" <list|inspect|resume|discard> [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam outbox")+" <enqueue|list|show|dispatch|cancel|retry> [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam diagnose")+" [flags]")
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam onboard")+" [--json]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam update")+" [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam version"))
 	_, _ = fmt.Fprintln(w)

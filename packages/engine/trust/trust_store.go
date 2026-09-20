@@ -211,6 +211,11 @@ type trustFilePayload struct {
 
 const currentTrustFileVersion = 2
 
+// CurrentFileVersion reports the trust.json schema version this binary
+// writes. Migration code uses it to refuse newer state rather than truncate
+// it back to a version it understands.
+func CurrentFileVersion() int { return currentTrustFileVersion }
+
 // NewFileTrustStore loads or initializes a FileTrustStore at the given path.
 func NewFileTrustStore(filePath string) (*FileTrustStore, error) {
 	cleanPath := filepath.Clean(filePath)
