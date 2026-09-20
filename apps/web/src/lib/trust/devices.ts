@@ -130,7 +130,7 @@ export async function listTrustedDevices(): Promise<TrustedDeviceUI[]> {
       }
     }
 
-    let fp = '';
+    let fp: string;
     try {
       fp = formatFingerprint(hexToBytes(r.publicKey));
     } catch {
@@ -345,7 +345,7 @@ export async function pairTrustedDevice(
     );
     const pairResult = await coordinator.acceptPairing(transport, cfg, localId);
 
-    let fp = '';
+    let fp: string;
     try {
       fp = formatFingerprint(hexToBytes(pairResult.peerRecord.publicKey));
     } catch {

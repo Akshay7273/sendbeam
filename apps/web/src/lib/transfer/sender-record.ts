@@ -248,6 +248,7 @@ export async function validateSenderRecord(record: unknown): Promise<SenderRecor
     } catch (e) {
       throw new Error(
         `sender record: invalid resumeSecret: ${e instanceof Error ? e.message : String(e)}`,
+        { cause: e },
       );
     }
   }

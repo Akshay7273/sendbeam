@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import type { TrustedDeviceUI } from './types.js';
   import type { TrustPolicy } from '@sendbeam/protocol';
   import QrCode from '../QrCode.svelte';
@@ -26,7 +27,7 @@
   let devices = $state<TrustedDeviceUI[]>([]);
   let loading = $state(false);
   let errorMessage = $state('');
-  let selectedDeviceIds = $state<Set<string>>(new Set());
+  let selectedDeviceIds = new SvelteSet<string>();
 
   // Editing label state
   let editingDeviceId = $state<string | null>(null);
@@ -69,21 +70,19 @@
   }
 
   function toggleSelectDevice(deviceId: string) {
-    const next = new Set(selectedDeviceIds);
-    if (next.has(deviceId)) {
-      next.delete(deviceId);
+    if (selectedDeviceIds.has(deviceId)) {
+      selectedDeviceIds.delete(deviceId);
     } else {
-      next.add(deviceId);
+      selectedDeviceIds.add(deviceId);
     }
-    selectedDeviceIds = next;
   }
 
   function selectAllUnrevoked() {
     const unrevoked = devices.filter((d) => !d.revoked);
-    if (selectedDeviceIds.size === unrevoked.length) {
-      selectedDeviceIds = new Set();
-    } else {
-      selectedDeviceIds = new Set(unrevoked.map((d) => d.deviceId));
+    const allSelected = selectedDeviceIds.size === unrevoked.length;
+    selectedDeviceIds.clear();
+    if (!allSelected) {
+      for (const d of unrevoked) selectedDeviceIds.add(d.deviceId);
     }
   }
 

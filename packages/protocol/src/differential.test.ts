@@ -805,7 +805,7 @@ async function generateTsDifferentialVectors(
     const norm = normalizeCode(s);
     let parsedRoom = 0;
     let parsedWords = '';
-    let valid = false;
+    let valid: boolean;
     try {
       const p = parseCode(s);
       parsedRoom = p.room;
@@ -858,7 +858,7 @@ async function generateTsDifferentialVectors(
   for (let i = 0; i < invalidPaths.length; i++) {
     const p = invalidPaths[i]!;
     let norm = '';
-    let valid = false;
+    let valid: boolean;
     try {
       norm = normalizeTransferPath(p);
       valid = true;

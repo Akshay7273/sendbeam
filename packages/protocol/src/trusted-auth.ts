@@ -295,7 +295,7 @@ export function computeX25519SharedSecret(
     if (err instanceof Error && err.message === 'ephemeral public key is weak or invalid') {
       throw err;
     }
-    throw new Error('ephemeral public key is weak or invalid');
+    throw new Error('ephemeral public key is weak or invalid', { cause: err });
   }
 }
 

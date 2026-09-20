@@ -35,7 +35,7 @@
 
         {#if request.files.length > 0}
           <div class="file-list">
-            {#each request.files.slice(0, 5) as file}
+            {#each request.files.slice(0, 5) as file, i (i)}
               <div class="file-item">
                 <span class="file-name">{file.name}</span>
                 <span class="file-size">{humanBytes(file.size)}</span>
