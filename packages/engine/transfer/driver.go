@@ -100,8 +100,21 @@ type Spec struct {
 	// ICEServers overrides rtc.DefaultICEServers. An explicit empty slice uses host candidates
 	// only (loopback tests); nil takes the default STUN server.
 	ICEServers []webrtc.ICEServer
+	// RTCAPI optionally supplies a pre-built *webrtc.API for the peer
+	// connection, e.g. with a SettingEngine enforcing an ICE candidate
+	// policy. Nil uses the default API. Used by local-only mode (v2.1)
+	// with rtc.LocalOnlyAPI to pin candidate gathering and remote
+	// candidates to the approved local networks.
+	RTCAPI *webrtc.API
 	// ForceRelay skips direct negotiation and goes straight to the encrypted relay.
 	ForceRelay bool
+	// DisableRelay suppresses the relay path entirely: no relay object is
+	// created, the relay is never warmed, and transport selection is direct
+	// only. Used by local-only mode (v2.1), where the only permitted byte
+	// path is the direct WebRTC connection between policy-approved local
+	// endpoints. When the direct path fails, the transfer fails closed with
+	// a clear error instead of falling back to any relay.
+	DisableRelay bool
 	// Private enables negotiated traffic padding on the transfer (V17-PR03).
 	Private bool
 	// RequirePadding enforces traffic padding policy (V19-PR11).
@@ -338,16 +351,26 @@ func (d *driver) run(ctx context.Context) (*Outcome, error) {
 	var sv *supervisor.Supervisor
 	if path == "direct" {
 		sv = supervisor.New()
-		adaptive = newAdaptiveConn(conn.(*rtc.DataConn), d.relay, d.spec.OnTransport, sv)
-		d.mu.Lock()
-		d.adaptive = adaptive
-		d.mu.Unlock()
-		_ = sv.Register(supervisor.PathDirect, conn.(*rtc.DataConn))
-		_ = sv.Warming(supervisor.PathDirect)
-		_ = sv.Ready(supervisor.PathDirect)
-		_, _ = sv.Activate(supervisor.PathDirect)
-		_ = sv.Register(supervisor.PathRelay, d.relay)
-		conn = adaptive
+		if d.spec.DisableRelay {
+			// Local-only: the direct data connection is the entire byte
+			// path. No adaptive cutover is armed because the relay does
+			// not exist; register only the direct path.
+			_ = sv.Register(supervisor.PathDirect, conn.(*rtc.DataConn))
+			_ = sv.Warming(supervisor.PathDirect)
+			_ = sv.Ready(supervisor.PathDirect)
+			_, _ = sv.Activate(supervisor.PathDirect)
+		} else {
+			adaptive = newAdaptiveConn(conn.(*rtc.DataConn), d.relay, d.spec.OnTransport, sv)
+			d.mu.Lock()
+			d.adaptive = adaptive
+			d.mu.Unlock()
+			_ = sv.Register(supervisor.PathDirect, conn.(*rtc.DataConn))
+			_ = sv.Warming(supervisor.PathDirect)
+			_ = sv.Ready(supervisor.PathDirect)
+			_, _ = sv.Activate(supervisor.PathDirect)
+			_ = sv.Register(supervisor.PathRelay, d.relay)
+			conn = adaptive
+		}
 		if d.spec.breakDirect != nil {
 			go func() {
 				select {
@@ -475,6 +498,9 @@ type rtcResult struct {
 }
 
 func (d *driver) selectTransport(ctx context.Context, peer *rtc.Peer, readErr <-chan error) (dataConn, string, error) {
+	if d.spec.DisableRelay {
+		return d.selectDirectOnly(ctx, peer, readErr)
+	}
 	if d.relay == nil {
 		return nil, "", wire.Errorf(wire.CodeRelay, "transfer: relay was not initialized")
 	}
@@ -538,7 +564,34 @@ func (d *driver) selectTransport(ctx context.Context, peer *rtc.Peer, readErr <-
 	}
 }
 
-// route is the single inbound dispatch. Before establishment it feeds the handshake session;
+// selectDirectOnly waits for the direct WebRTC data channel without arming
+// any relay. A direct failure is terminal here: local-only mode has no
+// fallback path, so the error is explicit instead of a silent online relay.
+func (d *driver) selectDirectOnly(ctx context.Context, peer *rtc.Peer, readErr <-chan error) (dataConn, string, error) {
+	if peer == nil {
+		return nil, "", wire.Errorf(wire.CodeConnection, "transfer: local-only mode requires a direct peer; relay is disabled")
+	}
+	direct := make(chan rtcResult, 1)
+	go func() {
+		conn, err := peer.Channel(ctx)
+		direct <- rtcResult{conn: conn, err: err}
+	}()
+	select {
+	case result := <-direct:
+		if result.err != nil {
+			return nil, "", wire.Errorf(wire.CodeConnection, "transfer: local-only direct path failed (relay disabled): %v", result.err)
+		}
+		return result.conn, "direct", nil
+	case err := <-readErr:
+		if err == nil {
+			err = wire.Errorf(wire.CodeConnection, "signaling closed")
+		}
+		return nil, "", wire.Errorf(wire.CodeConnection, "transfer: signaling: %v", err)
+	case <-ctx.Done():
+		return nil, "", ctx.Err()
+	}
+}
+
 // the instant the session establishes it builds the peer — synchronously, so the peer exists
 // before the next frame (the offer, for a joiner) is read — and thereafter feeds the peer.
 // Running entirely on the read-loop goroutine makes the switch race-free.
@@ -559,6 +612,10 @@ func opaqueSessionCaps(negotiated []string) (local, remote rendezvous.Caps) {
 	return local, remote
 }
 
+// route is the single inbound dispatch. Before establishment it feeds the handshake session;
+// the instant the session establishes it builds the peer — synchronously, so the peer exists
+// before the next frame (the offer, for a joiner) is read — and thereafter feeds the peer.
+// Running entirely on the read-loop goroutine makes the switch race-free.
 func (d *driver) route(m rendezvous.Message) {
 	if d.res != nil {
 		if d.relay != nil && d.relay.HandleMessage(m) {
@@ -628,6 +685,7 @@ func (d *driver) route(m rendezvous.Message) {
 				Auth:       rtc.NewSignalAuthenticator(0, authKeys),
 				Send:       d.Send,
 				ICEServers: d.spec.ICEServers,
+				API:        d.spec.RTCAPI,
 				OnICEState: func(s rtc.ICEState) {
 					ev := AdaptiveEvent{
 						Gathering:          adaptiveGathering(s.Gathering.String()),
@@ -657,9 +715,11 @@ func (d *driver) route(m rendezvous.Message) {
 				return
 			}
 		}
-		d.relay = relaytransport.New(d)
-		if d.spec.RelayJitter > 0 {
-			d.relay.SetJitter(d.spec.RelayJitter)
+		if !d.spec.DisableRelay {
+			d.relay = relaytransport.New(d)
+			if d.spec.RelayJitter > 0 {
+				d.relay.SetJitter(d.spec.RelayJitter)
+			}
 		}
 		d.peer = peer
 		d.peerCh <- peer
@@ -687,6 +747,7 @@ func (d *driver) route(m rendezvous.Message) {
 			Auth:       rtc.FromSession(res.Role, res.Room, res.Spake2),
 			Send:       d.Send,
 			ICEServers: d.spec.ICEServers,
+			API:        d.spec.RTCAPI,
 			OnICEState: func(s rtc.ICEState) {
 				ev := AdaptiveEvent{
 					Gathering:          adaptiveGathering(s.Gathering.String()),
@@ -722,9 +783,11 @@ func (d *driver) route(m rendezvous.Message) {
 	if rs, ok := d.sig.(ReconnectSetter); ok {
 		rs.SetResume(res.Room, string(res.Role))
 	}
-	d.relay = relaytransport.New(d)
-	if d.spec.RelayJitter > 0 {
-		d.relay.SetJitter(d.spec.RelayJitter)
+	if !d.spec.DisableRelay {
+		d.relay = relaytransport.New(d)
+		if d.spec.RelayJitter > 0 {
+			d.relay.SetJitter(d.spec.RelayJitter)
+		}
 	}
 	d.peer = peer
 	d.peerCh <- peer

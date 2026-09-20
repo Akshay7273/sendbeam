@@ -69,6 +69,25 @@ func startTestServer(t *testing.T, st trust.Store, cfg Config) *Server {
 // dialHello opens a TCP connection to the server and sends a hello frame.
 func dialHello(t *testing.T, srv *Server, deviceID, token string) net.Conn {
 	t.Helper()
+	conn := dialHelloRaw(t, srv, deviceID, token)
+	// Admission is confirmed by the server's accept frame; consume and
+	// validate it so the caller starts at the first post-admission frame.
+	frame, err := readTestFrame(t, conn)
+	if err != nil {
+		_ = conn.Close()
+		t.Fatalf("read accept frame: %v", err)
+	}
+	if string(frame) != `{"ok":true}` && !strings.HasPrefix(string(frame), `{"ok":true,`) {
+		_ = conn.Close()
+		t.Fatalf("unexpected accept frame: %q", frame)
+	}
+	return conn
+}
+
+// dialHelloRaw dials and sends the hello without consuming the admission
+// reply, for tests that exercise refusal paths.
+func dialHelloRaw(t *testing.T, srv *Server, deviceID, token string) net.Conn {
+	t.Helper()
 	conn, err := net.DialTimeout("tcp", srv.Addr().String(), 5*time.Second)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -239,14 +258,18 @@ func TestUnpairedWithoutWindowRefused(t *testing.T) {
 	st := testStore(t)
 	srv := startTestServer(t, st, Config{})
 
-	conn := dialHello(t, srv, "dev-stranger", "")
+	conn := dialHelloRaw(t, srv, "dev-stranger", "")
 	defer func() { _ = conn.Close() }()
 
 	// Server must refuse: read the refusal frame or observe the close.
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	buf := make([]byte, 256)
-	n, _ := conn.Read(buf)
-	body := string(buf[:n])
+	frame, err := readTestFrame(t, conn)
+	if err != nil {
+		t.Fatalf("read refusal: %v", err)
+	}
+	if string(frame) != `{"error":"refused"}` {
+		t.Fatalf("unexpected admission reply: %q", frame)
+	}
+	body := string(frame)
 
 	time.Sleep(200 * time.Millisecond)
 	srv.mu.RLock()
@@ -290,14 +313,14 @@ func TestPairingWindowAdmits(t *testing.T) {
 	}
 
 	// Wrong token: refused.
-	conn2 := dialHello(t, srv, "dev-new2", "wrong-token")
+	conn2 := dialHelloRaw(t, srv, "dev-new2", "wrong-token")
 	defer func() { _ = conn2.Close() }()
 	time.Sleep(300 * time.Millisecond)
 	waitForSessions(t, srv, 1) // still exactly one
 
 	// After the window expires: refused even with the (now stale) token.
 	time.Sleep(100 * time.Millisecond)
-	conn3 := dialHello(t, srv, "dev-new3", token)
+	conn3 := dialHelloRaw(t, srv, "dev-new3", token)
 	defer func() { _ = conn3.Close() }()
 	time.Sleep(300 * time.Millisecond)
 	waitForSessions(t, srv, 1)
@@ -305,7 +328,7 @@ func TestPairingWindowAdmits(t *testing.T) {
 	// Explicit close also refuses.
 	token2 := srv.OpenPairingWindow(0)
 	srv.ClosePairingWindow()
-	conn4 := dialHello(t, srv, "dev-new4", token2)
+	conn4 := dialHelloRaw(t, srv, "dev-new4", token2)
 	defer func() { _ = conn4.Close() }()
 	time.Sleep(300 * time.Millisecond)
 	waitForSessions(t, srv, 1)
@@ -336,8 +359,16 @@ func TestRevokedDeviceRefused(t *testing.T) {
 	}
 	srv := startTestServer(t, st, Config{})
 
-	conn := dialHello(t, srv, testDeviceID, "")
+	conn := dialHelloRaw(t, srv, testDeviceID, "")
 	defer func() { _ = conn.Close() }()
+	// The admission reply must be the fixed refusal, not an accept frame.
+	frame, err := readTestFrame(t, conn)
+	if err != nil {
+		t.Fatalf("read refusal: %v", err)
+	}
+	if string(frame) != `{"error":"refused"}` {
+		t.Fatalf("unexpected admission reply: %q", frame)
+	}
 	time.Sleep(300 * time.Millisecond)
 	srv.mu.RLock()
 	n := len(srv.sessions)
@@ -610,7 +641,7 @@ func TestErrorsDoNotLeakToken(t *testing.T) {
 	token := srv.OpenPairingWindow(0)
 	srv.ClosePairingWindow()
 
-	conn := dialHello(t, srv, "dev-stranger", token)
+	conn := dialHelloRaw(t, srv, "dev-stranger", token)
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	buf := make([]byte, 512)

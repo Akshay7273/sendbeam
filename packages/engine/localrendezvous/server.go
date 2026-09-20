@@ -95,12 +95,24 @@ type Config struct {
 	WriteTimeout time.Duration
 	// PairingWindow is the default lifetime of OpenPairingWindow(0). Default 5m.
 	PairingWindow time.Duration
+	// DeviceID is this host's own device ID, reported to dialers in the
+	// accept frame. Empty omits it; it is informational only and never
+	// authenticates the peer (authentication is the session layer's job).
+	DeviceID string
 }
 
 // hello is the first frame a connector must send.
 type hello struct {
 	DeviceID  string `json:"device_id"`
 	PairToken string `json:"pair_token,omitempty"`
+}
+
+// acceptFrame is the first frame the server sends after admission. The fixed
+// refusalFrame (`{"error":"refused"}`) is sent instead when admission is
+// denied, so dialers can distinguish refusal from a protocol error.
+type acceptFrame struct {
+	OK             bool   `json:"ok"`
+	ServerDeviceID string `json:"server_device_id,omitempty"`
 }
 
 // Server is the bounded local rendezvous service.
@@ -368,8 +380,18 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	// Admission granted: confirm with the fixed accept frame before the
+	// session starts, so the dialer knows it is admitted (not refused).
+	acc, _ := json.Marshal(acceptFrame{OK: true, ServerDeviceID: s.cfg.DeviceID})
+	_ = conn.SetWriteDeadline(time.Now().Add(s.cfg.WriteTimeout))
+	if err := writeFrame(conn, acc); err != nil {
+		_ = conn.Close()
+		return
+	}
+
 	sess := &Session{
-		server:   s,
+		cfg:      s.cfg,
+		onClose:  s.removeSession,
 		conn:     conn,
 		DeviceID: h.DeviceID,
 		Kind:     kind,
@@ -420,7 +442,12 @@ func (s *Server) removeSession(sess *Session) {
 // Session is one admitted local rendezvous connection. Frames are
 // length-prefixed envelopes; the session layer above decides their meaning.
 type Session struct {
-	server   *Server
+	// cfg is the effective frame config. Server-side sessions carry the
+	// server's config; client sessions (see Dial) carry the dial config.
+	cfg Config
+	// onClose unregisters the session; set by the server, nil for client
+	// sessions created by Dial.
+	onClose  func(*Session)
 	conn     net.Conn
 	DeviceID string
 	Kind     PeerKind
@@ -437,8 +464,8 @@ func (sess *Session) ReadFrame(ctx context.Context) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	_ = sess.conn.SetReadDeadline(time.Now().Add(sess.server.cfg.ReadTimeout))
-	return readFrame(sess.conn, sess.server.cfg.MaxFrameBytes)
+	_ = sess.conn.SetReadDeadline(time.Now().Add(sess.cfg.ReadTimeout))
+	return readFrame(sess.conn, sess.cfg.MaxFrameBytes)
 }
 
 // WriteFrame writes one length-prefixed frame.
@@ -446,17 +473,19 @@ func (sess *Session) WriteFrame(ctx context.Context, payload []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if len(payload) > sess.server.cfg.MaxFrameBytes {
+	if len(payload) > sess.cfg.MaxFrameBytes {
 		return fmt.Errorf("localrendezvous: frame too large: %d", len(payload))
 	}
-	_ = sess.conn.SetWriteDeadline(time.Now().Add(sess.server.cfg.WriteTimeout))
+	_ = sess.conn.SetWriteDeadline(time.Now().Add(sess.cfg.WriteTimeout))
 	return writeFrame(sess.conn, payload)
 }
 
 // Close terminates the session and unregisters it from the server.
 func (sess *Session) Close() error {
 	sess.closeOnce.Do(func() { close(sess.done) })
-	sess.server.removeSession(sess)
+	if sess.onClose != nil {
+		sess.onClose(sess)
+	}
 	return sess.conn.Close()
 }
 
