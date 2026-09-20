@@ -844,7 +844,7 @@ func asTransferError(err error, fallback FailReason) *TransferError {
 // transfer: same id, same total size, and identical file entries.
 func manifestsEqual(a, b *Manifest) bool {
 	if a == nil || b == nil || a.TransferID != b.TransferID || a.TotalSize != b.TotalSize ||
-		len(a.Files) != len(b.Files) {
+		a.ContentKind != b.ContentKind || len(a.Files) != len(b.Files) {
 		return false
 	}
 	for i := range a.Files {

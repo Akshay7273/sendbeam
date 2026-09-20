@@ -608,6 +608,39 @@ async function generateTsDifferentialVectors(
     });
   }
 
+  // V20-PR06: encrypted text/link handoff envelope vectors — one small in-memory
+  // payload with the authenticated contentKind field. Go decodes these and
+  // re-encodes to identical JSON (checked by packages/wire/differential_test.go).
+  for (const kind of ['text', 'link'] as const) {
+    const name = kind === 'text' ? 'text.txt' : 'link.txt';
+    const payloadText = kind === 'text' ? 'hello handoff' : 'https://example.com/handoff';
+    const manifest: Manifest = {
+      type: FrameType.Manifest,
+      transferId: `handoff-${kind}-00000000`,
+      contentKind: kind,
+      files: [
+        {
+          idx: 0,
+          name,
+          size: payloadText.length,
+          mime: 'text/plain; charset=utf-8',
+          lastModified: 1700000000000,
+          blockSize: 65536,
+          blocks: 1,
+          fileDigest: '1'.repeat(64),
+        },
+      ],
+      totalSize: payloadText.length,
+    };
+    const encoded = encodeControl(manifest);
+    emit('control', `ctrl_handoff_manifest_${kind}`, `handoff manifest (${kind})`, {
+      msg_type: 'manifest',
+      json_str: new TextDecoder().decode(encoded),
+      encoded_hex: bytesToHex(encoded),
+      structured: manifest,
+    });
+  }
+
   for (let i = 0; i < Math.floor(count / 4); i++) {
     const ack: Ack = {
       type: FrameType.Ack,

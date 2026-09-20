@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { FrameType, type Manifest } from '@sendbeam/protocol';
 import {
   ArchiveDestination,
+  HandoffDestination,
   createBrowserDestination,
   readOpfsOutput,
   removeOpfsOutput,
@@ -205,5 +206,101 @@ describe('browser destinations', () => {
     const archiveDest = createBrowserDestination({ kind: 'auto' });
     await archiveDest.prepare(manifest([['folder/a.bin', 3]]));
     await archiveDest.attachResumeSecret?.(manifest([['folder/a.bin', 3]]), resumeRoot);
+  });
+});
+
+describe('handoff destination (V20-PR06)', () => {
+  const handoffManifest = (contentKind: 'text' | 'link', body: Uint8Array): Manifest => ({
+    type: FrameType.Manifest,
+    transferId: 'handoff-test',
+    contentKind,
+    files: [
+      {
+        idx: 0,
+        name: contentKind === 'text' ? 'text.txt' : 'link.txt',
+        size: body.length,
+        mime: 'text/plain; charset=utf-8',
+        lastModified: 0,
+        blockSize: 8,
+        blocks: Math.ceil(body.length / 8),
+        fileDigest: '00',
+      },
+    ],
+    totalSize: body.length,
+  });
+
+  async function capture(contentKind: 'text' | 'link', body: Uint8Array) {
+    const dest = new HandoffDestination(contentKind);
+    await dest.prepare(handoffManifest(contentKind, body));
+    const sink = await dest.open();
+    await sink.write(0, body);
+    await sink.close();
+    await dest.close();
+    return dest;
+  }
+
+  it('round-trips a valid text payload in memory', async () => {
+    const body = new TextEncoder().encode('hello handoff');
+    const dest = await capture('text', body);
+    const out = dest.result();
+    expect(out?.kind).toBe('handoff');
+    if (out?.kind !== 'handoff') throw new Error('unreachable');
+    expect(out.contentKind).toBe('text');
+    expect(out.text).toBe('hello handoff');
+  });
+
+  it('rejects invalid UTF-8 payloads at result time', async () => {
+    const dest = await capture('text', new Uint8Array([0x68, 0x69, 0xff]));
+    expect(() => dest.result()).toThrow(/not valid UTF-8/);
+  });
+
+  it('rejects malformed link payloads at result time', async () => {
+    for (const bad of [
+      'javascript:alert(1)',
+      'ftp://example.com/x',
+      'not a url',
+      'https://exam ple.com',
+    ]) {
+      const dest = await capture('link', new TextEncoder().encode(bad));
+      expect(() => dest.result(), bad).toThrow(/handoff: link/);
+    }
+  });
+
+  it('accepts a valid https link payload', async () => {
+    const dest = await capture('link', new TextEncoder().encode('https://example.com/x'));
+    const out = dest.result();
+    expect(out?.kind).toBe('handoff');
+  });
+
+  it('exposes nothing before close', async () => {
+    const dest = new HandoffDestination('text');
+    const body = new TextEncoder().encode('hello');
+    await dest.prepare(handoffManifest('text', body));
+    const sink = await dest.open();
+    await sink.write(0, body);
+    expect(dest.result()).toBeUndefined();
+  });
+
+  it('close rejects a short write even when the bytes are valid UTF-8', async () => {
+    const dest = new HandoffDestination('text');
+    const body = new TextEncoder().encode('hello');
+    await dest.prepare(handoffManifest('text', body));
+    const sink = await dest.open();
+    // A valid UTF-8 prefix that is shorter than the manifest size.
+    await sink.write(0, new TextEncoder().encode('hel'));
+    await expect(dest.close()).rejects.toThrow(/expected 5/);
+  });
+
+  it('createBrowserDestination routes handoff envelopes to memory, not disk', async () => {
+    const body = new TextEncoder().encode('hello');
+    const dest = createBrowserDestination({ kind: 'auto' });
+    await dest.prepare(handoffManifest('text', body));
+    // No disk-backed destination was created: the only write surface is the sink.
+    const sink = await dest.open(handoffManifest('text', body).files[0]!);
+    await sink.write(0, body);
+    await sink.close();
+    await dest.close();
+    const out = dest.result?.();
+    expect(out?.kind).toBe('handoff');
   });
 });

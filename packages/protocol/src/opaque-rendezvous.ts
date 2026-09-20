@@ -22,6 +22,7 @@ import {
 } from './trusted-auth.js';
 import { x25519 } from '@noble/curves/ed25519.js';
 import { bytesToHex, hexToBytes } from './bytes.js';
+import { HANDOFF_FEATURE } from './transfer.js';
 import { randomBytes } from './webcrypto.js';
 
 export type OpaqueRendezvousPhase =
@@ -198,7 +199,7 @@ export class OpaqueRendezvousSession {
         this.options.peerDeviceId,
         this.options.pairCredentialRef,
         this.options.kPair,
-        this.options.localCapabilities ?? ['transfer.v1', 'padding'],
+        this.options.localCapabilities ?? ['transfer.v1', 'padding', HANDOFF_FEATURE],
         pub,
         nonce,
       );
@@ -227,7 +228,7 @@ export class OpaqueRendezvousSession {
     const pubB = x25519.getPublicKey(privB);
     const nonceB = randomBytes(32);
 
-    const localCaps = this.options.localCapabilities ?? ['transfer.v1', 'padding'];
+    const localCaps = this.options.localCapabilities ?? ['transfer.v1', 'padding', HANDOFF_FEATURE];
 
     const response = await createTrustedAuthResponseV3(
       this.options.localIdentity,

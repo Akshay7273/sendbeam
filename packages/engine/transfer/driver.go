@@ -72,6 +72,11 @@ type Spec struct {
 	// sender restart): the wire layer prefers it over its mint. Empty keeps the existing
 	// NewTransferID mint.
 	TransferID string
+	// ContentKind marks the send as an encrypted text/link handoff (V20-PR06):
+	// empty for ordinary file sends. The sender stamps it on the manifest; the
+	// receiver captures the verified payload in memory instead of the
+	// destination directory and holds it for deliberate receiver actions.
+	ContentKind string
 	// OnSendManifest, when set, is wired into the wire sender's OnManifest hook: it runs
 	// with the validated manifest strictly before its frame is transmitted, so a sender can
 	// persist or verify its restart record before the id is advertised. An error aborts the
@@ -165,6 +170,12 @@ type Outcome struct {
 	Digest     string             `json:"digest"`         // whole-file SHA-256 (hex); identical on both peers
 	Path       string             `json:"path,omitempty"` // receiver: the written file; empty for a sender
 	Files      []FileOutcome      `json:"files,omitempty"`
+	// ContentKind is "" for ordinary file transfers and "text"/"link" for an
+	// encrypted handoff (V20-PR06). On the receiver, Content holds the verified
+	// payload for deliberate receiver actions (Copy/Save/Open) — it is never
+	// written to disk by the transfer itself. On the sender it labels the send.
+	ContentKind string `json:"contentKind,omitempty"`
+	Content     string `json:"content,omitempty"`
 }
 
 // FileOutcome is one source or received destination within an Outcome.
@@ -531,6 +542,23 @@ func (d *driver) selectTransport(ctx context.Context, peer *rtc.Peer, readErr <-
 // the instant the session establishes it builds the peer — synchronously, so the peer exists
 // before the next frame (the offer, for a joiner) is read — and thereafter feeds the peer.
 // Running entirely on the read-loop goroutine makes the switch race-free.
+// opaqueSessionCaps builds the capability view for an opaque (targeted)
+// session from the authenticated negotiated capabilities (V20-PR06). The
+// local side always advertises the current defaults, including the handoff
+// capability; the remote side reflects exactly what the intersection of both
+// peers' advertisements granted — an older peer that never advertised
+// "handoff" is not credited with it, so the sender's fail-closed downgrade
+// refusal fires before any manifest is transmitted.
+func opaqueSessionCaps(negotiated []string) (local, remote rendezvous.Caps) {
+	local = rendezvous.DefaultCaps()
+	if containsString(negotiated, wire.PaddingCapability) {
+		local = local.WithPadding()
+	}
+	remote = local
+	remote.Features = append([]string(nil), negotiated...)
+	return local, remote
+}
+
 func (d *driver) route(m rendezvous.Message) {
 	if d.res != nil {
 		if d.relay != nil && d.relay.HandleMessage(m) {
@@ -571,16 +599,16 @@ func (d *driver) route(m rendezvous.Message) {
 			d.sig.Close()
 			return
 		}
-		caps := rendezvous.DefaultCaps()
-		if containsString(ores.NegotiatedCaps, wire.PaddingCapability) {
-			caps = caps.WithPadding()
-		}
+		// V20-PR06: opaque sessions derive their capability view from the
+		// authenticated negotiated capabilities (see opaqueSessionCaps), so an
+		// older peer is never credited with handoff support it did not advertise.
+		localCaps, remoteCaps := opaqueSessionCaps(ores.NegotiatedCaps)
 		res := &rendezvous.Result{
 			Role:        ores.Role,
 			Master:      ores.Master,
 			Keys:        keys,
-			LocalCaps:   caps,
-			RemoteCaps:  caps,
+			LocalCaps:   localCaps,
+			RemoteCaps:  remoteCaps,
 			SendCounter: 0,
 			RecvCounter: 0,
 		}
@@ -890,6 +918,12 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 	if needsFolders && !containsString(res.RemoteCaps.Features, "folders") {
 		return nil, wire.Errorf(wire.CodeCompat, "transfer: receiver does not support files or folders as a set")
 	}
+	// V20-PR06: a handoff must not silently downgrade into a saved text.txt /
+	// link.txt on an older receiver. Refuse to send when the peer did not
+	// advertise the handoff capability.
+	if d.spec.ContentKind != "" && !containsString(res.RemoteCaps.Features, wire.HandoffCapability) {
+		return nil, wire.Errorf(wire.CodeCompat, "transfer: receiver does not support encrypted text/link handoffs; update the receiver")
+	}
 	if d.spec.RequirePadding && !containsString(res.RemoteCaps.Features, wire.PaddingCapability) {
 		return nil, wire.ErrPaddingRequired
 	}
@@ -934,12 +968,18 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 		Padding:          paddingNegotiated,
 		RequirePadding:   d.spec.RequirePadding,
 		DoneTimeout:      60 * time.Second,
+		// V20-PR06: the handoff envelope kind rides the ordinary manifest; the
+		// envelope invariants are enforced by the wire validator.
+		ContentKind: d.spec.ContentKind,
 		// Advertise a stable random id in the manifest so a receiver that crashes mid-file
 		// can journal its verified progress and resume it (V13-PR02); the wire layer mints
 		// and validates it without any protocol change. A restart (V13-PR04) reuses the
 		// record's id, which the wire layer prefers over the mint.
-		TransferID:    d.spec.TransferID,
-		NewTransferID: newTransferID,
+		// V20-PR06: handoffs are ephemeral — no transfer id is minted or
+		// advertised, so there is nothing for a resume handshake, a sender
+		// record, or a receiver journal to bind to.
+		TransferID:    handoffTransferID(d.spec),
+		NewTransferID: handoffNewTransferID(d.spec),
 		OnManifest: func(manifest wire.Manifest) error {
 			sentTransferID = manifest.TransferID
 			// The record (stable id + source identity) is persisted first; only then is the
@@ -980,7 +1020,9 @@ func (d *driver) send(ctx context.Context, conn dataConn, sv *supervisor.Supervi
 		files[i] = FileOutcome{Name: meta.Name, Size: meta.Size}
 		total += meta.Size
 	}
-	return &Outcome{TransferID: sentTransferID, Name: files[0].Name, Size: total, Digest: digest, Files: files}, nil
+	// V20-PR06: label the sender-side outcome as a handoff; the payload itself
+	// stays with the caller's source — only the receiver gets Content.
+	return &Outcome{TransferID: sentTransferID, Name: files[0].Name, Size: total, Digest: digest, Files: files, ContentKind: d.spec.ContentKind}, nil
 }
 
 func containsString(values []string, want string) bool {
@@ -1002,27 +1044,24 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 		SetResumeAuthorized()
 	}
 
-	if d.spec.Consent != nil {
-		peerID := d.spec.PeerDeviceID
-		if peerID == "" && d.opaqueResult != nil {
-			peerID = d.opaqueResult.PeerDeviceID
-		}
-		destWrapper := &consentDestination{
-			ctx:          ctx,
-			specDestDir:  d.spec.DestDir,
-			consent:      d.spec.Consent,
-			peerDeviceID: peerID,
-			peerLabel:    d.spec.PeerLabel,
-			resumeCtx:    d.spec.Resume,
-		}
-		destination = destWrapper
-	} else {
-		actual, err := NewDurableDestination(d.spec.DestDir)
-		if err != nil {
-			return nil, wire.NewTransferError(wire.FailSinkError, err.Error())
-		}
-		destination = actual
+	var destWrapper *consentDestination
+	peerID := d.spec.PeerDeviceID
+	if peerID == "" && d.opaqueResult != nil {
+		peerID = d.opaqueResult.PeerDeviceID
 	}
+	// The consent destination is always used: with a nil consent handler it
+	// accepts into the spec destination dir without prompting, and it routes
+	// handoff envelopes to the in-memory destination either way — a handoff
+	// must never reach the disk-backed durable destination (V20-PR06).
+	destWrapper = &consentDestination{
+		ctx:          ctx,
+		specDestDir:  d.spec.DestDir,
+		consent:      d.spec.Consent,
+		peerDeviceID: peerID,
+		peerLabel:    d.spec.PeerLabel,
+		resumeCtx:    d.spec.Resume,
+	}
+	destination = destWrapper
 
 	// V13-PR08: an explicit resume attempt pre-selects its interrupted journal locally; its
 	// verified progress is reused only after resume-auth succeeds in this session.
@@ -1126,11 +1165,19 @@ func (d *driver) receive(ctx context.Context, conn dataConn, sv *supervisor.Supe
 	for i, file := range result.Files {
 		files[i] = FileOutcome{Name: file.Name, Size: file.Size, Digest: result.Digests[i], Path: destination.Path(file.Idx)}
 	}
-	return &Outcome{
+	out := &Outcome{
 		TransferID: receivedTransferID,
-		Name: result.File.Name, Size: result.TotalSize, Digest: result.Digest,
+		Name:       result.File.Name, Size: result.TotalSize, Digest: result.Digest,
 		Path: destination.Path(result.File.Idx), Files: files,
-	}, nil
+	}
+	// V20-PR06: a verified handoff payload is handed to the receiver for
+	// deliberate actions (Copy/Save/Open) — never written to disk by the
+	// transfer itself. HandoffContent fails for ordinary file sets.
+	if kind, text, herr := destWrapper.HandoffContent(); herr == nil {
+		out.ContentKind = kind
+		out.Content = text
+	}
+	return out, nil
 }
 
 // newTransferID mints a random 128-bit lowercase hex id so the manifest opts into
@@ -1143,6 +1190,23 @@ func newTransferID() string {
 		return ""
 	}
 	return hex.EncodeToString(b)
+}
+
+// handoffTransferID suppresses the advertised transfer id for handoff sends:
+// an ephemeral handoff must not opt into resumption or journaling.
+func handoffTransferID(spec Spec) string {
+	if spec.ContentKind != "" {
+		return ""
+	}
+	return spec.TransferID
+}
+
+// handoffNewTransferID suppresses id minting for handoff sends.
+func handoffNewTransferID(spec Spec) func() string {
+	if spec.ContentKind != "" {
+		return nil
+	}
+	return newTransferID
 }
 
 // directionalKeys selects the seal/open keys for this peer's role, mirroring the session's

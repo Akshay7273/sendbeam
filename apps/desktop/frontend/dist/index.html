@@ -434,6 +434,26 @@
         </div>
       </div>
 
+      <!-- V20-PR06: encrypted text/link handoff composer for a paired trusted device. -->
+      <div class="card">
+        <h2>Text / link handoff</h2>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin:0 0 0.75rem;">
+          Send an encrypted text note or link directly to a paired trusted device — held for
+          deliberate Copy/Save/Open after verification, never opened automatically.
+        </p>
+        <label for="handoff-kind">Kind</label>
+        <select id="handoff-kind" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.45rem; border-radius:6px; font-size:0.85rem; outline:none;">
+          <option value="text">Text note</option>
+          <option value="link">Link</option>
+        </select>
+        <label for="handoff-text" style="margin-top:0.6rem;">Content</label>
+        <textarea id="handoff-text" rows="3" placeholder="Text note, or an https:// link — up to 256 KiB, encrypted end to end" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.45rem; border-radius:6px; font-size:0.85rem; outline:none; resize:vertical;"></textarea>
+        <div class="controls" style="margin-top:0.75rem;">
+          <button class="primary" id="start-handoff" disabled>Send Handoff</button>
+        </div>
+        <div class="statusline" id="handoff-status"></div>
+      </div>
+
       <div class="card hidden" id="invite-card">
         <h2>Invite</h2>
         <div class="invite">
@@ -501,6 +521,19 @@
           <button class="ghost hidden" id="recv-reveal">Reveal in Folder</button>
         </div>
         <div class="statusline" id="recv-status-line"></div>
+        <!-- V20-PR06: verified handoff receiver view — literal rendering only,
+             deliberate Copy/Save/Open; nothing is opened or copied automatically. -->
+        <div class="hidden" id="recv-handoff-card">
+          <div class="row-sep"></div>
+          <div class="row"><span class="k">Handoff</span><span class="v" id="recv-handoff-kind"></span></div>
+          <pre id="recv-handoff-text" style="white-space:pre-wrap; word-break:break-word; max-height:14rem; overflow:auto; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:0.75rem; font-size:0.85rem; margin:0.5rem 0;"></pre>
+          <p id="recv-handoff-note" style="font-size:0.8rem; color:var(--text-muted); margin:0 0 0.5rem;">Nothing was opened, copied, or saved automatically.</p>
+          <div class="controls" style="justify-content:flex-start;">
+            <button class="primary small" id="recv-handoff-copy">Copy</button>
+            <button class="ghost small" id="recv-handoff-save">Save…</button>
+            <button class="ghost small hidden" id="recv-handoff-open">Open</button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -796,10 +829,18 @@
           </div>
         </div>
 
-        <label for="consent-dest-dir">Save into folder</label>
-        <div style="display:flex; gap:0.5rem;">
-          <input type="text" id="consent-dest-dir" placeholder="/path/to/downloads" style="flex:1" />
-          <button class="ghost" id="consent-browse-dest">Browse…</button>
+        <!-- V20-PR06: encrypted handoff notice — shown only for text/link envelopes. -->
+        <p id="consent-handoff-note" class="hidden" style="font-size:0.85rem; color:var(--text-muted); margin:0 0 1rem;">
+          An encrypted handoff — it will be shown only after verification. It will not be
+          opened, copied, or saved automatically.
+        </p>
+
+        <div id="consent-dest-row">
+          <label for="consent-dest-dir">Save into folder</label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="text" id="consent-dest-dir" placeholder="/path/to/downloads" style="flex:1" />
+            <button class="ghost" id="consent-browse-dest">Browse…</button>
+          </div>
         </div>
 
         <div class="statusline" id="consent-status"></div>
@@ -846,6 +887,10 @@
         recv: { id: null, outPath: null },
         activeDevice: null,
         pendingConsentId: null,
+        // V20-PR06: verified handoff payload held for deliberate Copy/Save/Open.
+        handoffText: "",
+        handoffKind: "",
+        handoffOpenUrl: null,
       };
 
       function setMode(mode) {
@@ -952,6 +997,63 @@
         }).catch((err) => { $("send-status").textContent = String(err); });
       });
 
+      // V20-PR06: encrypted text/link handoff composer — targeted to a paired
+      // trusted device only; the backend validates kind, UTF-8, size, and link
+      // shape. The payload is verified before the receiver may Copy/Save/Open it.
+      const MAX_HANDOFF_BYTES = 262144;
+      function handoffCanSend() {
+        const kind = $("handoff-kind").value;
+        // V20-PR06: text preserves the exact user bytes (only whitespace-only
+        // input is rejected); links are trimmed before URL validation. The
+        // ceiling is measured in UTF-8 bytes, not JS string length.
+        const input = $("handoff-text").value;
+        const raw = kind === "link" ? input.trim() : input;
+        if (!raw || (kind === "text" && !raw.trim())) return false;
+        if (new TextEncoder().encode(raw).length > MAX_HANDOFF_BYTES) return false;
+        const recipient = $("send-recipient") ? $("send-recipient").value : "code";
+        if (recipient === "code") return false;
+        if (kind === "link") {
+          if (/\s/.test(raw)) return false;
+          try {
+            const url = new URL(raw);
+            if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+            if (!url.hostname) return false;
+          } catch {
+            return false;
+          }
+        }
+        return true;
+      }
+      function updateHandoffStart() {
+        $("start-handoff").disabled = !handoffCanSend();
+      }
+      $("handoff-text").addEventListener("input", updateHandoffStart);
+      $("handoff-kind").addEventListener("change", updateHandoffStart);
+      $("send-recipient").addEventListener("change", updateHandoffStart);
+      $("start-handoff").addEventListener("click", () => {
+        const kind = $("handoff-kind").value;
+        // V20-PR06: send the exact bytes the composer validated (text is
+        // untrimmed; links were trimmed during validation).
+        const input = $("handoff-text").value;
+        const raw = kind === "link" ? input.trim() : input;
+        const recipient = $("send-recipient").value;
+        $("handoff-status").textContent = "Preparing secure channel…";
+        $("start-handoff").disabled = true;
+        call(SV.Transfer + ".SendHandoffToDevice", kind, raw, recipient, "").then((h) => {
+          if (h && h.error) {
+            $("handoff-status").textContent = h.error;
+            $("start-handoff").disabled = false;
+            return;
+          }
+          state.send.id = h.id;
+          $("handoff-status").textContent = "Handoff sending…";
+          $("send-progress-card").classList.remove("hidden");
+        }).catch((err) => {
+          $("handoff-status").textContent = String(err);
+          $("start-handoff").disabled = false;
+        });
+      });
+
       // RECEIVE
       function recvCanStart() {
         return !!$("recv-code").value.trim();
@@ -985,6 +1087,69 @@
         if (state.recv.id) {
           call(SV.Transfer + ".RevealCompleted", state.recv.id).catch((e) => {
             $("recv-status-line").textContent = "Reveal failed: " + e;
+          });
+        }
+      });
+
+      // V20-PR06: verified handoff receiver actions. The payload is rendered with
+      // literal text only — no HTML execution, no auto-open, no clipboard access
+      // outside an explicit click. Open re-validates in the backend before launch.
+      function validateHandoffLink(text) {
+        const trimmed = String(text || "").trim();
+        if (!trimmed || /\s/.test(trimmed)) return null;
+        try {
+          const url = new URL(trimmed);
+          if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+          if (!url.hostname) return null;
+          return url.toString();
+        } catch {
+          return null;
+        }
+      }
+
+      function showRecvHandoff(ev) {
+        state.handoffKind = ev.contentKind;
+        state.handoffText = String(ev.content || "");
+        $("recv-handoff-kind").textContent =
+          ev.contentKind === "link" ? "Link (not opened)" : "Text note";
+        $("recv-handoff-text").textContent = state.handoffText;
+        state.handoffOpenUrl =
+          ev.contentKind === "link" ? validateHandoffLink(state.handoffText) : null;
+        $("recv-handoff-open").classList.toggle("hidden", !state.handoffOpenUrl);
+        $("recv-handoff-card").classList.remove("hidden");
+      }
+
+      $("recv-handoff-copy").addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(state.handoffText);
+          $("recv-handoff-note").textContent = "Copied to clipboard.";
+        } catch (e) {
+          $("recv-handoff-note").textContent = "Copy failed — select the text manually.";
+        }
+      });
+      $("recv-handoff-save").addEventListener("click", async () => {
+        const res = await call(SV.Transfer + ".PickDestination");
+        if (res && res.error) {
+          $("recv-handoff-note").textContent = res.error;
+          return;
+        }
+        if (!res || !res.paths || !res.paths.length) return;
+        try {
+          const saved = await call(
+            SV.Transfer + ".SaveHandoffText",
+            state.handoffKind,
+            state.handoffText,
+            res.paths[0],
+          );
+          $("recv-handoff-note").textContent = "Saved to " + saved;
+        } catch (e) {
+          $("recv-handoff-note").textContent = "Save failed: " + e;
+        }
+      });
+      $("recv-handoff-open").addEventListener("click", () => {
+        if (state.handoffOpenUrl) {
+          call(SV.Transfer + ".OpenHandoffLink", state.handoffOpenUrl).catch((e) => {
+            $("recv-handoff-note").textContent = "Open failed: " + e;
           });
         }
       });
@@ -1044,12 +1209,25 @@
 
         const status = p === "recv" ? $("recv-status-line") : $("send-status");
         if (ev.kind === "done") {
-          setStatusMessage(
-            status,
-            "ok",
-            "✓ Verified transfer complete.",
-            ev.outPath ? " Saved to " + ev.outPath + "." : null
-          );
+          const isHandoff = p === "recv" && (ev.contentKind === "text" || ev.contentKind === "link");
+          if (isHandoff) {
+            // V20-PR06: the verified handoff payload is held for deliberate
+            // Copy/Save/Open — nothing is opened or copied automatically.
+            setStatusMessage(
+              status,
+              "ok",
+              "✓ Verified " + (ev.contentKind === "link" ? "link" : "text") + " handoff received.",
+            );
+            showRecvHandoff(ev);
+          } else {
+            setStatusMessage(
+              status,
+              "ok",
+              "✓ Verified transfer complete.",
+              ev.outPath ? " Saved to " + ev.outPath + "." : null
+            );
+            $("recv-handoff-card").classList.add("hidden");
+          }
           $(p + "-pause").disabled = $(p + "-resume").disabled = $(p + "-cancel").disabled = true;
           if (p === "recv" && (ev.outPath || ev.outDir)) {
             state.recv.outPath = ev.outPath || ev.outDir;
@@ -1515,12 +1693,31 @@
       function showConsentPrompt(req) {
         if (!req || !req.transferId) return;
         state.pendingConsentId = req.transferId;
+        // V20-PR06: a handoff envelope is rendered inertly — kind and size only,
+        // no destination-folder prompt; the payload appears only after verification.
+        const isHandoff = req.contentKind === "text" || req.contentKind === "link";
         $("modal-consent").classList.remove("hidden");
-        $("consent-device-name").textContent = req.peerName || req.peerDeviceId || "Trusted Device";
+        $("modal-consent").querySelector(".modal-header h3").textContent =
+          isHandoff ? (req.contentKind === "link" ? "Incoming Link" : "Incoming Text")
+                    : "Incoming Transfer Request";
+        $("consent-device-name").textContent =
+          req.peerLabel || req.peerName || req.peerDeviceId || "Trusted Device";
         $("consent-fingerprint").textContent = req.fingerprint || "";
-        const label = req.fileName || "File";
-        $("consent-files-summary").textContent = label + " (" + humanBytes(req.totalSize || 0) + ")";
-        $("consent-dest-dir").value = req.destDir || $("cfg-downdir").value || "";
+        if (isHandoff) {
+          $("consent-files-summary").textContent =
+            (req.contentKind === "link" ? "Link" : "Text note") +
+            " (" + humanBytes(req.totalSize || 0) + ")";
+          $("consent-handoff-note").classList.remove("hidden");
+          $("consent-dest-row").classList.add("hidden");
+          $("consent-accept-btn").textContent = "Accept & Verify";
+        } else {
+          const label = req.fileName || "File";
+          $("consent-files-summary").textContent = label + " (" + humanBytes(req.totalSize || 0) + ")";
+          $("consent-handoff-note").classList.add("hidden");
+          $("consent-dest-row").classList.remove("hidden");
+          $("consent-dest-dir").value = req.destDir || $("cfg-downdir").value || "";
+          $("consent-accept-btn").textContent = "Accept Transfer";
+        }
         $("consent-status").textContent = "";
       }
       $("consent-browse-dest").addEventListener("click", async () => {

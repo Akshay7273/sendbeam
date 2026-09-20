@@ -10,6 +10,7 @@ import {
   formatFingerprint,
   getOrCreateBrowserIdentity,
   hexToBytes,
+  HANDOFF_FEATURE,
   type TrustRecord,
 } from '@sendbeam/protocol';
 import { getBrowserStores, isDesktopApp } from './devices.js';
@@ -207,7 +208,7 @@ export class IncomingTransferCoordinator {
         peerPublicKey,
         kPair,
         pairCredentialRef: dev.pairCredentialRef,
-        localCapabilities: ['sendbeam/3', 'transfer.v1', 'padding'],
+        localCapabilities: ['sendbeam/3', 'transfer.v1', 'padding', HANDOFF_FEATURE],
       });
 
       this.activeListeners.set(dev.deviceId, ctrl);
@@ -262,6 +263,8 @@ export class IncomingTransferCoordinator {
               fileCount: manifest.files.length,
               totalBytes: manifest.totalSize,
               files: manifest.files.map((f) => ({ name: f.name, size: f.size })),
+              // V20-PR06: handoff envelopes render inertly with deliberate Copy/Save/Open.
+              ...(manifest.contentKind !== undefined ? { contentKind: manifest.contentKind } : {}),
             });
 
             return await consentPromise;

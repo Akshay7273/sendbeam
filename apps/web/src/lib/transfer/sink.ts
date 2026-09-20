@@ -1,6 +1,8 @@
 import {
   TransferError,
   MemorySink,
+  isHandoffKind,
+  MAX_HANDOFF_BYTES,
   normalizeTransferPath,
   type Destination,
   type FileEntry,
@@ -34,7 +36,12 @@ export const MAX_IN_MEMORY_STREAM_BYTES = 64 * 1024 * 1024;
 export type DestinationOutput =
   | { kind: 'opfs'; key: string; name: string; mime: string }
   | { kind: 'direct' }
-  | { kind: 'blob'; blob: Blob; name: string; mime: string };
+  | { kind: 'blob'; blob: Blob; name: string; mime: string }
+  /**
+   * V20-PR06: a verified text/link handoff captured in memory. The receiver holds the
+   * payload for deliberate Copy/Save/Open actions — it was never written to disk.
+   */
+  | { kind: 'handoff'; contentKind: 'text' | 'link'; text: string };
 
 export interface BrowserDestination extends Destination {
   result(): DestinationOutput | undefined;
@@ -91,6 +98,15 @@ export function createBrowserDestination(
   };
   return {
     async prepare(manifest) {
+      // V20-PR06: a handoff envelope is captured in memory, never written to disk.
+      // It does not participate in resume: the envelope is small enough that a
+      // fresh re-send is the recovery path. This branch runs before every
+      // disk-backed destination so no directory or journal is ever touched.
+      if (isHandoffKind(manifest.contentKind)) {
+        inner = new HandoffDestination(manifest.contentKind);
+        await inner.prepare(manifest);
+        return;
+      }
       if (spec.kind === 'direct-file') {
         // An armed authenticated-journal resume must never silently target a fresh save:
         // the journal + partial storage IS the destination for that attempt (V13-PR08).
@@ -595,5 +611,121 @@ export class MemoryBlobDestination implements BrowserDestination {
       name,
       mime: 'application/zip',
     };
+  }
+}
+
+/**
+ * V20-PR06: captures one verified text/link handoff in memory. The manifest was
+ * already validated by the receiver; prepare() re-checks the envelope as
+ * defense in depth. Never touches the filesystem: no directory, no journal,
+ * no partial file. The payload is released via result() only after close(),
+ * which the receiver calls after the whole-set digest verifies.
+ */
+export class HandoffDestination implements BrowserDestination {
+  private readonly contentKind: 'text' | 'link';
+  private expected = 0;
+  private chunks: Uint8Array[] = [];
+  private received = 0;
+  private opened = false;
+  private closed = false;
+  private aborted = false;
+
+  constructor(contentKind: 'text' | 'link') {
+    this.contentKind = contentKind;
+  }
+
+  async prepare(manifest: Manifest): Promise<void> {
+    if (!isHandoffKind(manifest.contentKind)) {
+      throw new TransferError('sink_error', 'handoff: manifest is not a handoff envelope');
+    }
+    if (
+      manifest.files.length !== 1 ||
+      manifest.totalSize <= 0 ||
+      manifest.totalSize > MAX_HANDOFF_BYTES ||
+      manifest.files[0]!.size !== manifest.totalSize
+    ) {
+      throw new TransferError('sink_error', 'handoff: manifest envelope is malformed');
+    }
+    this.expected = manifest.totalSize;
+  }
+
+  async open(): Promise<Sink> {
+    if (this.opened) throw new TransferError('sink_error', 'handoff: sink opened more than once');
+    this.opened = true;
+    // The receiver only ever writes blocks whose per-block hash already verified;
+    // the in-order and ceiling checks below are structural guards.
+    return {
+      write: (offset: number, bytes: Uint8Array) => {
+        if (this.aborted) throw new TransferError('sink_error', 'handoff: write after abort');
+        if (offset !== this.received)
+          throw new TransferError('sink_error', 'handoff: out-of-order write');
+        if (this.received + bytes.length > this.expected)
+          throw new TransferError(
+            'sink_error',
+            'handoff: write exceeds the advertised payload size',
+          );
+        this.chunks.push(bytes.slice());
+        this.received += bytes.length;
+        return Promise.resolve();
+      },
+      close: () => Promise.resolve(),
+      abort: (reason?: string) => this.abort(reason),
+    };
+  }
+
+  async close(): Promise<void> {
+    // The wire receiver calls close only after the whole-set digest verified;
+    // the size check is structural defense in depth at the sink boundary.
+    if (this.received !== this.expected) {
+      throw new TransferError(
+        'integrity',
+        `handoff: received ${this.received} bytes, expected ${this.expected}`,
+      );
+    }
+    this.closed = true;
+  }
+
+  // The reason is part of the Destination interface; the in-memory capture needs
+  // no cleanup beyond discarding the chunks.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async abort(reason?: string): Promise<void> {
+    this.aborted = true;
+    this.chunks = [];
+    this.received = 0;
+  }
+
+  result(): DestinationOutput | undefined {
+    if (!this.closed || this.aborted) return undefined;
+    const bytes = new Uint8Array(this.received);
+    let at = 0;
+    for (const chunk of this.chunks) {
+      bytes.set(chunk, at);
+      at += chunk.length;
+    }
+    // Re-validate the typed envelope: the digest proves the sender sent these
+    // bytes, not that they honor the handoff contract. Malformed payloads fail
+    // closed here instead of reaching the UI.
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      throw new TransferError('integrity', 'handoff: payload is not valid UTF-8');
+    }
+    if (this.contentKind === 'link') {
+      const trimmed = text.trim();
+      if (trimmed.length === 0 || /\s/.test(trimmed)) {
+        throw new TransferError('integrity', 'handoff: link is malformed');
+      }
+      let url: URL;
+      try {
+        url = new URL(trimmed);
+      } catch {
+        throw new TransferError('integrity', 'handoff: link is not a valid URL');
+      }
+      if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !url.hostname) {
+        throw new TransferError('integrity', 'handoff: link must be an http(s) URL');
+      }
+    }
+    return { kind: 'handoff', contentKind: this.contentKind, text };
   }
 }

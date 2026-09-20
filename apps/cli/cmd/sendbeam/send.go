@@ -56,6 +56,8 @@ func executeSend(args []string, stdout, stderr io.Writer) int {
 	concurrency := fs.Int("concurrency", 4, "maximum concurrent target transfers")
 	timeout := fs.Duration("timeout", 0, "per-target transfer timeout (e.g. 30s; 0 = unlimited)")
 	configDir := fs.String("config-dir", "", "path to custom configuration directory")
+	textHandoff := fs.String("text", "", "send an encrypted text handoff instead of files (mutually exclusive with --link and file paths)")
+	linkHandoff := fs.String("link", "", "send an encrypted link handoff instead of files (mutually exclusive with --text and file paths)")
 
 	rawPositionals := parseArgs(fs, args)
 
@@ -68,28 +70,85 @@ func executeSend(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if len(filePaths) == 0 {
+	// V20-PR06: explicit encrypted text/link handoffs ride the existing
+	// transfer and consent paths as a typed envelope. They are ephemeral —
+	// never queued in the outbox — and never auto-opened or synced.
+	hp := handoffPayload{}
+	switch {
+	case *textHandoff != "" && *linkHandoff != "":
+		_, _ = fmt.Fprintln(stderr, "sendbeam send: --text and --link are mutually exclusive")
+		return 2
+	case *textHandoff != "":
+		if len(filePaths) != 0 {
+			_, _ = fmt.Fprintln(stderr, "sendbeam send: --text cannot be combined with file paths")
+			return 2
+		}
+		hp = handoffPayload{Kind: wire.ContentKindText, Text: *textHandoff}
+	case *linkHandoff != "":
+		if len(filePaths) != 0 {
+			_, _ = fmt.Fprintln(stderr, "sendbeam send: --link cannot be combined with file paths")
+			return 2
+		}
+		hp = handoffPayload{Kind: wire.ContentKindLink, Text: *linkHandoff}
+	}
+
+	if hp.Kind == "" && len(filePaths) == 0 {
 		_, _ = fmt.Fprintln(stderr, "sendbeam send: a file to send is required")
 		return 2
 	}
 
 	if len(toDevices) == 0 {
-		return runSingleInteractiveSend(filePaths, *server, *insecure, *words, *relayOnly, iceServer, *privateMode, *requirePadding, *jitter, *jsonOutput, stdout, stderr)
+		return runSingleInteractiveSend(filePaths, hp, *server, *insecure, *words, *relayOnly, iceServer, *privateMode, *requirePadding, *jitter, *jsonOutput, stdout, stderr)
 	}
 
-	return runBroadcastSend(filePaths, toDevices, *server, *insecure, *relayOnly, iceServer, *privateMode, *requirePadding, *jitter, *jsonOutput, *concurrency, *timeout, *configDir, stdout, stderr)
+	return runBroadcastSend(filePaths, hp, toDevices, *server, *insecure, *relayOnly, iceServer, *privateMode, *requirePadding, *jitter, *jsonOutput, *concurrency, *timeout, *configDir, stdout, stderr)
 }
 
-func runSingleInteractiveSend(filePaths []string, server string, insecure bool, words int, relayOnly bool, iceServer iceServerList, privateMode bool, requirePadding bool, jitter time.Duration, jsonOutput bool, stdout, stderr io.Writer) int {
+// handoffPayload carries an explicit text/link handoff for `sendbeam send`.
+// Kind is "" for an ordinary file send; otherwise "text" or "link" with the
+// payload in Text.
+type handoffPayload struct {
+	Kind string
+	Text string
+}
+
+// handoffKindLabel renders the receiver-facing label for a handoff kind.
+func handoffKindLabel(kind string) string {
+	if kind == wire.ContentKindLink {
+		return "link"
+	}
+	return "text"
+}
+
+func runSingleInteractiveSend(filePaths []string, hp handoffPayload, server string, insecure bool, words int, relayOnly bool, iceServer iceServerList, privateMode bool, requirePadding bool, jitter time.Duration, jsonOutput bool, stdout, stderr io.Writer) int {
 	ice, err := iceServers(iceServer)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", err)
 		return 2
 	}
-	sources, totalSize, err := transfer.NewOSFileSources(filePaths)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", err)
-		return 1
+
+	var sources []wire.FileSource
+	var totalSize int64
+	contentKind := ""
+	if hp.Kind != "" {
+		// V20-PR06: a handoff is one small in-memory payload over the ordinary
+		// encrypted transfer. It is ephemeral: no sender record, no resume —
+		// a fresh re-send is the recovery path.
+		src, err := transfer.NewTextSource(hp.Kind, hp.Text)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", err)
+			return 1
+		}
+		sources = []wire.FileSource{src}
+		totalSize = src.Meta().Size
+		contentKind = hp.Kind
+	} else {
+		var err error
+		sources, totalSize, err = transfer.NewOSFileSources(filePaths)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", err)
+			return 1
+		}
 	}
 
 	senderDir, err := transfer.SenderStoreDir()
@@ -102,10 +161,16 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 		_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", err)
 		return 1
 	}
-	transferID, onSendManifest, reused, err := transfer.PrepareSender(senderStore, filePaths, sources)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", err)
-		return 1
+	var transferID string
+	var onSendManifest func(wire.Manifest) error
+	reused := false
+	if hp.Kind == "" {
+		var prepErr error
+		transferID, onSendManifest, reused, prepErr = transfer.PrepareSender(senderStore, filePaths, sources)
+		if prepErr != nil {
+			_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", prepErr)
+			return 1
+		}
 	}
 
 	session := rendezvous.Options{
@@ -158,6 +223,9 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 	if len(progressFiles) > 1 {
 		label = fmt.Sprintf("%d files", len(progressFiles))
 	}
+	if contentKind != "" {
+		label = handoffKindLabel(contentKind) + " handoff"
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -195,8 +263,14 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 		Session:        session,
 		Sources:        sources,
 		TransferID:     transferID,
+		ContentKind:    contentKind,
 		OnSendManifest: onSendManifest,
+		// V20-PR06: handoffs are ephemeral — no sender record exists, so no
+		// resume credential may be attached for them.
 		OnResumeCredential: func(manifest wire.Manifest, resumeRoot []byte) error {
+			if contentKind != "" {
+				return nil
+			}
 			return senderStore.AttachResumeSecret(manifest, resumeRoot, !reused)
 		},
 		Resume: resumeCtx,
@@ -242,14 +316,14 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 			_, _ = fmt.Fprintln(stdout, string(data))
 		} else {
 			_, _ = fmt.Fprintf(stderr, "\n%s\n", s.cross("Failed: "+handshakeError(err)))
-			if srec, ok, lookupErr := senderStore.Lookup(transfer.PathKey(filePaths)); lookupErr == nil && ok {
+			if srec, ok, lookupErr := senderStore.Lookup(transfer.PathKey(filePaths)); hp.Kind == "" && lookupErr == nil && ok {
 				_, _ = fmt.Fprintf(stderr, "%s\n", s.dim("Sender state for transfer "+srec.TransferID+" was kept; re-run this command to resume it with the same receiver."))
 			}
 		}
 		return 1
 	}
 
-	if srec, ok, lookupErr := senderStore.Lookup(transfer.PathKey(filePaths)); lookupErr == nil && ok {
+	if srec, ok, lookupErr := senderStore.Lookup(transfer.PathKey(filePaths)); hp.Kind == "" && lookupErr == nil && ok {
 		if err := senderStore.Discard(srec.TransferID); err != nil {
 			_, _ = fmt.Fprintf(stderr, "sendbeam send: warning: could not discard sender record %s: %v\n", srec.TransferID, err)
 		}
@@ -276,7 +350,9 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 	}
 
 	_, _ = fmt.Fprintln(stdout)
-	if len(out.Files) == 1 {
+	if contentKind != "" {
+		_, _ = fmt.Fprintln(stdout, s.green("✓")+" Sent "+s.bold(handoffKindLabel(contentKind)+" handoff")+" ("+humanBytes(out.Size)+").")
+	} else if len(out.Files) == 1 {
 		_, _ = fmt.Fprintln(stdout, s.green("✓")+" Sent "+s.bold(out.Name)+" ("+humanBytes(out.Size)+").")
 	} else {
 		_, _ = fmt.Fprintln(stdout, s.green("✓")+" Sent "+s.bold(fmt.Sprintf("%d files", len(out.Files)))+" ("+humanBytes(out.Size)+").")
@@ -290,7 +366,7 @@ func runSingleInteractiveSend(filePaths []string, server string, insecure bool, 
 	return 0
 }
 
-func runBroadcastSend(filePaths []string, toDevices []string, server string, insecure bool, relayOnly bool, iceServer iceServerList, privateMode bool, requirePadding bool, jitter time.Duration, jsonOutput bool, concurrency int, timeout time.Duration, configDir string, stdout, stderr io.Writer) int {
+func runBroadcastSend(filePaths []string, hp handoffPayload, toDevices []string, server string, insecure bool, relayOnly bool, iceServer iceServerList, privateMode bool, requirePadding bool, jitter time.Duration, jsonOutput bool, concurrency int, timeout time.Duration, configDir string, stdout, stderr io.Writer) int {
 	env, err := InitCLIEnvironment(configDir)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "sendbeam send: %v\n", err)
@@ -311,10 +387,27 @@ func runBroadcastSend(filePaths []string, toDevices []string, server string, ins
 		_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", err)
 		return 2
 	}
-	sources, totalSize, err := transfer.NewOSFileSources(filePaths)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", err)
-		return 1
+	var sources []wire.FileSource
+	var totalSize int64
+	contentKind := ""
+	if hp.Kind != "" {
+		// V20-PR06: an ephemeral text/link handoff to each trusted target —
+		// same typed envelope, no sender records, no resume.
+		src, serr := transfer.NewTextSource(hp.Kind, hp.Text)
+		if serr != nil {
+			_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", serr)
+			return 1
+		}
+		sources = []wire.FileSource{src}
+		totalSize = src.Meta().Size
+		contentKind = hp.Kind
+	} else {
+		var serr error
+		sources, totalSize, serr = transfer.NewOSFileSources(filePaths)
+		if serr != nil {
+			_, _ = fmt.Fprintf(stderr, "sendbeam send: %s\n", serr)
+			return 1
+		}
 	}
 
 	resolved, err := resolveSendTargets(ctx, env, toDevices)
@@ -346,6 +439,7 @@ func runBroadcastSend(filePaths []string, toDevices []string, server string, ins
 		requirePadding: requirePadding,
 		jitter:         jitter,
 		dialWriter:     dialWriter,
+		contentKind:    contentKind,
 	})
 
 	broadcastResult := transfer.RunBroadcast(ctx, targets, transfer.BroadcastOptions{

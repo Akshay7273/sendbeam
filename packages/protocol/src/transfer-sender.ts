@@ -62,6 +62,11 @@ export interface TransferSenderOptions {
   transferId?: string;
   /** Mint a fresh transfer id when {@link transferId} is not supplied. */
   newTransferId?(): string;
+  /**
+   * V20-PR06: marks the send as an encrypted text/link handoff. The kind is stamped on the
+   * manifest; the envelope invariants (single small file) are enforced by validateManifest.
+   */
+  contentKind?: 'text' | 'link';
   blockSize?: number;
   frameSize?: number;
   window?: number;
@@ -315,6 +320,9 @@ export class TransferSender {
     const manifest = validateManifest({
       type: FrameType.Manifest,
       ...(this.transferId !== undefined ? { transferId: this.transferId } : {}),
+      // V20-PR06: the handoff envelope kind rides the ordinary manifest; an unknown or
+      // malformed kind fails in validateManifest above before any byte is sent.
+      ...(this.o.contentKind !== undefined ? { contentKind: this.o.contentKind } : {}),
       files: entries,
       totalSize,
     });

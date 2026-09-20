@@ -6,6 +6,18 @@ export const MAX_TRANSFER_PATH_DEPTH = 32;
 export const MAX_TRANSFER_SEGMENT_BYTES = 255;
 export const MAX_MANIFEST_BLOCK_BYTES = 16 * 1024 * 1024;
 
+/** V20-PR06: handoff content kinds for encrypted text/link transfers. */
+export const CONTENT_KIND_TEXT = 'text';
+export const CONTENT_KIND_LINK = 'link';
+
+/** V20-PR06: caps a single text/link handoff payload; mirrored from Go wire.MaxHandoffBytes. */
+export const MAX_HANDOFF_BYTES = 256 * 1024;
+
+/** V20-PR06: reports whether kind is a known handoff content kind. */
+export function isHandoffKind(kind: string | undefined): kind is 'text' | 'link' {
+  return kind === CONTENT_KIND_TEXT || kind === CONTENT_KIND_LINK;
+}
+
 const utf8 = new TextEncoder();
 const windowsReserved = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const unsafeWindowsChars = /[<>:"|?*]/;
@@ -44,6 +56,11 @@ export function normalizeTransferPath(input: string): string {
 
 /** Validate manifest-wide geometry and return a copy with canonical relative paths. */
 export function validateManifest(manifest: Manifest): Manifest {
+  // V20-PR06: the content-kind envelope is validated first so a forged or future
+  // kind can never pass as an ordinary file set.
+  if (manifest.contentKind !== undefined && !isHandoffKind(manifest.contentKind)) {
+    throw new Error('manifest has an unknown contentKind');
+  }
   if (manifest.files.length === 0 || manifest.files.length > MAX_TRANSFER_FILES) {
     throw new Error('manifest has an invalid file count');
   }
@@ -81,9 +98,24 @@ export function validateManifest(manifest: Manifest): Manifest {
   if (!Number.isSafeInteger(manifest.totalSize) || manifest.totalSize !== totalSize) {
     throw new Error('manifest total size mismatch');
   }
+  // V20-PR06: a handoff envelope must be exactly one small in-memory payload —
+  // never a multi-file set and never more than the handoff byte ceiling.
+  if (manifest.contentKind !== undefined) {
+    if (
+      files.length !== 1 ||
+      totalSize <= 0 ||
+      totalSize > MAX_HANDOFF_BYTES ||
+      files[0]!.size !== totalSize
+    ) {
+      throw new Error(
+        `manifest contentKind requires exactly one file of 1 to ${MAX_HANDOFF_BYTES} bytes`,
+      );
+    }
+  }
   return {
     type: FrameType.Manifest,
     ...(manifest.transferId !== undefined ? { transferId: manifest.transferId } : {}),
+    ...(manifest.contentKind !== undefined ? { contentKind: manifest.contentKind } : {}),
     files,
     totalSize,
   };

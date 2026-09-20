@@ -39,6 +39,11 @@ export interface StartSendMsg extends SessionCrypto {
   /** Reuse a stable transfer id from an interrupted send (worker re-verifies the source). */
   transferId?: string;
   /**
+   * V20-PR06: marks the send as an encrypted text/link handoff. The worker stamps it on the
+   * manifest; the envelope invariants (single small file) are enforced by validateManifest.
+   */
+  contentKind?: 'text' | 'link';
+  /**
    * V13-PR08: explicit cross-session resume attempt. The worker runs resume-auth-v1 with the
    * peer strictly before the transfer engine starts; only a successful mutual authentication
    * reuses the record's verified progress under a FRESH resumed key epoch.
@@ -129,6 +134,8 @@ export interface ManifestMsg {
   kind: 'manifest';
   files: Array<{ name: string; size: number; mime: string }>;
   totalSize: number;
+  /** V20-PR06: present for encrypted text/link handoff envelopes. */
+  contentKind?: 'text' | 'link';
 }
 export interface ProgressMsg {
   kind: 'progress';
@@ -162,7 +169,12 @@ export interface DoneMsg {
   digest: string;
   output?:
     | { kind: 'opfs'; key: string; name: string; mime: string }
-    | { kind: 'blob'; blob: Blob; name: string; mime: string };
+    | { kind: 'blob'; blob: Blob; name: string; mime: string }
+    /**
+     * V20-PR06: a verified text/link handoff captured in memory. The receiver holds the
+     * payload for deliberate Copy/Save/Open actions — it was never written to disk.
+     */
+    | { kind: 'handoff'; contentKind: 'text' | 'link'; text: string };
 }
 export interface ErrorMsg {
   kind: 'error';

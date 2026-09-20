@@ -34,7 +34,14 @@ export enum FrameType {
 }
 
 /** Feature flags negotiated in caps. */
-export type Feature = 'folders' | 'resume' | 'relay' | 'archive' | 'resume-auth-v1' | 'padding';
+export type Feature =
+  'folders' | 'resume' | 'relay' | 'archive' | 'resume-auth-v1' | 'padding' | 'handoff';
+
+/**
+ * The capability announced by receivers that understand encrypted text/link handoff
+ * envelopes (V20-PR06). Mirrors `HandoffCapability` in packages/wire/transfer_messages.go.
+ */
+export const HANDOFF_FEATURE: Feature = 'handoff';
 
 /** Hints about which receiver sink is available. */
 export type SinkHint = 'direct-file' | 'opfs' | 'archive';
@@ -70,6 +77,12 @@ export interface Manifest {
    * senders omit it, and a transfer that is never resumed never needs it.
    */
   transferId?: string;
+  /**
+   * V20-PR06: marks a manifest as an encrypted text/link handoff envelope.
+   * Absent for ordinary file transfers; "text" or "link" for a handoff.
+   * Key order must match the Go struct so JSON bytes stay identical.
+   */
+  contentKind?: 'text' | 'link';
   files: FileEntry[];
   totalSize: number;
 }

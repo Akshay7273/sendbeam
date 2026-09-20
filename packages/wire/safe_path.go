@@ -68,6 +68,11 @@ func NormalizeTransferPath(input string) (string, error) {
 
 // ValidateManifest checks aggregate geometry and returns a copy with canonical relative paths.
 func ValidateManifest(manifest Manifest) (Manifest, error) {
+	// V20-PR06: the content-kind envelope is validated first so a forged or
+	// future kind can never pass as an ordinary file set.
+	if manifest.ContentKind != "" && !IsHandoffKind(manifest.ContentKind) {
+		return Manifest{}, Errorf(CodeProtocol, "manifest has an unknown contentKind")
+	}
 	if len(manifest.Files) == 0 || len(manifest.Files) > MaxTransferFiles {
 		return Manifest{}, Errorf(CodeProtocol, "manifest has an invalid file count")
 	}
@@ -109,6 +114,13 @@ func ValidateManifest(manifest Manifest) (Manifest, error) {
 	}
 	if manifest.TotalSize != total {
 		return Manifest{}, fmt.Errorf("manifest total size mismatch: got %d, want %d", manifest.TotalSize, total)
+	}
+	// V20-PR06: a handoff envelope must be exactly one small in-memory payload —
+	// never a multi-file set and never more than the handoff byte ceiling.
+	if manifest.ContentKind != "" {
+		if len(manifest.Files) != 1 || total <= 0 || total > MaxHandoffBytes || manifest.Files[0].Size != total {
+			return Manifest{}, Errorf(CodeProtocol, "manifest contentKind requires exactly one file of 1 to %d bytes", MaxHandoffBytes)
+		}
 	}
 	manifest.Files = files
 	manifest.Type = FrameManifest

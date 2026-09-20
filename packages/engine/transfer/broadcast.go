@@ -42,6 +42,10 @@ type PublicOutcome struct {
 	Digest string              `json:"digest"`
 	Path   string              `json:"path,omitempty"`
 	Files  []PublicFileOutcome `json:"files,omitempty"`
+	// ContentKind labels an encrypted text/link handoff (V20-PR06); the payload
+	// itself is never echoed in public JSON — the receiver's own data stays in
+	// the interactive receive path.
+	ContentKind string `json:"contentKind,omitempty"`
 }
 
 // PublicFileOutcome is an allowlisted, secret-free file summary for public JSON serialization.
@@ -58,10 +62,11 @@ func (o *Outcome) ToPublicOutcome() *PublicOutcome {
 		return nil
 	}
 	po := &PublicOutcome{
-		Name:   o.Name,
-		Size:   o.Size,
-		Digest: o.Digest,
-		Path:   o.Path,
+		Name:        o.Name,
+		Size:        o.Size,
+		Digest:      o.Digest,
+		Path:        o.Path,
+		ContentKind: o.ContentKind,
 	}
 	if len(o.Files) > 0 {
 		po.Files = make([]PublicFileOutcome, len(o.Files))

@@ -38,9 +38,13 @@ type Manifest struct {
 	// TransferID is a random 128-bit id (hex) minted by the sender so a resumed receiver can
 	// prove it is resuming this transfer. Optional (omitempty): older senders and transfers that
 	// are never resumed omit it, matching the TS optional field.
-	TransferID string      `json:"transferId,omitempty"`
-	Files      []FileEntry `json:"files"`
-	TotalSize  int64       `json:"totalSize"`
+	TransferID string `json:"transferId,omitempty"`
+	// ContentKind marks a manifest as an encrypted text/link handoff (V20-PR06):
+	// empty for ordinary file transfers, "text" or "link" for a handoff envelope.
+	// Field order matches the TypeScript twin so the JSON bytes stay identical.
+	ContentKind string      `json:"contentKind,omitempty"`
+	Files       []FileEntry `json:"files"`
+	TotalSize   int64       `json:"totalSize"`
 }
 
 // BlockHash carries a block's SHA-256 so the receiver can verify before acking.
@@ -178,6 +182,30 @@ func NewManifest(files []FileEntry, totalSize int64) *Manifest {
 	return &Manifest{Type: FrameManifest, Files: files, TotalSize: totalSize}
 }
 
+// Content kinds for encrypted text/link handoffs (V20-PR06): the payload rides
+// the ordinary file transfer as a single small in-memory file, and the kind
+// tells the receiver to hold the content for explicit Copy/Save/Open instead
+// of writing it into the destination directory.
+const (
+	ContentKindText = "text"
+	ContentKindLink = "link"
+)
+
+// MaxHandoffBytes caps a single text/link handoff payload (V20-PR06). The
+// manifest validator rejects larger envelopes; the sender rejects larger input.
+const MaxHandoffBytes = 256 * 1024
+
+// IsHandoffKind reports whether kind is a known handoff content kind.
+func IsHandoffKind(kind string) bool {
+	return kind == ContentKindText || kind == ContentKindLink
+}
+
+// HandoffCapability is the rendezvous feature announced by receivers that
+// understand handoff envelopes (V20-PR06). A sender fails closed when the
+// peer does not advertise it, instead of silently downgrading the handoff
+// into a saved text.txt/link.txt on an old receiver.
+const HandoffCapability = "handoff"
+
 // NewBlockHash builds a block_hash message.
 func NewBlockHash(fileIdx, blockIdx int, sha256 string) *BlockHash {
 	return &BlockHash{Type: FrameBlockHash, FileIdx: fileIdx, BlockIdx: blockIdx, SHA256: sha256}
@@ -300,12 +328,18 @@ func decodeManifest(payload []byte) (ControlMsg, error) {
 	var raw struct {
 		// TransferID is optional; an absent key decodes to "" and re-encodes as omitted (omitempty),
 		// so a manifest without it round-trips byte-identically.
-		TransferID string         `json:"transferId"`
-		Files      []rawFileEntry `json:"files"`
-		TotalSize  *int64         `json:"totalSize"`
+		TransferID string `json:"transferId"`
+		// ContentKind is optional (V20-PR06); unknown kinds are rejected at decode time,
+		// mirroring the TypeScript twin, so neither peer can smuggle a future kind in.
+		ContentKind string         `json:"contentKind"`
+		Files       []rawFileEntry `json:"files"`
+		TotalSize   *int64         `json:"totalSize"`
 	}
 	if err := json.Unmarshal(payload, &raw); err != nil {
 		return nil, errors.New("control frame: invalid manifest")
+	}
+	if raw.ContentKind != "" && !IsHandoffKind(raw.ContentKind) {
+		return nil, fmt.Errorf("control frame: bad manifest contentKind %q", raw.ContentKind)
 	}
 	if len(raw.Files) == 0 {
 		return nil, errors.New("control frame: manifest.files empty")
@@ -324,7 +358,7 @@ func decodeManifest(payload []byte) (ControlMsg, error) {
 		}
 		files[i] = f
 	}
-	return &Manifest{Type: FrameManifest, TransferID: raw.TransferID, Files: files, TotalSize: *raw.TotalSize}, nil
+	return &Manifest{Type: FrameManifest, TransferID: raw.TransferID, ContentKind: raw.ContentKind, Files: files, TotalSize: *raw.TotalSize}, nil
 }
 
 func decodeBlockHash(payload []byte) (ControlMsg, error) {

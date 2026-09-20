@@ -102,6 +102,12 @@ type TransferEvent struct {
 	OutDir  string `json:"outDir,omitempty"`
 	OutPath string `json:"outPath,omitempty"`
 	Error   string `json:"error,omitempty"`
+
+	// Handoff (kind=done, V20-PR06): "text"/"link" for an encrypted handoff.
+	// Content is the verified payload held in memory for deliberate
+	// Copy/Save/Open — it was never written to disk.
+	ContentKind string `json:"contentKind,omitempty"`
+	Content     string `json:"content,omitempty"`
 }
 
 // DurableTransferItem describes an interrupted transfer (sender or receiver)
@@ -491,35 +497,25 @@ func (s *TransferService) Send(paths []string, server string) (Handle, error) {
 	return Handle{ID: id, Role: "send"}, nil
 }
 
-// SendToDevice starts a targeted send to a paired trusted device using sendbeam/3 opaque rendezvous.
-func (s *TransferService) SendToDevice(paths []string, deviceID string, server string) (Handle, error) {
-	if len(paths) == 0 {
-		return Handle{}, errors.New("no files or folders selected")
-	}
-	if deviceID == "" {
-		return Handle{}, errors.New("device ID is required")
-	}
-	if server == "" {
-		if s.configStore != nil {
-			if cfg, err := s.configStore.Load(); err == nil && cfg.ServerURL != "" {
-				server = cfg.ServerURL
-			}
-		}
-		if server == "" {
-			server = DefaultServer
-		}
-	}
-	if err := validatePaths(paths); err != nil {
-		return Handle{}, err
-	}
-	iceServers, err := s.resolveICEServers()
-	if err != nil {
-		return Handle{}, err
-	}
+// targetedPeer holds the trust-bound resolution of a paired device for an
+// opaque-rendezvous send, shared by file sends and encrypted handoffs.
+type targetedPeer struct {
+	opaqueOpts   *rendezvous.OpaqueOptions
+	label        string
+	deviceID     string
+	peerDeviceID string
+}
 
+// resolveTargetedPeer performs the trust-bound device lookup, revocation check,
+// pair-secret resolution, and opaque rendezvous construction for a targeted send.
+// The pair credential — not labels or last-seen — is what authenticates the peer.
+func (s *TransferService) resolveTargetedPeer(deviceID string) (*targetedPeer, error) {
+	if deviceID == "" {
+		return nil, errors.New("device ID is required")
+	}
 	ds := s.DeviceService()
 	if ds == nil {
-		return Handle{}, errors.New("device service not available")
+		return nil, errors.New("device service not available")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -527,23 +523,23 @@ func (s *TransferService) SendToDevice(paths []string, deviceID string, server s
 
 	dev, err := ds.GetStore().GetDevice(ctx, deviceID)
 	if err != nil {
-		return Handle{}, fmt.Errorf("device %s not found: %w", deviceID, err)
+		return nil, fmt.Errorf("device %s not found: %w", deviceID, err)
 	}
 	tombstones := ds.GetTombstoneStore()
 	if dev.Revoked || (tombstones != nil && tombstones.HasTombstone(ctx, dev.DeviceID)) {
-		return Handle{}, fmt.Errorf("trust for device %q is revoked", dev.LocalLabel)
+		return nil, fmt.Errorf("trust for device %q is revoked", dev.LocalLabel)
 	}
 	kPair, err := ds.GetCredentialStore().ResolvePairSecret(ctx, dev.DeviceID, dev.PairCredentialRef)
 	if err != nil || len(kPair) == 0 {
-		return Handle{}, fmt.Errorf("failed to resolve pair secret for device %q: %w", dev.LocalLabel, err)
+		return nil, fmt.Errorf("failed to resolve pair secret for device %q: %w", dev.LocalLabel, err)
 	}
 	peerPubKey, err := wire.ParsePublicKeyHex(dev.PublicKey)
 	if err != nil {
-		return Handle{}, fmt.Errorf("invalid public key for device %q: %w", dev.LocalLabel, err)
+		return nil, fmt.Errorf("invalid public key for device %q: %w", dev.LocalLabel, err)
 	}
 	localID, err := ds.GetIdentityManager().GetOrCreateIdentity()
 	if err != nil {
-		return Handle{}, fmt.Errorf("failed to get local identity: %w", err)
+		return nil, fmt.Errorf("failed to get local identity: %w", err)
 	}
 
 	handle := wire.DeriveRendezvousHandleForTime(kPair, time.Now().UTC(), wire.DefaultRendezvousEpochWindow)
@@ -556,10 +552,54 @@ func (s *TransferService) SendToDevice(paths []string, deviceID string, server s
 		PeerPublicKey:     peerPubKey,
 		KPair:             kPair,
 		PairCredentialRef: dev.PairCredentialRef,
-		LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume"},
-		ReplayCache:       replayCache,
-		Tombstones:        tombstones,
-		TrustStore:        ds.GetStore(),
+		// V20-PR06: advertise handoff support so the negotiated intersection
+		// can grant it; without this the driver's fail-closed downgrade
+		// check would refuse every targeted handoff even to a capable peer.
+		LocalCaps:   []string{"sendbeam/3", "rendezvous", "resume", wire.HandoffCapability},
+		ReplayCache: replayCache,
+		Tombstones:  tombstones,
+		TrustStore:  ds.GetStore(),
+	}
+	return &targetedPeer{
+		opaqueOpts:   opaqueOpts,
+		label:        dev.LocalLabel,
+		deviceID:     dev.DeviceID,
+		peerDeviceID: dev.DeviceID,
+	}, nil
+}
+
+// resolveSendServer applies the configured server URL default.
+func (s *TransferService) resolveSendServer(server string) string {
+	if server == "" {
+		if s.configStore != nil {
+			if cfg, err := s.configStore.Load(); err == nil && cfg.ServerURL != "" {
+				server = cfg.ServerURL
+			}
+		}
+		if server == "" {
+			server = DefaultServer
+		}
+	}
+	return server
+}
+
+// SendToDevice starts a targeted send to a paired trusted device using sendbeam/3 opaque rendezvous.
+func (s *TransferService) SendToDevice(paths []string, deviceID string, server string) (Handle, error) {
+	if len(paths) == 0 {
+		return Handle{}, errors.New("no files or folders selected")
+	}
+	server = s.resolveSendServer(server)
+	if err := validatePaths(paths); err != nil {
+		return Handle{}, err
+	}
+	iceServers, err := s.resolveICEServers()
+	if err != nil {
+		return Handle{}, err
+	}
+
+	peer, err := s.resolveTargetedPeer(deviceID)
+	if err != nil {
+		return Handle{}, err
 	}
 
 	sources, total, err := transfer.NewOSFileSources(paths)
@@ -578,7 +618,43 @@ func (s *TransferService) SendToDevice(paths []string, deviceID string, server s
 	}
 	_ = total
 
-	go r.runSendTargeted(r.ctx, server, sources, paths, iceServers, opaqueOpts, dev.LocalLabel, dev.DeviceID)
+	go r.runSendTargeted(r.ctx, server, sources, nil, iceServers, peer.opaqueOpts, peer.label, peer.peerDeviceID, "")
+	return Handle{ID: id, Role: "send"}, nil
+}
+
+// SendHandoffToDevice sends an explicit encrypted text or link handoff to a
+// paired trusted device through the ordinary authenticated transfer path.
+// kind must be "text" or "link". The envelope is a single in-memory payload of
+// at most 256 KiB; it is never recorded as a sender job and never resumes —
+// the payload is verified before the receiver may Copy/Save/Open it.
+func (s *TransferService) SendHandoffToDevice(kind, text, deviceID, server string) (Handle, error) {
+	if kind != wire.ContentKindText && kind != wire.ContentKindLink {
+		return Handle{}, fmt.Errorf("handoff kind must be %q or %q", wire.ContentKindText, wire.ContentKindLink)
+	}
+	server = s.resolveSendServer(server)
+	iceServers, err := s.resolveICEServers()
+	if err != nil {
+		return Handle{}, err
+	}
+
+	peer, err := s.resolveTargetedPeer(deviceID)
+	if err != nil {
+		return Handle{}, err
+	}
+
+	src, err := transfer.NewTextSource(kind, text)
+	if err != nil {
+		return Handle{}, err
+	}
+	sources := []wire.FileSource{src}
+
+	id := s.newID()
+	r := s.newRun(id, wire.RoleOfferer)
+	meta := src.Meta()
+	r.files = append(r.files, FileInfo{Name: meta.Name, Size: meta.Size})
+	r.totalBytes += meta.Size
+
+	go r.runSendTargeted(r.ctx, server, sources, nil, iceServers, peer.opaqueOpts, peer.label, peer.peerDeviceID, kind)
 	return Handle{ID: id, Role: "send"}, nil
 }
 
@@ -654,10 +730,13 @@ func (s *TransferService) BroadcastSend(paths []string, deviceIDs []string, serv
 			PeerPublicKey:     peerPubKey,
 			KPair:             kPair,
 			PairCredentialRef: dev.PairCredentialRef,
-			LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume"},
-			ReplayCache:       replayCache,
-			Tombstones:        tombstones,
-			TrustStore:        ds.GetStore(),
+			// V20-PR06: advertise handoff support so the negotiated intersection
+			// can grant it; without this the driver's fail-closed downgrade
+			// check would refuse every targeted handoff even to a capable peer.
+			LocalCaps:   []string{"sendbeam/3", "rendezvous", "resume", wire.HandoffCapability},
+			ReplayCache: replayCache,
+			Tombstones:  tombstones,
+			TrustStore:  ds.GetStore(),
 		}
 
 		requirePadding := s.requirePaddingConfig() || dev.Policy.RequirePadding
@@ -1118,13 +1197,14 @@ func (s *TransferService) StartNativeReceiver(cfg receiver.Config) error {
 		if origComplete != nil {
 			origComplete(peerDeviceID, outcome)
 		}
-		if outcome != nil {
+		if outcome != nil && outcome.ContentKind == "" {
+			// V20-PR06: a handoff has no on-disk path — nothing to record.
 			s.recordCompleted(outcome.TransferID, completedDestination{
 				Path: outcome.Path,
 				Root: cfg.DestDir,
 			})
 			if s.emit != nil {
-				s.emit(TransferEventName, TransferEvent{
+				ev := TransferEvent{
 					ID:        outcome.TransferID,
 					Kind:      "done",
 					Digest:    outcome.Digest,
@@ -1133,10 +1213,21 @@ func (s *TransferService) StartNativeReceiver(cfg receiver.Config) error {
 					State:     "completed",
 					Percent:   100,
 					DoneBytes: outcome.Size,
-				})
+				}
+				if outcome.ContentKind != "" {
+					// V20-PR06: the verified handoff payload rides the event so the
+					// UI can offer deliberate Copy/Save/Open — never auto-opened.
+					ev.ContentKind = outcome.ContentKind
+					ev.Content = string(outcome.Content)
+				}
+				s.emit(TransferEventName, ev)
 			}
 			if s.notifier != nil {
-				s.notifier.NotifySuccess("Transfer Complete", fmt.Sprintf("Received %s", outcome.Name), outcome.Path)
+				if outcome.ContentKind != "" {
+					s.notifier.NotifySuccess("Handoff Received", fmt.Sprintf("Verified %s handoff from %s — not opened automatically", outcome.ContentKind, peerDeviceID), "")
+				} else {
+					s.notifier.NotifySuccess("Transfer Complete", fmt.Sprintf("Received %s", outcome.Name), outcome.Path)
+				}
 			}
 		}
 	}
@@ -1164,11 +1255,12 @@ func (s *TransferService) StartNativeReceiver(cfg receiver.Config) error {
 		if s.emit != nil {
 			s.emit(ConsentEventName, req)
 			s.emit(TransferEventName, TransferEvent{
-				ID:         req.TransferID,
-				Kind:       "consent_requested",
-				TotalBytes: req.TotalSize,
-				OutDir:     req.DestDir,
-				State:      "waiting_consent",
+				ID:          req.TransferID,
+				Kind:        "consent_requested",
+				TotalBytes:  req.TotalSize,
+				OutDir:      req.DestDir,
+				State:       "waiting_consent",
+				ContentKind: req.ContentKind,
 			})
 		}
 	}
@@ -1536,7 +1628,8 @@ func (r *transferRun) runSend(ctx context.Context, server string, sources []wire
 }
 
 // runSendTargeted drives an offerer transfer targeted to a specific paired device via opaque rendezvous.
-func (r *transferRun) runSendTargeted(ctx context.Context, server string, sources []wire.FileSource, _ []string, iceServers []webrtc.ICEServer, opaqueOpts *rendezvous.OpaqueOptions, peerLabel, peerDeviceID string) {
+// contentKind is "" for file sends or "text"/"link" for an encrypted handoff (V20-PR06).
+func (r *transferRun) runSendTargeted(ctx context.Context, server string, sources []wire.FileSource, _ []string, iceServers []webrtc.ICEServer, opaqueOpts *rendezvous.OpaqueOptions, peerLabel, peerDeviceID, contentKind string) {
 	defer r.svc.remove(r)
 
 	sig, err := r.svc.dial(ctx, server, wire.RoleOfferer)
@@ -1566,6 +1659,7 @@ func (r *transferRun) runSendTargeted(ctx context.Context, server string, source
 		PeerDeviceID:   peerDeviceID,
 		PeerLabel:      peerLabel,
 		Sources:        sources,
+		ContentKind:    contentKind,
 		ForceRelay:     r.svc.forceRelay,
 		ICEServers:     iceServers,
 		RequirePadding: requirePadding,
@@ -1711,11 +1805,14 @@ func (r *transferRun) runReceive(ctx context.Context, code, destDir, server stri
 		outPath = destDir
 	}
 
-	// Record verified completed destination bound strictly to its destination root
-	r.svc.recordCompleted(r.id, completedDestination{
-		Path: outPath,
-		Root: destDir,
-	})
+	// Record verified completed destination bound strictly to its destination root.
+	// V20-PR06: handoffs live only in memory — there is no path to record.
+	if out.ContentKind == "" {
+		r.svc.recordCompleted(r.id, completedDestination{
+			Path: outPath,
+			Root: destDir,
+		})
+	}
 
 	r.publish("done", func(ev *TransferEvent) {
 		ev.Digest = out.Digest
@@ -1850,11 +1947,14 @@ func (r *transferRun) runResumeReceive(ctx context.Context, transferID, code, de
 		outPath = destDir
 	}
 
-	// Record verified completed destination bound strictly to its destination root
-	r.svc.recordCompleted(r.id, completedDestination{
-		Path: outPath,
-		Root: destDir,
-	})
+	// Record verified completed destination bound strictly to its destination root.
+	// V20-PR06: handoffs live only in memory — there is no path to record.
+	if out.ContentKind == "" {
+		r.svc.recordCompleted(r.id, completedDestination{
+			Path: outPath,
+			Root: destDir,
+		})
+	}
 
 	r.publish("done", func(ev *TransferEvent) {
 		ev.Digest = out.Digest
