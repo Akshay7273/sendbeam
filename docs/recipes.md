@@ -97,9 +97,8 @@ job id if one was enqueued, the outcome, and a short detail. Nothing is
 ever silent, and the routine-management UI (V22-PR06) reads this ledger for
 recent decisions. `sendbeam recipe show <id>` prints it.
 
-Watch trigger _sources_ arrived in V22-PR04 (below); schedule sources
-still arrive in V22-PR05 — until then the `schedule` trigger parameters
-stay reserved and rejected.
+Watch trigger sources arrived in V22-PR04 (below) and schedule sources in
+V22-PR05 (below).
 
 ## Watched-folder triggers (V22-PR04)
 
@@ -529,3 +528,90 @@ sendbeam receive-policy set --disable
 - The desktop service methods (`DisableRecipe`, `EnableRecipe`) and the
   consent events carry provenance; the visual consent UI ships with the
   frontend source.
+
+## Failure recovery & isolation (V22-PR07)
+
+Automation amplifies convenience, not mistakes. This section states the
+crash and overload contract plainly — including what is **not**
+promised.
+
+### At-most-once per scheduled occurrence
+
+The scheduler advances the durable `scheduleCursor` **before** asking
+the runner to dispatch. A crash, restart, or rapid re-tick between the
+two can never double-dispatch an occurrence: a fresh tick sees the
+cursor already past it and does not re-dispatch. The other side of that
+trade is stated without hedging: **an occurrence lost in that window is
+not retried.** If the process dies after the cursor advanced but before
+the dispatch finished, the occurrence is gone — not duplicated, not
+re-queued. There is no exactly-once; at-most-once is the whole promise.
+
+### Durable jobs survive the crash
+
+Anything already handed to the outbox is a durable job in the v2.0 job
+store. A dispatch that completed before the crash leaves a job that a
+restarted process lists and resumes like any other outbox job
+(`queued`, carrying the routine provenance) — there is no separate
+recovery queue and no second chance needed: the job was already real.
+
+### Disable stops the future, not the in-flight
+
+Disabling a recipe refuses every future dispatch — manual, watch,
+schedule, retry — because the runner re-loads the recipe and re-checks
+status, grant, scope hash, expiry, trust, sources, and budgets at
+**dispatch time**, never from a cached schedule-time decision. A
+dispatch already admitted (a job already enqueued) runs to completion;
+disable never cancels in-flight work. Likewise `Runner.Stop()` and
+`Scheduler.Stop()` refuse new dispatches while admitted ones finish,
+and both are goroutine-clean: repeated start/stop cycles return the
+process to its baseline goroutine count.
+
+### What the ledger shows after each failure mode
+
+The last-run ledger records only dispatch attempts the runner actually
+finished — nothing is invented for attempts that never completed:
+
+| Failure                                                                | Ledger says                                                                                                  |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Gate refusal (disabled, no grant, revoked, expired, over budget, busy) | `refused`, naming the cause                                                                                  |
+| Enqueue error or canceled dispatch                                     | `failed`, with the error                                                                                     |
+| Duplicate trigger (dispatch already in flight)                         | `skipped`, "already running, skipped"                                                                        |
+| Crash **between** cursor-advance and dispatch (true process death)     | **no entry** — the cursor advance is the only durable evidence; the occurrence is consumed, never duplicated |
+
+A graceful interruption (context canceled while a dispatch is blocked)
+records `failed: context canceled`, which is the in-process observable
+equivalent of the crash window. Watchers killed mid-debounce leave no
+phantom entry either: the pending change is dropped, and the next
+observed change dispatches once — events missed while a watcher is down
+are not backfilled.
+
+### Resource bounds
+
+- **Concurrency:** at most `MaxConcurrent` dispatches in flight
+  (default 1, hard cap 4). Overload is refused immediately with
+  `ErrRunnerBusy` — the runner never queues unbounded work and never
+  spawns a goroutine per attempt.
+- **Catch-up:** at most `max_catchup_runs` missed occurrences per tick
+  (0–10, default 3), dispatched sequentially. A 30-day outage on an
+  every-minute schedule dispatches 3, advances the cursor past all
+  ~43200, and says so in the ledger. Catch-up occurrences go through the
+  same `Runner.Dispatch` gates as live ones — budgets included: an
+  over-budget recipe dispatches nothing under catch-up either.
+- **Watch bursts:** filesystem bursts collapse through the debounce
+  window (default 2 s) into one dispatch; the cooldown (default 10 s)
+  bounds flapping. The watcher keeps no per-file pending queue — it only
+  re-arms a timer — so a 50-file burst cannot grow memory without bound,
+  misses no files, and lists no file twice.
+
+### Honest limits
+
+- No exactly-once: an occurrence interrupted between cursor-advance and
+  dispatch is lost, not retried. Design schedules so a skipped run is
+  harmless — the next occurrence sends the current tree.
+- The watcher does not backfill events missed while it was down, and a
+  rapid create-then-delete inside one debounce window may never
+  dispatch. Catch-up sends the current source tree, not the historical
+  one.
+- Disable/revoke races are decided at dispatch: whatever the recipe
+  says at the moment of dispatch wins, and the ledger records the
+  decision. There is no lock-step coordination beyond that boundary.
