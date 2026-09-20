@@ -382,11 +382,11 @@ type planRecipientDTO struct {
 func PlanDTO(p Plan) []byte {
 	files := make([]planFileDTO, len(p.Files))
 	for i, f := range p.Files {
-		files[i] = planFileDTO{Path: f.Path, Size: f.Size, Digest: f.Digest}
+		files[i] = planFileDTO(f)
 	}
 	recipients := make([]planRecipientDTO, len(p.Recipients))
 	for i, c := range p.Recipients {
-		recipients[i] = planRecipientDTO{DeviceID: c.DeviceID, Label: c.Label}
+		recipients[i] = planRecipientDTO(c)
 	}
 	warnings := p.Warnings
 	if warnings == nil {

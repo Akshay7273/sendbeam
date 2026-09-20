@@ -132,7 +132,7 @@ func Run(ctx context.Context, deps RunDeps, eq Enqueuer, recipeID string) (jobs.
 	}
 	recipients := make([]EnqueueRecipient, len(plan.Recipients))
 	for i, c := range plan.Recipients {
-		recipients[i] = EnqueueRecipient{DeviceID: c.DeviceID, Label: c.Label}
+		recipients[i] = EnqueueRecipient(c)
 	}
 	return eq.Enqueue(ctx, paths, recipients, jobs.DefaultRetryPolicy(), np)
 }

@@ -47,7 +47,7 @@ func sha256Hex(s string) string {
 }
 
 // testIdentity registers one trusted device in ts and returns its device id.
-func testIdentity(t *testing.T, ctx context.Context, ts *trust.MemoryTrustStore, label string) string {
+func testIdentity(ctx context.Context, t *testing.T, ts *trust.MemoryTrustStore, label string) string {
 	t.Helper()
 	gen, err := wire.GenerateDeviceIdentity()
 	if err != nil {
@@ -70,7 +70,7 @@ func testIdentity(t *testing.T, ctx context.Context, ts *trust.MemoryTrustStore,
 
 // composableRecipe builds a saved, manual-status recipe over root with two
 // trusted recipients.
-func composableRecipe(t *testing.T, store *RecipeStore, ts *trust.MemoryTrustStore, ctx context.Context, root, name string, ids ...string) Recipe {
+func composableRecipe(t *testing.T, store *RecipeStore, root, name string, ids ...string) Recipe {
 	t.Helper()
 	r, err := NewRecipe(name, testNow)
 	if err != nil {
@@ -352,7 +352,7 @@ type recordingEnqueuer struct {
 	failIfCall bool
 }
 
-func (f *recordingEnqueuer) Enqueue(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy) (jobs.Job, error) {
+func (f *recordingEnqueuer) Enqueue(_ context.Context, paths []string, recipients []EnqueueRecipient, _ jobs.RetryPolicy, _ netpolicy.Policy) (jobs.Job, error) {
 	f.calls++
 	if f.failIfCall {
 		panic("Enqueue called during dry-run")
@@ -377,15 +377,15 @@ func openTestRecipeStore(t *testing.T) *RecipeStore {
 func TestRunHappyPath(t *testing.T) {
 	ctx := context.Background()
 	ts := trust.NewMemoryTrustStore()
-	id1 := testIdentity(t, ctx, ts, "Studio laptop")
-	id2 := testIdentity(t, ctx, ts, "Phone")
+	id1 := testIdentity(ctx, t, ts, "Studio laptop")
+	id2 := testIdentity(ctx, t, ts, "Phone")
 
 	root := t.TempDir()
 	f1 := writeTestFile(t, root, "a.txt", "alpha")
 	f2 := writeTestFile(t, root, "sub/b.txt", "bravo")
 
 	store := openTestRecipeStore(t)
-	r := composableRecipe(t, store, ts, ctx, root, "Export folder", id1, id2)
+	r := composableRecipe(t, store, root, "Export folder", id1, id2)
 
 	eq := &recordingEnqueuer{}
 	job, err := Run(ctx, RunDeps{Store: store, Trust: ts}, eq, r.ID)
@@ -416,13 +416,13 @@ func TestRunHappyPath(t *testing.T) {
 func TestDryRunCreatesNoJobs(t *testing.T) {
 	ctx := context.Background()
 	ts := trust.NewMemoryTrustStore()
-	id1 := testIdentity(t, ctx, ts, "Studio laptop")
+	id1 := testIdentity(ctx, t, ts, "Studio laptop")
 
 	root := t.TempDir()
 	writeTestFile(t, root, "a.txt", "alpha")
 
 	store := openTestRecipeStore(t)
-	r := composableRecipe(t, store, ts, ctx, root, "Dry run", id1)
+	r := composableRecipe(t, store, root, "Dry run", id1)
 
 	// The dry-run surface (Resolve, PlanDTO, Preview) takes no Enqueuer
 	// and no jobs store — a job cannot be created by construction. Run the
@@ -460,13 +460,13 @@ func TestDryRunCreatesNoJobs(t *testing.T) {
 func TestRunReResolvesAfterPreview(t *testing.T) {
 	ctx := context.Background()
 	ts := trust.NewMemoryTrustStore()
-	id1 := testIdentity(t, ctx, ts, "Studio laptop")
+	id1 := testIdentity(ctx, t, ts, "Studio laptop")
 
 	root := t.TempDir()
 	writeTestFile(t, root, "a.txt", "alpha")
 
 	store := openTestRecipeStore(t)
-	r := composableRecipe(t, store, ts, ctx, root, "Reresolve", id1)
+	r := composableRecipe(t, store, root, "Reresolve", id1)
 
 	loaded, _, _ := store.Load(r.ID)
 	before, err := Resolve(loaded, ResolveOptions{})
@@ -492,13 +492,13 @@ func TestRunReResolvesAfterPreview(t *testing.T) {
 func TestRunRevokedRecipient(t *testing.T) {
 	ctx := context.Background()
 	ts := trust.NewMemoryTrustStore()
-	id1 := testIdentity(t, ctx, ts, "Studio laptop")
+	id1 := testIdentity(ctx, t, ts, "Studio laptop")
 
 	root := t.TempDir()
 	writeTestFile(t, root, "a.txt", "alpha")
 
 	store := openTestRecipeStore(t)
-	r := composableRecipe(t, store, ts, ctx, root, "Revoked", id1)
+	r := composableRecipe(t, store, root, "Revoked", id1)
 	if err := ts.RevokeDevice(ctx, id1); err != nil {
 		t.Fatalf("RevokeDevice: %v", err)
 	}
@@ -519,7 +519,7 @@ func TestRunRevokedRecipient(t *testing.T) {
 func TestRunStatusGates(t *testing.T) {
 	ctx := context.Background()
 	ts := trust.NewMemoryTrustStore()
-	id1 := testIdentity(t, ctx, ts, "Studio laptop")
+	id1 := testIdentity(ctx, t, ts, "Studio laptop")
 
 	root := t.TempDir()
 	writeTestFile(t, root, "a.txt", "alpha")
@@ -563,13 +563,13 @@ func TestRunStatusGates(t *testing.T) {
 func TestRunExpired(t *testing.T) {
 	ctx := context.Background()
 	ts := trust.NewMemoryTrustStore()
-	id1 := testIdentity(t, ctx, ts, "Studio laptop")
+	id1 := testIdentity(ctx, t, ts, "Studio laptop")
 
 	root := t.TempDir()
 	writeTestFile(t, root, "a.txt", "alpha")
 	store := openTestRecipeStore(t)
 
-	r := composableRecipe(t, store, ts, ctx, root, "Expired", id1)
+	r := composableRecipe(t, store, root, "Expired", id1)
 	r.ExpiresAt = testNow.Add(-time.Hour)
 	r.Grant.ScopeHash = r.ScopeHash()
 	if err := store.Save(r); err != nil {
@@ -592,7 +592,7 @@ func TestRunExpired(t *testing.T) {
 func TestRunBudgets(t *testing.T) {
 	ctx := context.Background()
 	ts := trust.NewMemoryTrustStore()
-	id1 := testIdentity(t, ctx, ts, "Studio laptop")
+	id1 := testIdentity(ctx, t, ts, "Studio laptop")
 
 	root := t.TempDir()
 	writeTestFile(t, root, "a.txt", "0123456789") // 10 bytes
@@ -608,7 +608,7 @@ func TestRunBudgets(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := openTestRecipeStore(t)
-			r := composableRecipe(t, store, ts, ctx, root, "Budget "+tc.name, id1)
+			r := composableRecipe(t, store, root, "Budget "+tc.name, id1)
 			r.Budgets = tc.budgets
 			r.Grant.ScopeHash = r.ScopeHash()
 			if err := store.Save(r); err != nil {
@@ -632,13 +632,13 @@ func TestRunBudgets(t *testing.T) {
 func TestRunZeroFiles(t *testing.T) {
 	ctx := context.Background()
 	ts := trust.NewMemoryTrustStore()
-	id1 := testIdentity(t, ctx, ts, "Studio laptop")
+	id1 := testIdentity(ctx, t, ts, "Studio laptop")
 
 	root := t.TempDir()
 	writeTestFile(t, root, "a.log", "logs only")
 
 	store := openTestRecipeStore(t)
-	r := composableRecipe(t, store, ts, ctx, root, "Zero files", id1)
+	r := composableRecipe(t, store, root, "Zero files", id1)
 	r.Include = []string{"*.txt"}
 	r.Grant.ScopeHash = r.ScopeHash()
 	if err := store.Save(r); err != nil {
