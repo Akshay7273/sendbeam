@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/sendbeam/engine/jobs"
+	"github.com/sendbeam/engine/recipes"
 )
 
 // recipeTestSetup builds an isolated CLI environment with one trusted
@@ -451,5 +455,142 @@ func TestRecipeImportNeverRestoresGrant(t *testing.T) {
 	// A disabled import cannot be granted: enable (edit) and approve first.
 	if code, _, _ = runRecipeCmd(t, "grant", "--config-dir", cfgDir, newID); code == 0 {
 		t.Fatalf("grant on disabled import succeeded")
+	}
+}
+
+// lockedBuffer is a goroutine-safe bytes.Buffer: the watcher's event
+// callback writes from the watcher's goroutine while the test polls.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func waitForOutput(t *testing.T, timeout time.Duration, buf *lockedBuffer, what, substr string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if strings.Contains(buf.String(), substr) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %q in output:\n%s", what, buf.String())
+}
+
+// TestRecipeWatchForeground drives `recipe watch` end to end: the watcher
+// starts, a touched file produces a "dispatched job" line, and cancelling
+// the context stops the watcher cleanly with exit 0.
+func TestRecipeWatchForeground(t *testing.T) {
+	cfgDir, devID, srcDir := recipeTestSetup(t)
+
+	if code, _, errOut := runRecipeCmd(t, "create", "--config-dir", cfgDir,
+		"--name", "Watched", "--source", srcDir, "--to", devID); code != 0 {
+		t.Fatalf("create exit %d: %s", code, errOut)
+	}
+	id := recipeIDInStore(t, cfgDir)
+
+	// Flip the trigger to watch through the store (material change), then
+	// approve and grant through the real CLI path.
+	store, err := openRecipeStore(cfgDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	r, err := loadRecipe(store, id)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	r.Trigger.Kind = recipes.TriggerWatch
+	if _, err := recipes.ApplyUpdate(store, r); err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+	if code, _, errOut := runRecipeCmd(t, "approve", "--config-dir", cfgDir, id); code != 0 {
+		t.Fatalf("approve exit %d: %s", code, errOut)
+	}
+	if code, _, errOut := runRecipeCmd(t, "grant", "--config-dir", cfgDir, id); code != 0 {
+		t.Fatalf("grant exit %d: %s", code, errOut)
+	}
+
+	// show displays the trigger type and watch params.
+	if code, out, errOut := runRecipeCmd(t, "show", "--config-dir", cfgDir, id); code != 0 {
+		t.Fatalf("show exit %d: %s", code, errOut)
+	} else if !strings.Contains(out, "watch (debounce") {
+		t.Fatalf("show does not display watch params:\n%s", out)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout, stderr lockedBuffer
+	done := make(chan int, 1)
+	go func() { done <- watchRecipe(ctx, id, cfgDir, &stdout, &stderr) }()
+
+	waitForOutput(t, 10*time.Second, &stdout, "watch banner", "Watching recipe")
+	if err := os.WriteFile(filepath.Join(srcDir, "live.txt"), []byte("live"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	waitForOutput(t, 10*time.Second, &stdout, "change line", "change detected in")
+	waitForOutput(t, 10*time.Second, &stdout, "dispatch line", "dispatched job")
+
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("watchRecipe exit %d, stderr:\n%s", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("watchRecipe did not stop after cancel")
+	}
+	if !strings.Contains(stdout.String(), "Watch stopped.") {
+		t.Fatalf("no clean-stop line in output:\n%s", stdout.String())
+	}
+}
+
+// TestRecipeWatchRefusesWithoutGrant checks the fail-fast path: watching
+// a recipe with no auto-send grant exits non-zero before watching.
+func TestRecipeWatchRefusesWithoutGrant(t *testing.T) {
+	cfgDir, devID, srcDir := recipeTestSetup(t)
+	if code, _, errOut := runRecipeCmd(t, "create", "--config-dir", cfgDir,
+		"--name", "Watched", "--source", srcDir, "--to", devID); code != 0 {
+		t.Fatalf("create exit %d: %s", code, errOut)
+	}
+	id := recipeIDInStore(t, cfgDir)
+	if code, _, errOut := runRecipeCmd(t, "approve", "--config-dir", cfgDir, id); code != 0 {
+		t.Fatalf("approve exit %d: %s", code, errOut)
+	}
+	store, err := openRecipeStore(cfgDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	r, err := loadRecipe(store, id)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	r.Trigger.Kind = recipes.TriggerWatch
+	if _, err := recipes.ApplyUpdate(store, r); err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+	if code, _, errOut := runRecipeCmd(t, "approve", "--config-dir", cfgDir, id); code != 0 {
+		t.Fatalf("approve exit %d: %s", code, errOut)
+	}
+
+	// No grant: watch must fail fast with the refusal on stderr.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stdout, stderr lockedBuffer
+	if code := watchRecipe(ctx, id, cfgDir, &stdout, &stderr); code == 0 {
+		t.Fatalf("watch without grant exited 0")
+	}
+	if !strings.Contains(stderr.String(), "automation grant") {
+		t.Fatalf("stderr does not name the missing grant:\n%s", stderr.String())
 	}
 }

@@ -52,6 +52,8 @@ func runRecipe(args []string, stdout, stderr io.Writer) int {
 		return runRecipePreview(args[1:], stdout, stderr)
 	case "run":
 		return runRecipeRun(args[1:], stdout, stderr)
+	case "watch":
+		return runRecipeWatch(args[1:], stdout, stderr)
 	case "export":
 		return runRecipeExport(args[1:], stdout, stderr)
 	case "import":
@@ -82,6 +84,7 @@ func recipeUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe revoke")+" <id>     "+s.dim("(withdraw auto-send consent)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe preview")+" <id> [--json]   "+s.dim("(dry-run: sends nothing)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe run")+" <id> [--json]       "+s.dim("(explicit one-shot: enqueues one job)"))
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe watch")+" <id>              "+s.dim("(foreground: dispatch on watched-folder changes until Ctrl+C)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe export")+" <id> [--out FILE]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe import")+" <file>")
 	_, _ = fmt.Fprintln(w)
@@ -812,6 +815,97 @@ func runRecipeRun(args []string, stdout, stderr io.Writer) int {
 		s.green("Enqueued"), s.cyan(shortJobID(job.JobID)), len(job.Files), humanBytes(job.TotalSize),
 		len(job.Attempts), job.EffectiveNetworkPolicy())
 	_, _ = fmt.Fprintf(stdout, "  Run %s to send due attempts.\n", s.cyan("sendbeam outbox dispatch"))
+	return 0
+}
+
+// runRecipeWatch implements `sendbeam recipe watch <id>`: it runs the
+// recipe's filesystem watcher in the foreground until SIGINT/SIGTERM,
+// printing what the watcher sees and does. The watcher never sends files
+// itself — each quiet window ends in one ordinary TriggerWatch dispatch
+// through the routine runner, which re-validates the grant, trust, files
+// and budgets before enqueueing one job.
+func runRecipeWatch(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("recipe watch", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configDir := fs.String("config-dir", "", "path to custom configuration directory")
+	positionals := parseArgs(fs, args)
+	if len(positionals) != 1 {
+		_, _ = fmt.Fprintln(stderr, "sendbeam recipe watch: need exactly one <id>")
+		fs.Usage()
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return watchRecipe(ctx, positionals[0], *configDir, stdout, stderr)
+}
+
+// watchRecipe starts the watcher for one recipe and blocks until ctx is
+// done, then stops the watcher cleanly. It is split out from
+// runRecipeWatch so tests can drive it with a cancelable context instead
+// of a real signal.
+func watchRecipe(ctx context.Context, id, configDir string, stdout, stderr io.Writer) int {
+	env, err := InitCLIEnvironment(configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe watch: %v\n", err)
+		return 1
+	}
+	store, err := openRecipeStore(configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe watch: %v\n", err)
+		return 1
+	}
+	r, err := loadRecipe(store, id)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe watch: %v\n", err)
+		return 1
+	}
+	jobStore, err := openOutboxStore(configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe watch: %v\n", err)
+		return 1
+	}
+	ob := outbox.New(jobStore, nil)
+	runner := recipes.NewRunner(
+		recipes.RunDeps{Store: store, Trust: env.TrustStore},
+		outboxEnqueuer{ob: ob},
+		recipes.RunnerOptions{},
+	)
+	printEvent := func(format string, args ...any) {
+		_, _ = fmt.Fprintf(stdout, format+"\n", args...)
+	}
+	w, err := recipes.NewWatcher(store, runner, r.ID, recipes.WatchOptions{
+		OnEvent: func(evt recipes.WatchEvent) {
+			switch evt.Kind {
+			case recipes.WatchEventChange:
+				printEvent("change detected in %s, waiting for quiet…", evt.Root)
+			case recipes.WatchEventDispatching:
+				printEvent("dispatching…")
+			case recipes.WatchEventDispatched:
+				printEvent("dispatched job %s", shortJobID(evt.JobID))
+			case recipes.WatchEventRefused:
+				printEvent("dispatch refused: %s", evt.Detail)
+			case recipes.WatchEventSkipped:
+				printEvent("skipped: %s", evt.Detail)
+			case recipes.WatchEventError:
+				printEvent("watch error: %s", evt.Detail)
+			}
+		},
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe watch: %v\n", err)
+		return 1
+	}
+	if err := w.Start(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe watch: %v\n", err)
+		return 1
+	}
+	printEvent("Watching recipe %q (%d source root(s)) — press Ctrl+C to stop.", r.Name, len(r.Sources))
+	<-ctx.Done()
+	if err := w.Stop(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe watch: stop: %v\n", err)
+		return 1
+	}
+	printEvent("Watch stopped.")
 	return 0
 }
 

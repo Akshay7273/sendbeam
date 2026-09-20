@@ -33,13 +33,22 @@ import (
 // RecipeService owns the recipe store and the production outbox used for
 // one-shot runs. It never dispatches by itself: RunRecipe enqueues one
 // ordinary outbox job; the existing transfer machinery sends it.
+//
+// Automated dispatch (watched-folder triggers) runs through the service's
+// own routine runner and one in-process Watcher per watched recipe,
+// tracked in watchers. This is deliberately per-process: there is no
+// daemon yet, so watches live only as long as the desktop process does —
+// the CLI `recipe watch` foreground command covers headless use, and a
+// real background service is future work (V22-PR08 packaging).
 type RecipeService struct {
-	mu      sync.Mutex
-	store   *recipes.RecipeStore
-	trust   trust.Store
-	jobs    *jobs.JobStore
-	outbox  *outbox.Outbox
-	nowFunc func() time.Time
+	mu       sync.Mutex
+	store    *recipes.RecipeStore
+	trust    trust.Store
+	jobs     *jobs.JobStore
+	outbox   *outbox.Outbox
+	runner   *recipes.Runner
+	watchers map[string]*recipes.Watcher
+	nowFunc  func() time.Time
 }
 
 // NewRecipeService opens the recipe and job stores under customConfigDir
@@ -69,13 +78,22 @@ func NewRecipeService(customConfigDir string, trustStore trust.Store) (*RecipeSe
 	if err != nil {
 		return nil, fmt.Errorf("recipe service: open job store: %w", err)
 	}
-	return &RecipeService{
-		store:   recipeStore,
-		trust:   trustStore,
-		jobs:    jobStore,
-		outbox:  outbox.New(jobStore, nil),
-		nowFunc: time.Now,
-	}, nil
+	nowFunc := time.Now
+	ob := outbox.New(jobStore, nil)
+	svc := &RecipeService{
+		store:    recipeStore,
+		trust:    trustStore,
+		jobs:     jobStore,
+		outbox:   ob,
+		watchers: make(map[string]*recipes.Watcher),
+		nowFunc:  nowFunc,
+	}
+	svc.runner = recipes.NewRunner(
+		recipes.RunDeps{Store: recipeStore, Trust: trustStore, Now: nowFunc},
+		recipeOutboxEnqueuer{ob: ob},
+		recipes.RunnerOptions{},
+	)
+	return svc, nil
 }
 
 // ListRecipes returns every loadable recipe summary.
@@ -190,6 +208,69 @@ func (s *RecipeService) RevokeAutomation(id string) (recipes.Recipe, error) {
 		return recipes.Recipe{}, err
 	}
 	return r, nil
+}
+
+// StartWatch begins watching the recipe's sources for filesystem changes
+// in this process. Each quiet window ends in one TriggerWatch dispatch
+// through the service's routine runner — one ordinary outbox job per
+// dispatch, with the grant, trust, files and budgets re-validated every
+// time. Starting an already-watched recipe is an error.
+//
+// Fail-fast, like the CLI: a recipe with no valid auto-send grant, a
+// disabled recipe, or a non-watch trigger never starts watching.
+func (s *RecipeService) StartWatch(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.watchers[id]; ok {
+		return fmt.Errorf("recipe service: recipe %q is already being watched", id)
+	}
+	w, err := recipes.NewWatcher(s.store, s.runner, id, recipes.WatchOptions{})
+	if err != nil {
+		return err
+	}
+	if err := w.Start(context.Background()); err != nil {
+		return err
+	}
+	s.watchers[id] = w
+	return nil
+}
+
+// StopWatch ends watching for one recipe. It is idempotent: stopping a
+// recipe that is not being watched succeeds silently.
+func (s *RecipeService) StopWatch(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.watchers[id]
+	if !ok {
+		return nil
+	}
+	delete(s.watchers, id)
+	return w.Stop()
+}
+
+// IsWatching reports whether the recipe currently has an active
+// in-process watcher on this desktop instance.
+func (s *RecipeService) IsWatching(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.watchers[id]
+	return ok
+}
+
+// StopAllWatches ends every active watcher. Callers shutting the desktop
+// process down should call this so no filesystem watcher outlives the
+// service that owns it.
+func (s *RecipeService) StopAllWatches() {
+	s.mu.Lock()
+	watchers := make([]*recipes.Watcher, 0, len(s.watchers))
+	for id, w := range s.watchers {
+		delete(s.watchers, id)
+		watchers = append(watchers, w)
+	}
+	s.mu.Unlock()
+	for _, w := range watchers {
+		_ = w.Stop()
+	}
 }
 
 // LastRun returns the recipe's last-run ledger entry — the most recent

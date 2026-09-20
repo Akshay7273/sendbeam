@@ -718,9 +718,12 @@ func TestValidateRecipeRejects(t *testing.T) {
 		}},
 		{"bad network policy", func(r *Recipe) { r.NetworkPolicy = "carrier-pigeon" }},
 		{"bad trigger kind", func(r *Recipe) { r.Trigger.Kind = "cron" }},
-		{"non-empty watch map", func(r *Recipe) {
+		{"unknown watch param key", func(r *Recipe) {
 			r.Trigger.Kind = TriggerWatch
 			r.Trigger.Watch = map[string]any{"debounceMs": 500}
+		}},
+		{"watch params on non-watch trigger", func(r *Recipe) {
+			r.Trigger.Watch = map[string]any{"debounce_ms": 500}
 		}},
 		{"non-empty schedule map", func(r *Recipe) {
 			r.Trigger.Kind = TriggerSchedule
@@ -745,8 +748,13 @@ func TestValidateRecipeRejects(t *testing.T) {
 			}
 		})
 	}
-	// Empty watch/schedule maps are fine (watch/schedule kinds reserved).
+	// Empty watch/schedule maps are fine: empty watch params mean defaults,
+	// and the schedule map is still reserved (must stay empty).
 	r := base()
+	r.Trigger.Kind = TriggerWatch
+	if err := ValidateRecipe(r); err != nil {
+		t.Errorf("empty watch map (defaults) must validate: %v", err)
+	}
 	r.Trigger.Kind = TriggerSchedule
 	if err := ValidateRecipe(r); err != nil {
 		t.Errorf("empty reserved schedule map must validate: %v", err)

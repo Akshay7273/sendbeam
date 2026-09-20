@@ -235,3 +235,97 @@ func TestRecipeServiceUsesProductionOutbox(t *testing.T) {
 		t.Fatalf("job files: %+v", job.Files)
 	}
 }
+
+// TestRecipeServiceWatch exercises the desktop-hosted watcher lifecycle:
+// start, change, dispatch through the real outbox, stop. Watches are
+// per-process by design (see RecipeService).
+func TestRecipeServiceWatch(t *testing.T) {
+	dir := t.TempDir()
+	ts := trust.NewMemoryTrustStore()
+	devID := seedRecipeTrust(t, ts)
+
+	svc, err := NewRecipeService(dir, ts)
+	if err != nil {
+		t.Fatalf("NewRecipeService: %v", err)
+	}
+	t.Cleanup(svc.StopAllWatches)
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("data"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	id := storeRecipe(t, svc, root, "Exports", devID)
+
+	// No grant yet: StartWatch must fail fast.
+	if err := svc.StartWatch(id); err == nil {
+		t.Fatalf("StartWatch without grant succeeded")
+	}
+	if svc.IsWatching(id) {
+		t.Fatalf("IsWatching true after failed start")
+	}
+
+	// Flip to a watch trigger (material change), approve and grant.
+	r, ok, err := svc.store.Load(id)
+	if err != nil || !ok {
+		t.Fatalf("Load: %v %v", ok, err)
+	}
+	r.Trigger.Kind = recipes.TriggerWatch
+	r.Trigger.Watch = map[string]any{"debounce_ms": 250, "cooldown_ms": 300}
+	if _, err := recipes.ApplyUpdate(svc.store, r); err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+	if _, err := svc.ApproveRecipe(id); err != nil {
+		t.Fatalf("ApproveRecipe: %v", err)
+	}
+	if _, err := svc.GrantAutomation(id); err != nil {
+		t.Fatalf("GrantAutomation: %v", err)
+	}
+
+	if err := svc.StartWatch(id); err != nil {
+		t.Fatalf("StartWatch: %v", err)
+	}
+	if !svc.IsWatching(id) {
+		t.Fatalf("IsWatching false after start")
+	}
+	if err := svc.StartWatch(id); err == nil {
+		t.Fatalf("second StartWatch succeeded")
+	}
+
+	// A change dispatches one ordinary outbox job through the real outbox.
+	if err := os.WriteFile(filepath.Join(root, "b.txt"), []byte("more"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got, gerr := svc.LastRun(id)
+		if gerr == nil && got != nil && got.Status == recipes.RunStatusDispatched {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no dispatched last-run entry after change")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	listed, err := svc.outbox.List()
+	if err != nil {
+		t.Fatalf("outbox List: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("outbox has %d jobs, want 1", len(listed))
+	}
+
+	if err := svc.StopWatch(id); err != nil {
+		t.Fatalf("StopWatch: %v", err)
+	}
+	if svc.IsWatching(id) {
+		t.Fatalf("IsWatching true after stop")
+	}
+	// StopWatch is idempotent.
+	if err := svc.StopWatch(id); err != nil {
+		t.Fatalf("second StopWatch: %v", err)
+	}
+	// Stopping an unknown id is not an error either.
+	if err := svc.StopWatch(strings.Repeat("0", 32)); err != nil {
+		t.Fatalf("StopWatch unknown id: %v", err)
+	}
+}
