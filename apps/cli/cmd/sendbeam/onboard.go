@@ -42,7 +42,7 @@ func runOnboard(args []string, stdout, stderr io.Writer) int {
 	// newer-state quarantine) before any store is opened.
 	env, err := InitCLIEnvironment(configDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "sendbeam onboard: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "sendbeam onboard: %v\n", err)
 		return 1
 	}
 
@@ -56,13 +56,13 @@ func runOnboard(args []string, stdout, stderr io.Writer) int {
 	id, err := env.IdentityMgr.GetOrCreateIdentity()
 	if err != nil {
 		// Fail closed: a corrupt identity.key is never silently replaced.
-		fmt.Fprintf(stderr, "sendbeam onboard: cannot load device identity: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "sendbeam onboard: cannot load device identity: %v\n", err)
 		return 1
 	}
 
 	devices, err := env.TrustStore.ListDevices(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "sendbeam onboard: cannot list trusted devices: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "sendbeam onboard: cannot list trusted devices: %v\n", err)
 		return 1
 	}
 
@@ -79,7 +79,7 @@ func runOnboard(args []string, stdout, stderr io.Writer) int {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(res); err != nil {
-			fmt.Fprintf(stderr, "sendbeam onboard: encode result: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "sendbeam onboard: encode result: %v\n", err)
 			return 1
 		}
 		return 0
@@ -87,21 +87,21 @@ func runOnboard(args []string, stdout, stderr io.Writer) int {
 
 	s := newStyleFromWriter(stdout)
 	if newIdentity {
-		fmt.Fprintln(stdout, s.bold("Welcome to SendBeam — this device now has an identity."))
+		_, _ = fmt.Fprintln(stdout, s.bold("Welcome to SendBeam — this device now has an identity."))
 	} else {
-		fmt.Fprintln(stdout, s.bold("Welcome back — this device already has an identity."))
+		_, _ = fmt.Fprintln(stdout, s.bold("Welcome back — this device already has an identity."))
 	}
-	fmt.Fprintln(stdout)
-	fmt.Fprintf(stdout, "  Device ID:   %s\n", s.cyan(res.DeviceID))
-	fmt.Fprintf(stdout, "  Fingerprint: %s\n", s.cyan(res.Fingerprint))
-	fmt.Fprintf(stdout, "  Config dir:  %s\n", res.ConfigDir)
-	fmt.Fprintf(stdout, "  Paired devices: %d\n", res.PairedDevices)
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, s.bold("Next steps:"))
-	fmt.Fprintln(stdout, "  1. Pair another device:  "+s.cyan("sendbeam pair"))
-	fmt.Fprintln(stdout, "  2. Listen for incoming:  "+s.cyan("sendbeam listen"))
-	fmt.Fprintln(stdout, "  3. Send a file:          "+s.cyan("sendbeam send <file>"))
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, s.dim("Your files stay on this device. The sender must be running and the recipient reachable — there is no cloud inbox."))
+	_, _ = fmt.Fprintln(stdout)
+	_, _ = fmt.Fprintf(stdout, "  Device ID:   %s\n", s.cyan(res.DeviceID))
+	_, _ = fmt.Fprintf(stdout, "  Fingerprint: %s\n", s.cyan(res.Fingerprint))
+	_, _ = fmt.Fprintf(stdout, "  Config dir:  %s\n", res.ConfigDir)
+	_, _ = fmt.Fprintf(stdout, "  Paired devices: %d\n", res.PairedDevices)
+	_, _ = fmt.Fprintln(stdout)
+	_, _ = fmt.Fprintln(stdout, s.bold("Next steps:"))
+	_, _ = fmt.Fprintln(stdout, "  1. Pair another device:  "+s.cyan("sendbeam pair"))
+	_, _ = fmt.Fprintln(stdout, "  2. Listen for incoming:  "+s.cyan("sendbeam listen"))
+	_, _ = fmt.Fprintln(stdout, "  3. Send a file:          "+s.cyan("sendbeam send <file>"))
+	_, _ = fmt.Fprintln(stdout)
+	_, _ = fmt.Fprintln(stdout, s.dim("Your files stay on this device. The sender must be running and the recipient reachable — there is no cloud inbox."))
 	return 0
 }

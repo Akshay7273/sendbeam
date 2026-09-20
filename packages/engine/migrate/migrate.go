@@ -153,7 +153,7 @@ func runWithMigrations(ctx context.Context, configDir string, migrations []Migra
 	}
 	// Backups are removed on success; on failure the snapshots are restored
 	// first and then the backup dir is removed.
-	defer os.RemoveAll(backupRoot)
+	defer func() { _ = os.RemoveAll(backupRoot) }()
 
 	rep := &Report{FromVersion: from, ToVersion: CurrentVersion}
 	for _, m := range migrations {
@@ -248,7 +248,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return err
@@ -275,7 +275,7 @@ func fsyncDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	return d.Sync()
 }
 

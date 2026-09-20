@@ -92,7 +92,7 @@ func TestFailingMigrationRollsBack(t *testing.T) {
 	bad := Migration{
 		Name:    "poison",
 		Touches: []string{"trust.json"},
-		Apply: func(ctx context.Context, configDir string) error {
+		Apply: func(_ context.Context, _ string) error {
 			if err := os.WriteFile(victim, []byte("torn-write"), 0o600); err != nil {
 				return err
 			}
