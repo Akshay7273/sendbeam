@@ -196,8 +196,20 @@ func main() {
 
 	var localPairingSvc *engine.LocalPairingService
 	var localSvc *engine.LocalService
+	var recipeSvc *engine.RecipeService
 	if deviceSvc != nil {
 		localPairingSvc = engine.NewLocalPairingService(deviceSvc.GetIdentityManager(), deviceSvc.GetStore())
+
+		// V22-PR02: saved handoff recipes — one-shot manual runs through
+		// the production outbox, sharing the desktop trust store. The
+		// frontend UI markup is out of scope (no TS source in this repo);
+		// the bindings are ready for a future frontend PR.
+		var err error
+		recipeSvc, err = engine.NewRecipeService("", deviceSvc.GetStore())
+		if err != nil {
+			log.Printf("SendBeam Desktop: recipe service failed to initialize: %v", err)
+			recipeSvc = nil
+		}
 
 		// V21-PR06: the offline transfer endpoint — a persistent LAN
 		// listener serving paired-device receives with no public egress.
@@ -246,6 +258,9 @@ func main() {
 	}
 	if localSvc != nil {
 		services = append(services, application.NewService(localSvc))
+	}
+	if recipeSvc != nil {
+		services = append(services, application.NewService(recipeSvc))
 	}
 
 	app := application.New(application.Options{
