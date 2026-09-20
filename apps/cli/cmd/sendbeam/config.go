@@ -38,18 +38,18 @@ func executeConfig(args []string, stdout, stderr io.Writer) int {
 		s := loadCLISettings(env.ConfigDir)
 		s.NetworkPolicy = p.String()
 		if err := saveCLISettings(env.ConfigDir, s); err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "Network policy set to %s\n", p.String())
+		_, _ = fmt.Fprintf(stdout, "Network policy set to %s\n", p.String())
 		return 0
 	}
 	p, _ := resolveNetworkPolicy("", env.ConfigDir)
-	fmt.Fprintf(stdout, "network-policy: %s\n", p.String())
-	fmt.Fprintln(stdout, "")
-	fmt.Fprintln(stdout, "Policies:")
-	fmt.Fprintln(stdout, "  online       default v2.0 behavior; online services available")
-	fmt.Fprintln(stdout, "  prefer-local try local paths first, then online")
-	fmt.Fprintln(stdout, "  local-only   only local paths; fails closed without a local route")
+	_, _ = fmt.Fprintf(stdout, "network-policy: %s\n", p.String())
+	_, _ = fmt.Fprintln(stdout, "")
+	_, _ = fmt.Fprintln(stdout, "Policies:")
+	_, _ = fmt.Fprintln(stdout, "  online       default v2.0 behavior; online services available")
+	_, _ = fmt.Fprintln(stdout, "  prefer-local try local paths first, then online")
+	_, _ = fmt.Fprintln(stdout, "  local-only   only local paths; fails closed without a local route")
 	return 0
 }

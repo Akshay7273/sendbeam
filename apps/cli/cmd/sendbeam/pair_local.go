@@ -40,10 +40,10 @@ func runPairLocal(args []string) int {
 
 func executePairLocal(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "sendbeam pair-local: invite or join required")
-		fmt.Fprintln(stderr, "  sendbeam pair-local invite [--window 60s] [--bind ip:port] [--json]")
-		fmt.Fprintln(stderr, "  sendbeam pair-local join [--json] < invitation.txt")
-		fmt.Fprintln(stderr, "The invitation contains the pairing secret: pipe it via stdin, never pass it as a command argument.")
+		_, _ = fmt.Fprintln(stderr, "sendbeam pair-local: invite or join required")
+		_, _ = fmt.Fprintln(stderr, "  sendbeam pair-local invite [--window 60s] [--bind ip:port] [--json]")
+		_, _ = fmt.Fprintln(stderr, "  sendbeam pair-local join [--json] < invitation.txt")
+		_, _ = fmt.Fprintln(stderr, "The invitation contains the pairing secret: pipe it via stdin, never pass it as a command argument.")
 		return 2
 	}
 	switch args[0] {
@@ -52,7 +52,7 @@ func executePairLocal(args []string, stdout, stderr io.Writer) int {
 	case "join":
 		return executePairLocalJoin(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "sendbeam pair-local: unknown subcommand %q (want invite or join)\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "sendbeam pair-local: unknown subcommand %q (want invite or join)\n", args[0])
 		return 2
 	}
 }
@@ -68,7 +68,7 @@ func executePairLocalInvite(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *window <= 0 || *window > 10*time.Minute {
-		fmt.Fprintln(stderr, "sendbeam pair-local invite: --window must be between 1s and 10m")
+		_, _ = fmt.Fprintln(stderr, "sendbeam pair-local invite: --window must be between 1s and 10m")
 		return 2
 	}
 	// V21-PR06: bind a real LAN address. A loopback-only listener would hand
@@ -77,14 +77,14 @@ func executePairLocalInvite(args []string, stdout, stderr io.Writer) int {
 	if bind == "" {
 		lan, err := localrendezvous.LANBindAddr()
 		if err != nil {
-			fmt.Fprintf(stderr, "sendbeam pair-local invite: no LAN interface: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "sendbeam pair-local invite: no LAN interface: %v\n", err)
 			return 1
 		}
 		bind = lan
 	}
 	env, err := InitCLIEnvironment(*configDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -92,24 +92,24 @@ func executePairLocalInvite(args []string, stdout, stderr io.Writer) int {
 	srv := localrendezvous.NewServer(localrendezvous.Config{BindAddr: bind, AllowWildcard: false}, env.TrustStore)
 	addr, err := srv.Start(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: start local rendezvous: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: start local rendezvous: %v\n", err)
 		return 1
 	}
 	defer srv.Close()
 	id, err := env.IdentityMgr.GetOrCreateIdentity()
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	fingerprint := wire.DeriveDeviceID(id.PublicKey)
 	in, err := localpairing.CreateInvitation(srv, addr.String(), fingerprint, *window)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	masterKey, err := in.MasterKey()
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	if *jsonOutput {
@@ -118,14 +118,14 @@ func executePairLocalInvite(args []string, stdout, stderr io.Writer) int {
 			Address: in.Address, Fingerprint: in.Fingerprint,
 			ExpiresAt: in.ExpiresAt.Format(time.RFC3339),
 		})
-		fmt.Fprintln(stdout, string(out))
+		_, _ = fmt.Fprintln(stdout, string(out))
 	} else {
-		fmt.Fprintln(stdout, "Share this invitation with the joining device (valid until "+in.ExpiresAt.Format("15:04:05")+").")
-		fmt.Fprintln(stdout, "The invitation contains the pairing secret; share it as a QR code, not in logs or chat history.")
-		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, "  "+in.Encode())
-		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, "Waiting for the joiner to pair... (Ctrl+C to cancel)")
+		_, _ = fmt.Fprintln(stdout, "Share this invitation with the joining device (valid until "+in.ExpiresAt.Format("15:04:05")+").")
+		_, _ = fmt.Fprintln(stdout, "The invitation contains the pairing secret; share it as a QR code, not in logs or chat history.")
+		_, _ = fmt.Fprintln(stdout, "")
+		_, _ = fmt.Fprintln(stdout, "  "+in.Encode())
+		_, _ = fmt.Fprintln(stdout, "")
+		_, _ = fmt.Fprintln(stdout, "Waiting for the joiner to pair... (Ctrl+C to cancel)")
 	}
 	hostname, _ := os.Hostname()
 	if hostname == "" {
@@ -136,14 +136,14 @@ func executePairLocalInvite(args []string, stdout, stderr io.Writer) int {
 		Coordinator: coordinator, DeviceName: hostname, MasterKey: masterKey,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "error: pairing failed: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: pairing failed: %v\n", err)
 		return 1
 	}
 	if *jsonOutput {
 		out, _ := json.Marshal(pairLocalJoinJSON{Status: "paired", DeviceID: res.PeerRecord.DeviceID})
-		fmt.Fprintln(stdout, string(out))
+		_, _ = fmt.Fprintln(stdout, string(out))
 	} else {
-		fmt.Fprintf(stdout, "Paired with device %s\n", res.PeerRecord.DeviceID)
+		_, _ = fmt.Fprintf(stdout, "Paired with device %s\n", res.PeerRecord.DeviceID)
 	}
 	return 0
 }
@@ -166,32 +166,32 @@ func executePairLocalJoinStdin(args []string, stdin io.Reader, stdout, stderr io
 	// accepted as a command argument (argv is visible to other processes);
 	// read it from stdin instead.
 	if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "sendbeam pair-local join: do not pass the invitation as an argument; pipe it via stdin")
+		_, _ = fmt.Fprintln(stderr, "sendbeam pair-local join: do not pass the invitation as an argument; pipe it via stdin")
 		return 2
 	}
 	raw, err := io.ReadAll(io.LimitReader(stdin, 64*1024))
 	if err != nil {
-		fmt.Fprintf(stderr, "error: reading invitation from stdin: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: reading invitation from stdin: %v\n", err)
 		return 1
 	}
 	invitation := strings.TrimSpace(string(raw))
 	if invitation == "" {
-		fmt.Fprintln(stderr, "sendbeam pair-local join: no invitation on stdin")
+		_, _ = fmt.Fprintln(stderr, "sendbeam pair-local join: no invitation on stdin")
 		return 2
 	}
 	in, err := localpairing.ParseInvitation(invitation)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: invalid invitation: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: invalid invitation: %v\n", err)
 		return 2
 	}
 	masterKey, err := in.MasterKey()
 	if err != nil {
-		fmt.Fprintf(stderr, "error: invalid invitation: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: invalid invitation: %v\n", err)
 		return 2
 	}
 	env, err := InitCLIEnvironment(*configDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -205,15 +205,15 @@ func executePairLocalJoinStdin(args []string, stdin io.Reader, stdout, stderr io
 		Coordinator: coordinator, DeviceName: hostname, MasterKey: masterKey,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "error: pairing failed: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: pairing failed: %v\n", err)
 		return 1
 	}
 	if *jsonOutput {
 		out, _ := json.Marshal(pairLocalJoinJSON{Status: "paired", DeviceID: res.PeerRecord.DeviceID})
-		fmt.Fprintln(stdout, string(out))
+		_, _ = fmt.Fprintln(stdout, string(out))
 	} else {
-		fmt.Fprintf(stdout, "Paired with device %s\n", res.PeerRecord.DeviceID)
-		fmt.Fprintf(stdout, "Verify the fingerprint matches what the inviter sees: %s\n", in.Fingerprint)
+		_, _ = fmt.Fprintf(stdout, "Paired with device %s\n", res.PeerRecord.DeviceID)
+		_, _ = fmt.Fprintf(stdout, "Verify the fingerprint matches what the inviter sees: %s\n", in.Fingerprint)
 	}
 	return 0
 }

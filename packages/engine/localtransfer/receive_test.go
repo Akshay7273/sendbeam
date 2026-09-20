@@ -27,12 +27,12 @@ func loopbackUDPAvailable() bool {
 	if err != nil {
 		return false
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 	b, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		return false
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 	if _, err := a.WriteTo([]byte("ping"), b.LocalAddr()); err != nil {
 		return false
 	}
@@ -66,7 +66,7 @@ func TestReceiveEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 
 	destDir := t.TempDir()
 	recvDone := make(chan error, 1)
@@ -187,7 +187,7 @@ func TestReceiveRevokedPeerFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 
 	recvDone := make(chan error, 1)
 	go func() {

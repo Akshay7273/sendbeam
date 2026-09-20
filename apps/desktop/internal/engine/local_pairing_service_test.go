@@ -54,7 +54,7 @@ func TestLocalPairingServiceJoinBadInvitation(t *testing.T) {
 }
 
 func TestNetworkPolicyService(t *testing.T) {
-	var current netpolicy.Policy = netpolicy.Online
+	var current = netpolicy.Online
 	svc := NewNetworkPolicyService(
 		func() netpolicy.Policy { return current },
 		func(p netpolicy.Policy) error { current = p; return nil },
