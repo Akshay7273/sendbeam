@@ -81,6 +81,37 @@ func TestProvenanceWireBytes(t *testing.T) {
 	}
 }
 
+func TestProvenanceDecodeReencodeByteIdentical(t *testing.T) {
+	// A manifest WITH provenance (what a v2.2 sender emits), decoded and
+	// re-encoded, must keep byte-identical JSON: the field order and
+	// optional-key placement are part of the wire contract and must match
+	// the TypeScript twin in packages/protocol/src/provenance.test.ts.
+	m := NewManifest([]FileEntry{{
+		Idx: 0, Name: "a.bin", Size: 10, Mime: "application/octet-stream",
+		LastModified: 5, BlockSize: 8, Blocks: 2, FileDigest: "ab",
+	}}, 10)
+	m.Provenance = validProvenance()
+	original, err := EncodeControl(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := DecodeControl(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm, ok := dec.(*Manifest)
+	if !ok {
+		t.Fatalf("decoded type %T, want *Manifest", dec)
+	}
+	again, err := EncodeControl(dm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != string(original) {
+		t.Fatalf("re-encode changed manifest bytes:\n got: %s\nwant: %s", again, original)
+	}
+}
+
 func TestProvenanceOmittedWhenNil(t *testing.T) {
 	// A manifest without provenance must encode byte-identically to the
 	// pre-provenance shape: no "provenance" key at all.
