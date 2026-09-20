@@ -46,9 +46,11 @@ func Import(data []byte) (Recipe, error) {
 	r.Grant.AutoSend = false
 	r.Grant.GrantedAt = time.Time{}
 	r.Grant.ScopeHash = r.ScopeHash()
-	// The last-run ledger is host-local audit history: an imported recipe
-	// starts with no runs recorded here.
+	// The last-run ledger and the schedule cursor are host-local history:
+	// an imported recipe starts with no runs recorded here and adopts a
+	// fresh cursor on its first scheduler tick.
 	r.LastRun = nil
+	r.ScheduleCursor = nil
 	sealed, err := sealRecipe(r)
 	if err != nil {
 		return Recipe{}, err

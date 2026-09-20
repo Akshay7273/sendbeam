@@ -59,7 +59,7 @@ Every dispatch attempt records what started it:
 | ---------- | ----------------------------------------------------------------------------- |
 | `manual`   | The human at the keyboard (CLI `run`, desktop Run now). Never needs a grant.  |
 | `watch`    | A watched-folder trigger fired (V22-PR04). Needs a valid grant.               |
-| `schedule` | A schedule fired. Needs a valid grant. Sources arrive in V22-PR05.            |
+| `schedule` | A scheduled occurrence fired (V22-PR05). Needs a valid grant.                 |
 | `retry`    | Re-attempt of a previously refused/failed automated run. Needs a valid grant. |
 
 Disabled recipes refuse **every** trigger reason, including manual.
@@ -181,6 +181,98 @@ foreground command covers headless use.
   create-then-delete inside one debounce window may never dispatch.
 - Watcher permission errors surface explicitly instead of watching
   nothing silently.
+
+## Scheduled triggers (V22-PR05)
+
+A recipe with trigger kind `schedule` fires on **explicit daily, hourly,
+or interval schedules** — no cron. Schedules are wall-clock schedules in
+a named IANA timezone, stored as a JSON parameter object on the trigger:
+
+```sh
+# daily at 14:30 in Calcutta
+sendbeam recipe create --name "Daily exports" \
+  --source ~/exports --to @studio-laptop \
+  --trigger schedule \
+  --schedule-params '{"kind":"daily","at":"14:30","tz":"Asia/Calcutta"}'
+
+# hourly at minute 15, UTC (the default timezone)
+sendbeam recipe edit <id> --trigger schedule \
+  --schedule-params '{"kind":"hourly","minute":15}'
+
+# every 30 minutes, 09:00–17:00 only, at most 2 catch-up runs
+sendbeam recipe edit <id> \
+  --schedule-params '{"kind":"interval","every_minutes":30,"not_before":"09:00","not_after":"17:00","max_catchup_runs":2}'
+```
+
+The three shapes:
+
+| kind       | parameters                               |
+| ---------- | ---------------------------------------- |
+| `daily`    | `at` (required, `HH:MM`), `tz`           |
+| `hourly`   | `minute` (required, 0–59), `tz`          |
+| `interval` | `every_minutes` (required, 1–1440), `tz` |
+
+`tz` is any IANA name (`Asia/Calcutta`, `America/New_York`, …) and
+defaults to `UTC`. Daily and hourly occurrences are wall-clock times in
+that zone; interval occurrences are anchored to the Unix epoch (an
+`every_minutes: 30` schedule always fires on `:00` and `:30`).
+`not_before`/`not_after` (`HH:MM`, both optional) restrict firing to a
+daily window; `max_catchup_runs` (0–10, default 3) bounds catch-up (see
+below). Parameters are validated strictly — unknown keys, wrong types,
+fractional numbers, out-of-range values, and unknown timezones are all
+rejected, and schedule params on a non-schedule trigger (or vice versa)
+are an error.
+
+**Timezone and DST.** Daily/hourly occurrences follow wall-clock time in
+the schedule's timezone. Daylight-saving transitions follow Go's `time`
+package semantics: a wall time that does not exist (spring-forward gap)
+is interpreted with the pre-transition offset, so the occurrence still
+fires exactly once and the schedule does not drift; an ambiguous wall
+time (fall-back) takes the first occurrence. Interval schedules are
+absolute (UTC-anchored) and unaffected by DST.
+
+**Durable cursor and bounded catch-up.** Every schedule-triggered recipe
+carries a durable idempotency cursor (`scheduleCursor`) in its stored
+record. The cursor adopts the current time on the first scheduler tick
+and advances **before** each dispatch, so a crash, restart, or rapid
+re-tick can never double-dispatch an occurrence. When the scheduler was
+down, the next tick finds missed occurrences and replays them
+**sequentially, at most `max_catchup_runs`** (0 = skip them all and
+resume) — never a backlog stampede: five missed intervals with
+`max_catchup_runs: 2` dispatch exactly two, and the cursor advances past
+all five. Occurrences outside the `not_before`/`not_after` window are
+skipped, never dispatched. Every catch-up pass writes a plain-language
+summary into the last-run ledger (e.g.
+`caught up 2 of 5 missed run(s); 3 skipped by cap`).
+
+**Grants and status.** Schedule dispatch needs a valid auto-send grant,
+exactly like watch dispatches: no grant (or a revoked/expired one) makes
+due occurrences refuse with the reason recorded in the last-run ledger.
+Schedule parameters are part of the material scope, so changing them
+revokes the grant and drops the recipe back to approval-required.
+Disabled recipes are never hosted and never dispatch.
+
+**Foreground vs desktop-hosted.** `sendbeam recipe scheduler` runs the
+scheduler in the foreground until Ctrl+C and prints what it does
+(`due:`, `dispatching:`, `dispatched:`, `refused:`, `skipped:`,
+`catch-up:` lines); the stop is clean and the exit code is 0. The
+desktop hosts the scheduler in-process via
+`RecipeService.StartScheduler` / `StopScheduler` / `SchedulerRunning` —
+per-process by design: schedules live only as long as the desktop
+process does. There is no daemon yet (packaging is V22-PR08 scope); the
+CLI foreground command covers headless use. `recipe show` prints the
+human schedule, the next run, and the cursor.
+
+**Limitations:**
+
+- No second-granularity schedules: the finest interval is one minute.
+- The scheduler rescans the store every minute; a recipe created while
+  the scheduler runs is picked up on the next rescan, not instantly.
+- Catch-up runs the missed occurrences back-to-back, not at their
+  original times — each dispatch still resolves the _current_ source
+  tree, so a catch-up sends what is there now.
+- `max_catchup_runs` caps at 10; a longer outage simply resumes the
+  schedule after the cap, discarding the rest of the backlog.
 
 ## The one-shot workflow
 

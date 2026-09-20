@@ -24,8 +24,10 @@ import (
 // RecipeSchemaVersion is the current Recipe schema. Readers refuse
 // (quarantine) records whose schema they do not understand rather than
 // truncating them. Watch trigger detail (V22-PR04) validated inside the
-// existing trigger.watch map shape, so no schema bump was needed;
-// schedule detail (V22-PR05) may need one if its wire shape changes.
+// existing trigger.watch map shape, so no schema bump was needed; schedule
+// detail (V22-PR05) likewise validates inside the existing trigger.schedule
+// map shape, and the new scheduleCursor field is a *time.Time with
+// omitempty, so v1 records without the key still checksum-verify.
 const RecipeSchemaVersion = 1
 
 // RecipeStatus is the lifecycle state of a recipe.
@@ -87,9 +89,8 @@ type RecipeRunInfo struct {
 // arrived in V22-PR04; schedule sources arrive in V22-PR05.
 type TriggerReason string
 
-// Trigger kinds. "schedule" detail lands in V22-PR05; until then its
-// reserved parameter map must be empty. Watch parameters are validated by
-// ParseWatchParams.
+// Trigger kinds. Watch parameters are validated by ParseWatchParams;
+// schedule parameters are validated by ParseScheduleParams.
 const (
 	TriggerManual   TriggerReason = "manual"
 	TriggerWatch    TriggerReason = "watch"
@@ -116,8 +117,8 @@ type RecipeRecipient struct {
 }
 
 // RecipeTrigger describes what may start a run. Watch carries the
-// debounce/cooldown parameters defined below (V22-PR04); Schedule stays a
-// reserved parameter map until V22-PR05 and must be empty.
+// debounce/cooldown parameters defined below (V22-PR04); Schedule carries
+// the schedule parameters defined below (V22-PR05).
 type RecipeTrigger struct {
 	Kind     TriggerReason  `json:"kind"`
 	Watch    map[string]any `json:"watch,omitempty"`
@@ -266,6 +267,442 @@ func watchParamMillis(key string, val any) (int64, error) {
 	return int64(f), nil
 }
 
+// Schedule trigger parameter keys and their bounds. Cron is deliberately
+// out of scope: three explicit shapes cover the routine use cases without
+// a cron language to misread.
+const (
+	// ScheduleParamKind names the schedule shape: "daily", "hourly" or
+	// "interval". Required.
+	ScheduleParamKind = "kind"
+	// ScheduleParamAt names the daily wall-clock time ("HH:MM", 24h) in
+	// the schedule's timezone. Required for kind "daily".
+	ScheduleParamAt = "at"
+	// ScheduleParamMinute names the minute within the hour (0-59) a
+	// run fires. Required for kind "hourly".
+	ScheduleParamMinute = "minute"
+	// ScheduleParamEveryMinutes names the period in minutes (1-1440).
+	// Required for kind "interval".
+	ScheduleParamEveryMinutes = "every_minutes"
+	// ScheduleParamTZ names the IANA timezone the schedule is evaluated
+	// in. Optional for every kind; defaults to the process local
+	// timezone. For "interval" it only aligns the not_before/not_after
+	// window — the period itself is anchored to N-minute boundaries
+	// from the Unix epoch.
+	ScheduleParamTZ = "tz"
+	// ScheduleParamNotBefore / ScheduleParamNotAfter name the optional
+	// dispatch window ("HH:MM", 24h) in the schedule's timezone.
+	// Occurrences outside the window are skipped, never dispatched.
+	// not_before must be strictly before not_after (no overnight
+	// windows in this schema version).
+	ScheduleParamNotBefore = "not_before"
+	ScheduleParamNotAfter  = "not_after"
+	// ScheduleParamMaxCatchupRuns bounds how many missed occurrences are
+	// dispatched after downtime (0-10). Default
+	// DefaultMaxCatchupRuns; the rest are marked skipped, never
+	// stampeded.
+	ScheduleParamMaxCatchupRuns = "max_catchup_runs"
+
+	// ScheduleKindDaily fires once per day at a wall-clock time.
+	ScheduleKindDaily = "daily"
+	// ScheduleKindHourly fires once per hour at a fixed minute.
+	ScheduleKindHourly = "hourly"
+	// ScheduleKindInterval fires every N minutes on epoch-aligned
+	// boundaries.
+	ScheduleKindInterval = "interval"
+
+	// MinScheduleMinute / MaxScheduleMinute bound the hourly minute.
+	MinScheduleMinute = 0
+	MaxScheduleMinute = 59
+	// MinScheduleEveryMinutes / MaxScheduleEveryMinutes bound the
+	// interval period (up to one day).
+	MinScheduleEveryMinutes = 1
+	MaxScheduleEveryMinutes = 1440
+	// DefaultMaxCatchupRuns is the catch-up bound when
+	// max_catchup_runs is unset.
+	DefaultMaxCatchupRuns = 3
+	// MinMaxCatchupRuns / MaxMaxCatchupRuns bound max_catchup_runs.
+	// Zero means "no catch-up: skip everything missed, just resume".
+	MinMaxCatchupRuns = 0
+	MaxMaxCatchupRuns = 10
+)
+
+// ScheduleParams is the parsed, validated v1 schedule trigger
+// configuration.
+type ScheduleParams struct {
+	// Kind is one of "daily", "hourly", "interval".
+	Kind string
+	// At is the daily wall-clock time ("HH:MM"), kind "daily" only.
+	At string
+	// Minute is the minute within the hour, kind "hourly" only.
+	Minute int
+	// EveryMinutes is the period in minutes, kind "interval" only.
+	EveryMinutes int
+	// TZ is the resolved timezone the schedule is evaluated in
+	// (defaults to the process local timezone).
+	TZ *time.Location
+	// TZName is the canonical name of TZ, used for display and for the
+	// scope hash (time.Location has no stable encoding of its own).
+	TZName string
+	// NotBefore / NotAfter are the optional dispatch window bounds
+	// ("HH:MM") in the schedule's timezone; empty means no bound.
+	NotBefore string
+	NotAfter  string
+	// MaxCatchupRuns bounds missed-occurrence catch-up after downtime.
+	MaxCatchupRuns int
+}
+
+// HumanWords renders the schedule in human words for previews and CLI
+// output, e.g. "daily at 14:30 Asia/Calcutta", "hourly at minute 15",
+// "every 30 minutes".
+func (sp ScheduleParams) HumanWords() string {
+	var b strings.Builder
+	switch sp.Kind {
+	case ScheduleKindDaily:
+		fmt.Fprintf(&b, "daily at %s %s", sp.At, sp.TZName)
+	case ScheduleKindHourly:
+		fmt.Fprintf(&b, "hourly at minute %d", sp.Minute)
+	case ScheduleKindInterval:
+		fmt.Fprintf(&b, "every %d minute(s)", sp.EveryMinutes)
+	default:
+		fmt.Fprintf(&b, "unknown schedule kind %q", sp.Kind)
+	}
+	if sp.NotBefore != "" || sp.NotAfter != "" {
+		fmt.Fprintf(&b, ", only between %s and %s", sp.NotBefore, sp.NotAfter)
+		if sp.Kind != ScheduleKindDaily {
+			fmt.Fprintf(&b, " %s", sp.TZName)
+		}
+	}
+	fmt.Fprintf(&b, "; catch up at most %d missed run(s)", sp.MaxCatchupRuns)
+	return b.String()
+}
+
+// InWindow reports whether the instant t falls inside the schedule's
+// dispatch window, evaluated in the schedule's timezone. With no window
+// configured every instant is in-window. The window is half-open:
+// [not_before, not_after).
+func (sp ScheduleParams) InWindow(t time.Time) bool {
+	if sp.NotBefore == "" && sp.NotAfter == "" {
+		return true
+	}
+	nb, _ := parseScheduleHHMM(sp.NotBefore)
+	na, _ := parseScheduleHHMM(sp.NotAfter)
+	loc := sp.TZ
+	if loc == nil {
+		loc = time.Local
+	}
+	lt := t.In(loc)
+	m := lt.Hour()*60 + lt.Minute()
+	return m >= nb && m < na
+}
+
+// ParseScheduleParams validates a raw trigger.schedule parameter map and
+// returns the effective configuration with defaults applied. It fails
+// closed: a missing or unknown kind, missing kind-specific parameters,
+// unknown keys, non-JSON values, fractional numbers, out-of-range values,
+// unknown timezones and malformed "HH:MM" strings are all rejected.
+func ParseScheduleParams(schedule map[string]any) (ScheduleParams, error) {
+	sp := ScheduleParams{
+		TZ:             time.Local,
+		TZName:         time.Local.String(),
+		MaxCatchupRuns: DefaultMaxCatchupRuns,
+	}
+	kind := ""
+	for key, val := range schedule {
+		switch key {
+		case ScheduleParamKind:
+			k, ok := val.(string)
+			if !ok {
+				return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+					"recipes: trigger.schedule kind must be a string, got %T", val)
+			}
+			kind = k
+		case ScheduleParamTZ:
+			name, ok := val.(string)
+			if !ok {
+				return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+					"recipes: trigger.schedule tz must be a string, got %T", val)
+			}
+			loc, err := time.LoadLocation(name)
+			if err != nil {
+				return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+					"recipes: trigger.schedule tz %q is not a valid IANA timezone: %v", name, err)
+			}
+			sp.TZ = loc
+			sp.TZName = loc.String()
+		case ScheduleParamNotBefore, ScheduleParamNotAfter:
+			s, ok := val.(string)
+			if !ok {
+				return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+					"recipes: trigger.schedule %s must be an \"HH:MM\" string, got %T", key, val)
+			}
+			if _, err := parseScheduleHHMM(s); err != nil {
+				return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+					"recipes: trigger.schedule %s: %v", key, err)
+			}
+			if key == ScheduleParamNotBefore {
+				sp.NotBefore = s
+			} else {
+				sp.NotAfter = s
+			}
+		case ScheduleParamMaxCatchupRuns:
+			n, err := scheduleParamWhole(key, val)
+			if err != nil {
+				return ScheduleParams{}, err
+			}
+			if n < MinMaxCatchupRuns || n > MaxMaxCatchupRuns {
+				return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+					"recipes: trigger.schedule max_catchup_runs %d out of range [%d, %d]",
+					n, MinMaxCatchupRuns, MaxMaxCatchupRuns)
+			}
+			sp.MaxCatchupRuns = int(n)
+		case ScheduleParamAt, ScheduleParamMinute, ScheduleParamEveryMinutes:
+			// Kind-specific parameters are validated below, once the
+			// kind is known. A parameter that does not belong to the
+			// chosen kind is rejected there (fail closed).
+		default:
+			return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+				"recipes: unknown trigger.schedule parameter %q (supported: kind, at, minute, every_minutes, tz, not_before, not_after, max_catchup_runs)", key)
+		}
+	}
+	switch kind {
+	case ScheduleKindDaily:
+		sp.Kind = kind
+		at, ok := schedule[ScheduleParamAt].(string)
+		if !ok || strings.TrimSpace(at) == "" {
+			return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+				"recipes: trigger.schedule kind \"daily\" requires an \"at\" \"HH:MM\" string")
+		}
+		if _, err := parseScheduleHHMM(at); err != nil {
+			return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+				"recipes: trigger.schedule at: %v", err)
+		}
+		sp.At = at
+		if err := rejectScheduleKeys(schedule, kind, ScheduleParamMinute, ScheduleParamEveryMinutes); err != nil {
+			return ScheduleParams{}, err
+		}
+	case ScheduleKindHourly:
+		sp.Kind = kind
+		v, ok := schedule[ScheduleParamMinute]
+		if !ok {
+			return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+				"recipes: trigger.schedule kind \"hourly\" requires a \"minute\" (0-59)")
+		}
+		n, err := scheduleParamWhole(ScheduleParamMinute, v)
+		if err != nil {
+			return ScheduleParams{}, err
+		}
+		if n < MinScheduleMinute || n > MaxScheduleMinute {
+			return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+				"recipes: trigger.schedule minute %d out of range [%d, %d]",
+				n, MinScheduleMinute, MaxScheduleMinute)
+		}
+		sp.Minute = int(n)
+		if err := rejectScheduleKeys(schedule, kind, ScheduleParamAt, ScheduleParamEveryMinutes); err != nil {
+			return ScheduleParams{}, err
+		}
+	case ScheduleKindInterval:
+		sp.Kind = kind
+		v, ok := schedule[ScheduleParamEveryMinutes]
+		if !ok {
+			return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+				"recipes: trigger.schedule kind \"interval\" requires \"every_minutes\" (1-1440)")
+		}
+		n, err := scheduleParamWhole(ScheduleParamEveryMinutes, v)
+		if err != nil {
+			return ScheduleParams{}, err
+		}
+		if n < MinScheduleEveryMinutes || n > MaxScheduleEveryMinutes {
+			return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+				"recipes: trigger.schedule every_minutes %d out of range [%d, %d]",
+				n, MinScheduleEveryMinutes, MaxScheduleEveryMinutes)
+		}
+		sp.EveryMinutes = int(n)
+		if err := rejectScheduleKeys(schedule, kind, ScheduleParamAt, ScheduleParamMinute); err != nil {
+			return ScheduleParams{}, err
+		}
+	default:
+		return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+			"recipes: trigger.schedule kind must be one of \"daily\", \"hourly\", \"interval\", got %q", kind)
+	}
+	if sp.NotBefore != "" && sp.NotAfter != "" {
+		nb, _ := parseScheduleHHMM(sp.NotBefore)
+		na, _ := parseScheduleHHMM(sp.NotAfter)
+		if nb >= na {
+			return ScheduleParams{}, wire.Errorf(wire.CodeStorage,
+				"recipes: trigger.schedule not_before (%s) must be strictly before not_after (%s); overnight windows are not supported",
+				sp.NotBefore, sp.NotAfter)
+		}
+	}
+	return sp, nil
+}
+
+// rejectScheduleKeys fails closed when a kind-specific parameter from
+// another shape is present on this kind (e.g. "minute" on a daily
+// schedule): silently ignoring it would mislead the composer.
+func rejectScheduleKeys(schedule map[string]any, kind string, keys ...string) error {
+	for _, k := range keys {
+		if _, ok := schedule[k]; ok {
+			return wire.Errorf(wire.CodeStorage,
+				"recipes: trigger.schedule parameter %q does not apply to kind %q", k, kind)
+		}
+	}
+	return nil
+}
+
+// parseScheduleHHMM parses a strict "HH:MM" 24-hour wall-clock string and
+// returns minutes since midnight.
+func parseScheduleHHMM(s string) (int, error) {
+	if len(s) != 5 || s[2] != ':' {
+		return 0, fmt.Errorf("want \"HH:MM\", got %q", s)
+	}
+	hh := s[:2]
+	mm := s[3:]
+	if hh[0] < '0' || hh[0] > '9' || hh[1] < '0' || hh[1] > '9' ||
+		mm[0] < '0' || mm[0] > '9' || mm[1] < '0' || mm[1] > '9' {
+		return 0, fmt.Errorf("want \"HH:MM\", got %q", s)
+	}
+	h := int(hh[0]-'0')*10 + int(hh[1]-'0')
+	m := int(mm[0]-'0')*10 + int(mm[1]-'0')
+	if h > 23 || m > 59 {
+		return 0, fmt.Errorf("want \"HH:MM\" with HH 00-23 and MM 00-59, got %q", s)
+	}
+	return h*60 + m, nil
+}
+
+// scheduleParamWhole converts a JSON number parameter to a whole int64.
+// Fractional values are rejected: a fractional minute or catch-up count
+// is meaningless and usually a units bug.
+func scheduleParamWhole(key string, val any) (int64, error) {
+	var f float64
+	switch v := val.(type) {
+	case float64:
+		f = v
+	case float32:
+		f = float64(v)
+	case int:
+		f = float64(v)
+	case int8:
+		f = float64(v)
+	case int16:
+		f = float64(v)
+	case int32:
+		f = float64(v)
+	case int64:
+		f = float64(v)
+	case uint:
+		f = float64(v)
+	case uint8:
+		f = float64(v)
+	case uint16:
+		f = float64(v)
+	case uint32:
+		f = float64(v)
+	case uint64:
+		f = float64(v)
+	default:
+		return 0, wire.Errorf(wire.CodeStorage,
+			"recipes: trigger.schedule %s must be a JSON number, got %T", key, val)
+	}
+	if f != float64(int64(f)) {
+		return 0, wire.Errorf(wire.CodeStorage,
+			"recipes: trigger.schedule %s must be a whole number, got %v", key, val)
+	}
+	return int64(f), nil
+}
+
+// NextRun returns the next scheduled occurrence strictly after `after`,
+// evaluated in tz (nil means the schedule's own timezone, falling back to
+// the process local timezone). It is pure and deterministic: the same
+// params, timezone and `after` always yield the same instant.
+//
+//   - daily: the next HH:MM wall-clock time in tz. The occurrence is
+//     computed from the calendar date, not by adding 24h, so the wall
+//     time stays fixed across DST transitions.
+//   - hourly: the next :MM wall time. Elapsed-time arithmetic (not
+//     wall-clock arithmetic) advances past a time that has already
+//     passed, so a fall-back transition still yields every real :MM
+//     instant exactly once.
+//   - interval: the next N-minute boundary strictly after `after`,
+//     aligned to N-minute boundaries from the Unix epoch (documented
+//     choice: epoch anchoring is timezone-independent and stable across
+//     restarts and timezone changes; the schedule's tz only aligns the
+//     not_before/not_after window).
+//
+// DST behavior (inherited from Go's time package, verified
+// deterministically): a nonexistent wall time (spring-forward gap) is
+// interpreted with the pre-transition UTC offset, so the occurrence still
+// fires exactly once, at the instant the wall clock reads one hour
+// earlier under the old offset (e.g. daily 02:30 America/New_York on
+// 2026-03-08 resolves to the instant displayed as 01:30 EST). An
+// ambiguous wall time (fall-back) takes the first occurrence.
+func NextRun(params ScheduleParams, tz *time.Location, after time.Time) (time.Time, error) {
+	if tz == nil {
+		tz = params.TZ
+	}
+	if tz == nil {
+		tz = time.Local
+	}
+	switch params.Kind {
+	case ScheduleKindDaily:
+		if _, err := parseScheduleHHMM(params.At); err != nil {
+			return time.Time{}, wire.Errorf(wire.CodeStorage, "recipes: schedule at: %v", err)
+		}
+		hh, mm := params.At[:2], params.At[3:]
+		h := int(hh[0]-'0')*10 + int(hh[1]-'0')
+		m := int(mm[0]-'0')*10 + int(mm[1]-'0')
+		lt := after.In(tz)
+		cand := time.Date(lt.Year(), lt.Month(), lt.Day(), h, m, 0, 0, tz)
+		if !cand.After(after) {
+			// Advance the calendar date and re-resolve: adding 24h to
+			// the instant would drift the wall time across a DST
+			// transition.
+			cand = time.Date(lt.Year(), lt.Month(), lt.Day()+1, h, m, 0, 0, tz)
+		}
+		return cand, nil
+	case ScheduleKindHourly:
+		if params.Minute < MinScheduleMinute || params.Minute > MaxScheduleMinute {
+			return time.Time{}, wire.Errorf(wire.CodeStorage,
+				"recipes: schedule minute %d out of range [%d, %d]",
+				params.Minute, MinScheduleMinute, MaxScheduleMinute)
+		}
+		lt := after.In(tz)
+		cand := time.Date(lt.Year(), lt.Month(), lt.Day(), lt.Hour(), params.Minute, 0, 0, tz)
+		// Elapsed-time advance: each step strictly increases the
+		// instant, so this always terminates with cand after `after`,
+		// including across DST transitions.
+		for i := 0; i < 4 && !cand.After(after); i++ {
+			cand = cand.Add(time.Hour)
+		}
+		if !cand.After(after) {
+			return time.Time{}, wire.Errorf(wire.CodeInternal, "recipes: schedule hourly advance failed")
+		}
+		return cand, nil
+	case ScheduleKindInterval:
+		if params.EveryMinutes < MinScheduleEveryMinutes || params.EveryMinutes > MaxScheduleEveryMinutes {
+			return time.Time{}, wire.Errorf(wire.CodeStorage,
+				"recipes: schedule every_minutes %d out of range [%d, %d]",
+				params.EveryMinutes, MinScheduleEveryMinutes, MaxScheduleEveryMinutes)
+		}
+		n := int64(params.EveryMinutes)
+		afterMin := floorDiv(after.Unix(), 60)
+		nextMin := (floorDiv(afterMin, n) + 1) * n
+		return time.Unix(nextMin*60, 0).UTC(), nil
+	default:
+		return time.Time{}, wire.Errorf(wire.CodeStorage,
+			"recipes: unknown schedule kind %q", params.Kind)
+	}
+}
+
+// floorDiv is integer division rounding toward negative infinity (Go's /
+// truncates toward zero, which mis-anchors pre-1970 instants).
+func floorDiv(a, b int64) int64 {
+	q := a / b
+	if (a%b != 0) && ((a < 0) != (b < 0)) {
+		q--
+	}
+	return q
+}
+
 // RecipeBudgets caps what one recipe may consume. Budgets are material
 // scope: loosening a budget broadens the automation grant, so any budget
 // change invalidates prior consent (see ApplyUpdate).
@@ -332,6 +769,16 @@ type Recipe struct {
 	// Written by the routine runner after every dispatch attempt; never
 	// set by create/duplicate/import.
 	LastRun *RecipeRunInfo `json:"lastRun,omitempty"`
+	// ScheduleCursor is the last scheduled occurrence time that was
+	// dispatched or deliberately skipped (RFC3339, UTC). Nil until the
+	// scheduler has hosted this recipe. Persisted in the 0600 store: the
+	// scheduler advances it before each dispatch, so a crash, restart or
+	// rapid re-tick can never double-dispatch an occurrence, and the
+	// bounded catch-up after downtime is computed from it. It is NOT
+	// material scope — advancing it never revokes the automation grant.
+	// Pointer with omitempty so v1 records without the key still
+	// checksum-verify.
+	ScheduleCursor *time.Time `json:"scheduleCursor,omitempty"`
 	// Checksum covers the canonical encoding of every other field.
 	Checksum string `json:"checksum"`
 }
@@ -443,6 +890,41 @@ func (r Recipe) ScopeHash() string {
 			for _, k := range keys {
 				h.writeString(k)
 				h.writeString(fmt.Sprintf("%v", r.Trigger.Watch[k]))
+			}
+		}
+	}
+	if r.Trigger.Kind == TriggerSchedule {
+		// Schedule configuration is material scope: changing the shape,
+		// time, timezone, window or catch-up bound revokes the automation
+		// grant through the normal ApplyUpdate material-change rule. The
+		// schedule cursor is explicitly NOT hashed: advancing it is
+		// routine scheduler bookkeeping, not a scope change.
+		h.writeString("triggerSchedule")
+		if sp, err := ParseScheduleParams(r.Trigger.Schedule); err == nil {
+			h.writeString(sp.Kind)
+			h.writeString(sp.TZName)
+			switch sp.Kind {
+			case ScheduleKindDaily:
+				h.writeString(sp.At)
+			case ScheduleKindHourly:
+				h.writeInt64(int64(sp.Minute))
+			case ScheduleKindInterval:
+				h.writeInt64(int64(sp.EveryMinutes))
+			}
+			h.writeString(sp.NotBefore)
+			h.writeString(sp.NotAfter)
+			h.writeInt64(int64(sp.MaxCatchupRuns))
+		} else {
+			// An unvalidated record: validation rejects it, but the hash
+			// must still be deterministic, so hash the raw map canonically.
+			keys := make([]string, 0, len(r.Trigger.Schedule))
+			for k := range r.Trigger.Schedule {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				h.writeString(k)
+				h.writeString(fmt.Sprintf("%v", r.Trigger.Schedule[k]))
 			}
 		}
 	}
@@ -605,10 +1087,10 @@ func validateRecipe(r Recipe, requireContent bool) error {
 	default:
 		return wire.Errorf(wire.CodeStorage, "recipes: unknown trigger kind %q", r.Trigger.Kind)
 	}
-	// Watch parameters are validated when the trigger kind is "watch"; a
-	// non-empty watch map on any other kind is meaningless and rejected
-	// fail-closed. Schedule detail is still reserved (V22-PR05): its map
-	// must be empty.
+	// Watch parameters are validated when the trigger kind is "watch";
+	// schedule parameters when the kind is "schedule". A non-empty
+	// parameter map on any other kind is meaningless and rejected
+	// fail-closed.
 	if r.Trigger.Kind == TriggerWatch {
 		if _, err := ParseWatchParams(r.Trigger.Watch); err != nil {
 			return err
@@ -617,8 +1099,13 @@ func validateRecipe(r Recipe, requireContent bool) error {
 		return wire.Errorf(wire.CodeStorage,
 			"recipes: trigger.watch parameters require trigger kind \"watch\", got %q", r.Trigger.Kind)
 	}
-	if len(r.Trigger.Schedule) > 0 {
-		return wire.Errorf(wire.CodeStorage, "recipes: trigger.schedule parameters are not supported in schema version 1 (schedule detail lands in a later PR)")
+	if r.Trigger.Kind == TriggerSchedule {
+		if _, err := ParseScheduleParams(r.Trigger.Schedule); err != nil {
+			return err
+		}
+	} else if len(r.Trigger.Schedule) > 0 {
+		return wire.Errorf(wire.CodeStorage,
+			"recipes: trigger.schedule parameters require trigger kind \"schedule\", got %q", r.Trigger.Kind)
 	}
 	if r.Budgets.MaxBytesPerRun <= 0 || r.Budgets.MaxFilesPerRun <= 0 || r.Budgets.MaxConcurrentRuns <= 0 {
 		return wire.Errorf(wire.CodeStorage, "recipes: budgets must all be > 0 (use DefaultBudgets for the conservative defaults)")
