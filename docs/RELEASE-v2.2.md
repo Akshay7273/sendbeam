@@ -99,7 +99,7 @@ The rollback is safe **by construction**, not just by documentation:
 | gofmt                                        | new/changed files (`upgrade_rollback_test.go`, `provenance_test.go`)                                                                                 | clean (pre-existing gofmt noise in untouched wire files left alone) |
 | Hygiene sweep                                | `grep -rn "TODO\|FIXME\|XXX"` over `packages/engine/recipes`, `apps/cli/cmd/sendbeam/recipe*.go`, `apps/desktop/internal/engine/recipe*.go`          |                            **zero hits**                            |
 
-Required CI on the final head (names, from `.github/workflows/ci.yml`): `metadata & attribution hygiene`, `web (lint, typecheck, test, build)`, `e2e (chromium, firefox)`, `<module> (vet, test, build)` for `packages/wire`, `packages/engine`, `apps/cli`, `apps/server`, `desktop (server gates + window build)`, `branding (no stale SendArc references)`, `container (build + smoke)`, `differential parity (Go <-> TS)`, `Scorecard analysis`. All must be green before merge of #225.
+Required CI on the final head (names, from `.github/workflows/ci.yml`): `metadata & attribution hygiene`, `web (lint, typecheck, test, build)`, `e2e (chromium, firefox)`, `<module> (vet, test, build)` for `packages/wire`, `packages/engine`, `apps/cli`, `apps/server`, `desktop (server gates + window build)`, `branding (no stale pre-rename references)`, `container (build + smoke)`, `differential parity (Go <-> TS)`, `Scorecard analysis`. All must be green before merge of #225.
 
 ---
 
