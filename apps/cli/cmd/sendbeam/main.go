@@ -52,6 +52,8 @@ func main() {
 		os.Exit(runListen(os.Args[2:]))
 	case "transfers":
 		os.Exit(runTransfers(os.Args[2:]))
+	case "outbox":
+		os.Exit(runOutbox(os.Args[2:], os.Stdout, os.Stderr))
 	case "diagnose":
 		os.Exit(runDiagnose(os.Args[2:]))
 	case "update":
@@ -81,6 +83,7 @@ func usage(w *os.File) {
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam unpair")+" <device> [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam listen")+" [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam transfers")+" <list|inspect|resume|discard> [flags]")
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam outbox")+" <enqueue|list|show|dispatch|cancel|retry> [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam diagnose")+" [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam update")+" [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam version"))
@@ -173,8 +176,8 @@ func runReceive(args []string) int {
 		Private:        *privateMode || *requirePadding,
 		RequirePadding: *requirePadding,
 		RelayJitter:    *jitter,
-		ICEServers:  ice,
-		OnTransport: transportPrinter,
+		ICEServers:     ice,
+		OnTransport:    transportPrinter,
 		OnManifestSet: func(manifest wire.Manifest) {
 			progress.setTotal(manifest.TotalSize)
 			files := make([]progressFile, len(manifest.Files))

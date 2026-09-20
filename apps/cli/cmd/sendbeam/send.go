@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -318,40 +317,10 @@ func runBroadcastSend(filePaths []string, toDevices []string, server string, ins
 		return 1
 	}
 
-	type resolvedDev struct {
-		targetName string
-		record     *wire.TrustRecord
-		kPair      []byte
-		peerPubKey ed25519.PublicKey
-	}
-	var resolved []resolvedDev
-
-	for _, tName := range toDevices {
-		dev, err := ResolveDevice(ctx, env.TrustStore, tName)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "sendbeam send: %v\n", err)
-			return 1
-		}
-		if dev.Revoked || (env.Tombstones != nil && env.Tombstones.HasTombstone(ctx, dev.DeviceID)) {
-			_, _ = fmt.Fprintf(stderr, "sendbeam send: trust for device %q is revoked\n", dev.LocalLabel)
-			return 1
-		}
-		kPair, err := env.Secrets.ResolvePairSecret(ctx, dev.DeviceID, dev.PairCredentialRef)
-		if err != nil || len(kPair) == 0 {
-			_, _ = fmt.Fprintf(stderr, "sendbeam send: failed to resolve pair secret for device %q: %v\n", dev.LocalLabel, err)
-			return 1
-		}
-		peerPubKey, err := wire.ParsePublicKeyHex(dev.PublicKey)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "sendbeam send: invalid public key for device %q: %v\n", dev.LocalLabel, err)
-			return 1
-		}
-		resolved = append(resolved, resolvedDev{
-			targetName: tName,
-			record:     dev,
-			kPair:      kPair,
-			peerPubKey: peerPubKey,
-		})
+	resolved, err := resolveSendTargets(ctx, env, toDevices)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam send: %v\n", err)
+		return 1
 	}
 
 	s := newStyleFromWriter(stderr)
@@ -368,52 +337,16 @@ func runBroadcastSend(filePaths []string, toDevices []string, server string, ins
 		dialWriter = io.Discard
 	}
 
-	replayCache := wire.NewNonceReplayCache(5 * time.Minute)
-
-	targets := make([]transfer.BroadcastTarget, len(resolved))
-	for i, r := range resolved {
-		rec := r.record
-		kPair := r.kPair
-		peerPubKey := r.peerPubKey
-
-		handle := wire.DeriveRendezvousHandleForTime(kPair, time.Now().UTC(), wire.DefaultRendezvousEpochWindow)
-
-		opaqueOpts := &rendezvous.OpaqueOptions{
-			Role:              rendezvous.RoleOfferer,
-			Handle:            handle,
-			LocalIdentity:     localID,
-			PeerDeviceID:      rec.DeviceID,
-			PeerPublicKey:     peerPubKey,
-			KPair:             kPair,
-			PairCredentialRef: rec.PairCredentialRef,
-			LocalCaps:         []string{"sendbeam/3", "rendezvous", "resume"},
-			ReplayCache:       replayCache,
-			Tombstones:        env.Tombstones,
-			TrustStore:        env.TrustStore,
-		}
-
-		requirePad := requirePadding || rec.Policy.RequirePadding
-		spec := transfer.Spec{
-			Opaque:         opaqueOpts,
-			PeerDeviceID:   rec.DeviceID,
-			PeerLabel:      rec.LocalLabel,
-			Sources:        sources,
-			ICEServers:     ice,
-			ForceRelay:     relayOnly,
-			Private:        privateMode || requirePad,
-			RequirePadding: requirePad,
-			RelayJitter:    jitter,
-		}
-
-		targets[i] = transfer.BroadcastTarget{
-			ID:    rec.DeviceID,
-			Label: rec.LocalLabel,
-			Dial: func(dialCtx context.Context) (transfer.Signal, error) {
-				return dial(dialCtx, server, insecure, dialWriter)
-			},
-			Spec: spec,
-		}
-	}
+	targets := buildBroadcastTargets(env, localID, resolved, sources, targetSendConfig{
+		server:         server,
+		insecure:       insecure,
+		relayOnly:      relayOnly,
+		ice:            ice,
+		privateMode:    privateMode,
+		requirePadding: requirePadding,
+		jitter:         jitter,
+		dialWriter:     dialWriter,
+	})
 
 	broadcastResult := transfer.RunBroadcast(ctx, targets, transfer.BroadcastOptions{
 		Concurrency:   concurrency,
