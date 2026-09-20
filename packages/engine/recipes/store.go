@@ -125,6 +125,26 @@ func (s *RecipeStore) RecordRun(recipeID string, info RecipeRunInfo) error {
 	return s.Save(r)
 }
 
+// AdvanceScheduleCursor sets the recipe's schedule cursor — the last
+// scheduled occurrence time that was dispatched or deliberately skipped —
+// and saves it through the normal validated path (UpdatedAt refreshed,
+// checksum recomputed). The cursor is scheduler bookkeeping, not material
+// scope: advancing it never revokes the automation grant. The scheduler
+// advances the cursor BEFORE dispatching each occurrence, so a crash,
+// restart or rapid re-tick can never double-dispatch an occurrence.
+func (s *RecipeStore) AdvanceScheduleCursor(recipeID string, cursor time.Time) error {
+	r, ok, err := s.Load(recipeID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return wire.Errorf(wire.CodeStorage, "recipes: no recipe %q", recipeID)
+	}
+	c := cursor.UTC()
+	r.ScheduleCursor = &c
+	return s.Save(r)
+}
+
 // Delete removes one recipe, idempotently and bounded to that recipe: it
 // never touches other recipes. Only explicit user action calls this.
 func (s *RecipeStore) Delete(id string) error {

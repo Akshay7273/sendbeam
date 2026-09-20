@@ -54,6 +54,8 @@ func runRecipe(args []string, stdout, stderr io.Writer) int {
 		return runRecipeRun(args[1:], stdout, stderr)
 	case "watch":
 		return runRecipeWatch(args[1:], stdout, stderr)
+	case "scheduler":
+		return runRecipeScheduler(args[1:], stdout, stderr)
 	case "export":
 		return runRecipeExport(args[1:], stdout, stderr)
 	case "import":
@@ -85,6 +87,7 @@ func recipeUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe preview")+" <id> [--json]   "+s.dim("(dry-run: sends nothing)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe run")+" <id> [--json]       "+s.dim("(explicit one-shot: enqueues one job)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe watch")+" <id>              "+s.dim("(foreground: dispatch on watched-folder changes until Ctrl+C)"))
+	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe scheduler")+"              "+s.dim("(foreground: run due schedule-triggered recipes until Ctrl+C)"))
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe export")+" <id> [--out FILE]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam recipe import")+" <file>")
 	_, _ = fmt.Fprintln(w)
@@ -255,6 +258,20 @@ func runRecipeShow(args []string, stdout, stderr io.Writer) int {
 		}
 		_, _ = fmt.Fprintf(stdout, "Grant scope: %s (%s)\n", shortScopeHash(r.Grant.ScopeHash), match)
 	}
+	if r.Trigger.Kind == recipes.TriggerSchedule {
+		if sp, err := recipes.ParseScheduleParams(r.Trigger.Schedule); err != nil {
+			_, _ = fmt.Fprintf(stdout, "Next run: schedule is invalid (%v).\n", err)
+		} else if next, err := recipes.NextRun(sp, nil, time.Now()); err != nil {
+			_, _ = fmt.Fprintf(stdout, "Next run: error: %v.\n", err)
+		} else {
+			_, _ = fmt.Fprintf(stdout, "Next run: %s.\n", next.Format("2006-01-02 15:04 MST"))
+		}
+		if r.ScheduleCursor == nil {
+			_, _ = fmt.Fprintln(stdout, "Cursor: none yet (adopts on first scheduler tick)")
+		} else {
+			_, _ = fmt.Fprintf(stdout, "Cursor: %s.\n", r.ScheduleCursor.Format("2006-01-02 15:04:05 MST"))
+		}
+	}
 	if r.LastRun == nil {
 		_, _ = fmt.Fprintln(stdout, "Last run: none recorded")
 	} else {
@@ -270,6 +287,64 @@ func runRecipeShow(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stdout, line)
 	}
 	return 0
+}
+
+// parseScheduleParamsFlag parses a --schedule-params JSON object flag and
+// validates it as schedule parameters. An empty flag returns nil.
+func parseScheduleParamsFlag(raw string) (map[string]any, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil, fmt.Errorf("invalid --schedule-params JSON: %v", err)
+	}
+	if _, err := recipes.ParseScheduleParams(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// applyTriggerFlags wires --trigger/--schedule-params onto a recipe being
+// created or edited. It fails closed: schedule params without
+// --trigger schedule (and vice versa) are rejected.
+func applyTriggerFlags(cmd, trigger string, scheduleParams string, r *recipes.Recipe) error {
+	sp, err := parseScheduleParamsFlag(scheduleParams)
+	if err != nil {
+		return err
+	}
+	if trigger == "" {
+		// Edit path: params may be updated on a schedule trigger without
+		// restating the kind.
+		if sp == nil {
+			return nil
+		}
+		if r.Trigger.Kind != recipes.TriggerSchedule {
+			return fmt.Errorf("%s: --schedule-params needs a schedule trigger (use --trigger schedule)", cmd)
+		}
+		r.Trigger.Schedule = sp
+		return nil
+	}
+	switch trigger {
+	case "manual":
+		if sp != nil {
+			return fmt.Errorf("%s: --schedule-params needs --trigger schedule", cmd)
+		}
+		r.Trigger.Kind = recipes.TriggerManual
+		r.Trigger.Schedule = nil
+	case "schedule":
+		if sp == nil {
+			if r.Trigger.Kind == recipes.TriggerSchedule && r.Trigger.Schedule != nil {
+				return nil // create never hits this; edit keeps existing params
+			}
+			return fmt.Errorf("%s: --trigger schedule needs --schedule-params JSON", cmd)
+		}
+		r.Trigger.Kind = recipes.TriggerSchedule
+		r.Trigger.Schedule = sp
+	default:
+		return fmt.Errorf("%s: unknown --trigger %q (manual or schedule)", cmd, trigger)
+	}
+	return nil
 }
 
 func runRecipeCreate(args []string, stdout, stderr io.Writer) int {
@@ -291,6 +366,8 @@ func runRecipeCreate(args []string, stdout, stderr io.Writer) int {
 	recursive := fs.Bool("recursive", true, "descend into directory sources (set false for top level only)")
 	budgetBytes := fs.Int64("budget-bytes", 0, "max bytes per run (0 = default 10 GiB)")
 	budgetFiles := fs.Int64("budget-files", 0, "max files per run (0 = default 10000)")
+	trigger := fs.String("trigger", "manual", "trigger kind: manual or schedule")
+	scheduleParams := fs.String("schedule-params", "", `schedule parameters as JSON, e.g. '{"kind":"daily","at":"14:30","tz":"Asia/Calcutta"}'`)
 	configDir := fs.String("config-dir", "", "path to custom configuration directory")
 	_ = parseArgs(fs, args)
 
@@ -342,6 +419,10 @@ func runRecipeCreate(args []string, stdout, stderr io.Writer) int {
 	if *budgetFiles > 0 {
 		r.Budgets.MaxFilesPerRun = *budgetFiles
 	}
+	if err := applyTriggerFlags("sendbeam recipe create", *trigger, *scheduleParams, &r); err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe create: %v\n", err)
+		return 2
+	}
 	r.Grant.ScopeHash = r.ScopeHash()
 
 	// Validate recipients against the trust store at create time: a
@@ -387,6 +468,8 @@ func runRecipeEdit(args []string, stdout, stderr io.Writer) int {
 	recursive := fs.Bool("recursive", true, "added directory sources descend recursively")
 	budgetBytes := fs.Int64("budget-bytes", 0, "set max bytes per run (0 = unchanged)")
 	budgetFiles := fs.Int64("budget-files", 0, "set max files per run (0 = unchanged)")
+	trigger := fs.String("trigger", "", "set trigger kind: manual or schedule (empty = unchanged)")
+	scheduleParams := fs.String("schedule-params", "", `set schedule parameters as JSON, e.g. '{"kind":"daily","at":"14:30","tz":"Asia/Calcutta"}'`)
 	configDir := fs.String("config-dir", "", "path to custom configuration directory")
 	positionals := parseArgs(fs, args)
 	if len(positionals) != 1 {
@@ -490,6 +573,10 @@ func runRecipeEdit(args []string, stdout, stderr io.Writer) int {
 		r.Budgets.MaxFilesPerRun = *budgetFiles
 	}
 
+	if err := applyTriggerFlags("sendbeam recipe edit", *trigger, *scheduleParams, &r); err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe edit: %v\n", err)
+		return 2
+	}
 	// ValidateRecipients at edit time too: trust may have changed since
 	// the recipe was composed.
 	if err := recipes.ValidateRecipients(ctx, env.TrustStore, r); err != nil {
@@ -985,5 +1072,105 @@ func runRecipeImport(args []string, stdout, stderr io.Writer) int {
 	_, _ = fmt.Fprintf(stdout, "%s recipe %q (id %s).\n", s.green("Imported"), r.Name, s.cyan(shortRecipeID(r.ID)))
 	_, _ = fmt.Fprintf(stdout, "  Status: %s — imports never run automatically. Review, edit, then %s.\n",
 		s.yellow(string(r.Status)), s.cyan("sendbeam recipe approve "+shortRecipeID(r.ID)))
+	return 0
+}
+
+// runRecipeScheduler implements `sendbeam recipe scheduler`: it hosts every
+// enabled schedule-triggered recipe in the foreground and runs due
+// occurrences, until SIGINT/SIGTERM. There is no daemon and no cron: the
+// scheduler is an ordinary foreground process the user starts and stops.
+func runRecipeScheduler(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("recipe scheduler", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configDir := fs.String("config-dir", "", "path to custom configuration directory")
+	positionals := parseArgs(fs, args)
+	if len(positionals) != 0 {
+		_, _ = fmt.Fprintln(stderr, "sendbeam recipe scheduler: takes no arguments")
+		fs.Usage()
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return scheduleRecipes(ctx, *configDir, stdout, stderr)
+}
+
+// scheduleRecipes is the testable body of `sendbeam recipe scheduler`: it
+// builds the recipe runner and scheduler, prints scheduler events, and
+// blocks until ctx is cancelled. SIGINT/SIGTERM cancels ctx and the stop is
+// clean (exit 0).
+func scheduleRecipes(ctx context.Context, configDir string, stdout, stderr io.Writer) int {
+	env, err := InitCLIEnvironment(configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe scheduler: %v\n", err)
+		return 1
+	}
+	store, err := openRecipeStore(configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe scheduler: %v\n", err)
+		return 1
+	}
+	jobStore, err := openOutboxStore(configDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe scheduler: %v\n", err)
+		return 1
+	}
+	runner := recipes.NewRunner(
+		recipes.RunDeps{Store: store, Trust: env.TrustStore},
+		outboxEnqueuer{ob: outbox.New(jobStore, nil)},
+		recipes.RunnerOptions{},
+	)
+	s := newStyleFromWriter(stdout)
+	sched, err := recipes.NewScheduler(store, runner, recipes.ScheduleOptions{
+		OnEvent: func(evt recipes.ScheduleEvent) {
+			ts := time.Now().Format("15:04:05")
+			id := shortRecipeID(evt.RecipeID)
+			detail := evt.Detail
+			if detail == "" && evt.Err != nil {
+				detail = evt.Err.Error()
+			}
+			name := evt.Name
+			if name == "" {
+				name = id
+			}
+			switch evt.Kind {
+			case recipes.ScheduleEventDue:
+				_, _ = fmt.Fprintf(stdout, "%s due: %q (%s)\n", ts, name, detail)
+			case recipes.ScheduleEventDispatching:
+				_, _ = fmt.Fprintf(stdout, "%s dispatching: %q\n", ts, name)
+			case recipes.ScheduleEventDispatched:
+				_, _ = fmt.Fprintf(stdout, "%s dispatched: %q via schedule (job %s)\n", ts, name, shortJobID(evt.JobID))
+			case recipes.ScheduleEventRefused:
+				_, _ = fmt.Fprintf(stdout, "%s refused: %q — %s\n", ts, name, detail)
+			case recipes.ScheduleEventSkipped:
+				_, _ = fmt.Fprintf(stdout, "%s skipped: %q — %s\n", ts, name, detail)
+			case recipes.ScheduleEventCatchup:
+				_, _ = fmt.Fprintf(stdout, "%s catch-up: %q — %s\n", ts, name, detail)
+			case recipes.ScheduleEventError:
+				_, _ = fmt.Fprintf(stderr, "%s scheduler error: %s\n", ts, detail)
+			}
+		},
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe scheduler: %v\n", err)
+		return 1
+	}
+	if err := sched.Start(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "sendbeam recipe scheduler: %v\n", err)
+		return 1
+	}
+	defer func() { _ = sched.Stop() }()
+	hosts := sched.Hosts()
+	if len(hosts) == 0 {
+		_, _ = fmt.Fprintf(stdout, "%s (no enabled schedule-triggered recipes — Ctrl+C to stop)\n",
+			s.bold("Scheduler running."))
+	} else {
+		_, _ = fmt.Fprintf(stdout, "%s hosting %d schedule-triggered recipe(s) — Ctrl+C to stop.\n",
+			s.bold("Scheduler running,"), len(hosts))
+		for id, sp := range hosts {
+			_, _ = fmt.Fprintf(stdout, "  - %s: %s\n", s.cyan(shortRecipeID(id)), sp.HumanWords())
+		}
+	}
+	<-ctx.Done()
+	_, _ = fmt.Fprintf(stdout, "%s\n", s.dim("Scheduler stopped."))
 	return 0
 }

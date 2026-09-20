@@ -329,3 +329,75 @@ func TestRecipeServiceWatch(t *testing.T) {
 		t.Fatalf("StopWatch unknown id: %v", err)
 	}
 }
+
+// TestRecipeServiceSchedulerLifecycle covers the desktop in-process
+// scheduler: it starts stopped, hosts schedule-triggered recipes after
+// StartScheduler, rejects a second start, and stops cleanly (idempotent).
+// Scheduling is per-process: nothing outlives StopScheduler.
+func TestRecipeServiceSchedulerLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	ts := trust.NewMemoryTrustStore()
+	devID := seedRecipeTrust(t, ts)
+
+	svc, err := NewRecipeService(dir, ts)
+	if err != nil {
+		t.Fatalf("NewRecipeService: %v", err)
+	}
+	// Stop before start is a no-op.
+	if err := svc.StopScheduler(); err != nil {
+		t.Fatalf("StopScheduler before start: %v", err)
+	}
+	if svc.SchedulerRunning() {
+		t.Fatalf("scheduler reports running before StartScheduler")
+	}
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("data"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	now := time.Now().UTC()
+	r, err := recipes.NewRecipe("Scheduled", now)
+	if err != nil {
+		t.Fatalf("NewRecipe: %v", err)
+	}
+	r.Sources = []recipes.RecipeSource{{Path: root, Recursive: true}}
+	r.Recipients = []recipes.RecipeRecipient{{DeviceID: devID, Label: "studio"}}
+	r.Status = recipes.RecipeManual
+	r.Trigger.Kind = recipes.TriggerSchedule
+	r.Trigger.Schedule = map[string]any{"kind": "interval", "every_minutes": 1}
+	r.Grant.ScopeHash = r.ScopeHash()
+	if err := recipes.GrantAutomation(&r, now); err != nil {
+		t.Fatalf("GrantAutomation: %v", err)
+	}
+	if err := svc.store.Save(r); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if err := svc.StartScheduler(); err != nil {
+		t.Fatalf("StartScheduler: %v", err)
+	}
+	if !svc.SchedulerRunning() {
+		t.Fatalf("scheduler not running after StartScheduler")
+	}
+	// The synchronous first tick in Start has already rescanned, so the
+	// recipe is hosted deterministically.
+	if hosts := svc.scheduler.Hosts(); len(hosts) != 1 {
+		t.Fatalf("hosted recipes = %d, want 1", len(hosts))
+	} else if sp := hosts[r.ID]; sp.Kind != "interval" || sp.EveryMinutes != 1 {
+		t.Fatalf("hosted params = %+v", sp)
+	}
+	if err := svc.StartScheduler(); err == nil {
+		t.Fatalf("second StartScheduler did not error")
+	}
+
+	if err := svc.StopScheduler(); err != nil {
+		t.Fatalf("StopScheduler: %v", err)
+	}
+	if svc.SchedulerRunning() {
+		t.Fatalf("scheduler still running after StopScheduler")
+	}
+	// Idempotent.
+	if err := svc.StopScheduler(); err != nil {
+		t.Fatalf("second StopScheduler: %v", err)
+	}
+}

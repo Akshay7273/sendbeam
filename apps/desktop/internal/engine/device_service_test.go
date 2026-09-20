@@ -449,5 +449,3 @@ func TestDeviceService_StartPairingOffer_AndPairDevice_Loopback(t *testing.T) {
 		t.Fatalf("expected svcB trusted device label 'Offerer Workstation', got %q", devsB[0].LocalLabel)
 	}
 }
-
-

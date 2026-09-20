@@ -34,12 +34,14 @@ import (
 // one-shot runs. It never dispatches by itself: RunRecipe enqueues one
 // ordinary outbox job; the existing transfer machinery sends it.
 //
-// Automated dispatch (watched-folder triggers) runs through the service's
-// own routine runner and one in-process Watcher per watched recipe,
-// tracked in watchers. This is deliberately per-process: there is no
-// daemon yet, so watches live only as long as the desktop process does —
-// the CLI `recipe watch` foreground command covers headless use, and a
-// real background service is future work (V22-PR08 packaging).
+// Automated dispatch runs through the service's own routine runner:
+// watched-folder triggers get one in-process Watcher per watched recipe
+// (tracked in watchers), and schedule triggers get one in-process
+// Scheduler (scheduler). Both are deliberately per-process: there is no
+// daemon yet, so automated runs live only as long as the desktop process
+// does — the CLI `recipe watch` / `recipe scheduler` foreground commands
+// cover headless use, and a real background service is future work
+// (V22-PR08 packaging).
 type RecipeService struct {
 	mu       sync.Mutex
 	store    *recipes.RecipeStore
@@ -48,7 +50,12 @@ type RecipeService struct {
 	outbox   *outbox.Outbox
 	runner   *recipes.Runner
 	watchers map[string]*recipes.Watcher
-	nowFunc  func() time.Time
+	// scheduler hosts every enabled schedule-triggered recipe in this
+	// process between StartScheduler and StopScheduler; nil when not
+	// started. schedCancel stops the scheduler's context.
+	scheduler   *recipes.Scheduler
+	schedCancel context.CancelFunc
+	nowFunc     func() time.Time
 }
 
 // NewRecipeService opens the recipe and job stores under customConfigDir
@@ -271,6 +278,55 @@ func (s *RecipeService) StopAllWatches() {
 	for _, w := range watchers {
 		_ = w.Stop()
 	}
+}
+
+// StartScheduler hosts every enabled schedule-triggered recipe in this
+// desktop process and runs due occurrences (with bounded catch-up)
+// until StopScheduler. The desktop app calls this once during startup;
+// schedules are per-process and stop with it. Starting twice is an error.
+func (s *RecipeService) StartScheduler() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.scheduler != nil {
+		return fmt.Errorf("recipe service: scheduler already started")
+	}
+	sched, err := recipes.NewScheduler(s.store, s.runner, recipes.ScheduleOptions{})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := sched.Start(ctx); err != nil {
+		cancel()
+		return err
+	}
+	s.scheduler = sched
+	s.schedCancel = cancel
+	return nil
+}
+
+// StopScheduler ends in-process schedule hosting: due occurrences stop
+// firing and no scheduler goroutine survives. It is idempotent and safe
+// on a service whose scheduler never started.
+func (s *RecipeService) StopScheduler() error {
+	s.mu.Lock()
+	sched := s.scheduler
+	cancel := s.schedCancel
+	s.scheduler = nil
+	s.schedCancel = nil
+	s.mu.Unlock()
+	if sched == nil {
+		return nil
+	}
+	defer cancel()
+	return sched.Stop()
+}
+
+// SchedulerRunning reports whether the in-process schedule scheduler is
+// currently started.
+func (s *RecipeService) SchedulerRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.scheduler != nil
 }
 
 // LastRun returns the recipe's last-run ledger entry — the most recent

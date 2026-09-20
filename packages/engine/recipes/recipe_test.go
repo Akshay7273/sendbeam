@@ -748,16 +748,21 @@ func TestValidateRecipeRejects(t *testing.T) {
 			}
 		})
 	}
-	// Empty watch/schedule maps are fine: empty watch params mean defaults,
-	// and the schedule map is still reserved (must stay empty).
+	// Empty watch maps are fine (defaults apply); an empty schedule map is
+	// not: kind is required, so a schedule trigger without parameters
+	// fails closed.
 	r := base()
 	r.Trigger.Kind = TriggerWatch
 	if err := ValidateRecipe(r); err != nil {
 		t.Errorf("empty watch map (defaults) must validate: %v", err)
 	}
 	r.Trigger.Kind = TriggerSchedule
+	if err := ValidateRecipe(r); err == nil {
+		t.Errorf("empty schedule map must not validate (kind is required)")
+	}
+	r.Trigger.Schedule = map[string]any{"kind": "interval", "every_minutes": 30}
 	if err := ValidateRecipe(r); err != nil {
-		t.Errorf("empty reserved schedule map must validate: %v", err)
+		t.Errorf("valid schedule params must validate: %v", err)
 	}
 	// Strict decode rejects unknown fields.
 	data, err := Export(base())

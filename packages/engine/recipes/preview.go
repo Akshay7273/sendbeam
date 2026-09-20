@@ -65,7 +65,10 @@ func triggerText(r Recipe) string {
 		}
 		return "watch (invalid parameters)"
 	case TriggerSchedule:
-		return "schedule (parameters reserved; not active in schema v1)"
+		if sp, err := ParseScheduleParams(r.Trigger.Schedule); err == nil {
+			return fmt.Sprintf("schedule (%s)", sp.HumanWords())
+		}
+		return "schedule (invalid parameters)"
 	default:
 		return string(r.Trigger.Kind)
 	}
