@@ -20,8 +20,10 @@ import {
   crc32Update,
   dataDescriptor,
   endOfCentralDirectory,
+  entryNeedsZip64,
   localHeader,
   type ZipEntry,
+  zip64Limits,
 } from './zip.js';
 import type { ReceiveDestinationSpec } from './wire.js';
 import type { Sha256DigestFactory } from './digest.js';
@@ -335,13 +337,12 @@ export class ArchiveDestination implements BrowserDestination {
 
   async prepare(manifest: Manifest): Promise<void> {
     const namesSize = manifest.files.reduce(
-      (total, file) => total + new TextEncoder().encode(file.name).length * 2 + 92,
+      (total, file) => total + new TextEncoder().encode(file.name).length * 2 + 120,
       22,
     );
+    // ZIP64 removed the 4 GiB ceiling: entries at/above zip64Limits.size take the 64-bit
+    // record path, and the archive stays a single streaming pass.
     const archiveSize = manifest.totalSize + namesSize;
-    if (archiveSize > 0xffffffff || manifest.files.some((file) => file.size > 0xffffffff)) {
-      throw new TransferError('sink_error', 'ZIP fallback is limited to 4 GiB; choose a folder');
-    }
     await ensureQuota(archiveSize);
     const top = manifest.files[0]!.name.split('/')[0]!;
     if (manifest.files.every((file) => file.name.startsWith(`${top}/`))) this.name = `${top}.zip`;
@@ -355,7 +356,7 @@ export class ArchiveDestination implements BrowserDestination {
     if (!this.writable || this.active) throw new TransferError('sink_error', 'ZIP entry state');
     const name = new TextEncoder().encode(normalizeTransferPath(file.name));
     const offset = this.position;
-    await this.append(localHeader(name));
+    await this.append(localHeader(name, file.size));
     const entry = new ArchiveEntrySink(this, name, offset, file.size);
     this.active = entry;
     return entry;
@@ -365,9 +366,15 @@ export class ArchiveDestination implements BrowserDestination {
     if (!this.writable || this.active)
       throw new TransferError('sink_error', 'ZIP not ready to close');
     const centralOffset = this.position;
-    for (const entry of this.entries) await this.append(centralHeader(entry));
+    let zip64 =
+      this.entries.length > zip64Limits.count || centralOffset > zip64Limits.size;
+    for (const entry of this.entries) {
+      zip64 ||= entryNeedsZip64(entry);
+      await this.append(centralHeader(entry));
+    }
     const centralSize = this.position - centralOffset;
-    await this.append(endOfCentralDirectory(this.entries.length, centralSize, centralOffset));
+    zip64 ||= centralSize > zip64Limits.size;
+    await this.append(endOfCentralDirectory(this.entries.length, centralSize, centralOffset, zip64));
     await this.writable.close();
   }
 
@@ -557,10 +564,11 @@ export class MemoryBlobDestination implements BrowserDestination {
     for (const file of this.files) {
       const name = new TextEncoder().encode(normalizeTransferPath(file.name));
       const bytes = this.sinks.get(file.idx)?.bytes() ?? new Uint8Array(0);
-      const lHeader = localHeader(name);
+      const lHeader = localHeader(name, bytes.length);
       parts.push(lHeader);
       parts.push(bytes);
-      const crc = crc32Update(0, bytes);
+      // Standard CRC32: init 0xFFFFFFFF, final XOR (the streaming sink does the same).
+      const crc = (crc32Update(0xffffffff, bytes) ^ 0xffffffff) >>> 0;
       const desc = dataDescriptor(crc, bytes.length);
       parts.push(desc);
       entries.push({ name, crc, size: bytes.length, offset });
@@ -573,7 +581,8 @@ export class MemoryBlobDestination implements BrowserDestination {
       offset += ch.length;
     }
     const centralSize = offset - centralOffset;
-    parts.push(endOfCentralDirectory(entries.length, centralSize, centralOffset));
+    // Bounded by MAX_IN_MEMORY_STREAM_BYTES: ZIP64 can never trigger here.
+    parts.push(endOfCentralDirectory(entries.length, centralSize, centralOffset, false));
 
     const top = this.files[0]!.name.split('/')[0]!;
     const name = this.files.every((f) => f.name.startsWith(`${top}/`))
