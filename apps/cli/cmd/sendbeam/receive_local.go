@@ -60,7 +60,7 @@ func runLocalOnlyReceive(env *CLIEnvironment, outDir, bindAddr string, requirePa
 		_, _ = fmt.Fprintf(stderr, "sendbeam receive: listen on %s: %v\n", bind, err)
 		return 1
 	}
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 
 	s := newStyleFromWriter(stderr)
 	_, _ = fmt.Fprintf(stdout, "network policy: local-only (no public signaling, STUN/TURN, or relay contacted)\n")

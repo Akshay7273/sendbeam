@@ -95,7 +95,7 @@ func executePairLocalInvite(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "error: start local rendezvous: %v\n", err)
 		return 1
 	}
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 	id, err := env.IdentityMgr.GetOrCreateIdentity()
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)

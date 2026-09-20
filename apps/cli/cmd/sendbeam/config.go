@@ -26,13 +26,13 @@ func executeConfig(args []string, stdout, stderr io.Writer) int {
 	}
 	env, err := InitCLIEnvironment(*configDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	if *set != "" {
 		p, err := netpolicy.Parse(*set)
 		if err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 			return 2
 		}
 		s := loadCLISettings(env.ConfigDir)
