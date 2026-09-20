@@ -7,13 +7,13 @@ Applies to: `packages/engine/recipes` (new), `packages/engine/trust`, `packages/
 ## 1. Context
 
 v2.0 made handoffs manageable: durable jobs, a local outbox, a transfer
-center. v2.1 made them independent of the internet. v2.2 makes *repeated*
+center. v2.1 made them independent of the internet. v2.2 makes _repeated_
 handoffs easier without surrendering control: save "Export folder →
 Studio laptop", preview it, run it once, then optionally enable a bounded
 native routine (watcher/schedule) that dispatches it automatically.
 
 Before any scheduling exists, v2.2 needs a small, local, reviewable
-workflow model — the *recipe* — plus an explicit automation grant model
+workflow model — the _recipe_ — plus an explicit automation grant model
 that answers: "who said this may run by itself, for exactly what scope,
 and what invalidates that permission?" This ADR defines the schema, the
 grant lifecycle, and the trust boundaries. V22-PR02–08 build on it
@@ -81,12 +81,12 @@ effective network policy, require-padding, filters, expiry, budgets.
 The grant records the `scopeHash` the consent was given for, and
 `ValidateRecipe` requires an asserted `autoSend` grant to carry a
 non-zero `grantedAt`, a positive `consentVersion`, and a `scopeHash`
-matching the *current* scope — a grant can never be smuggled in or
+matching the _current_ scope — a grant can never be smuggled in or
 survive a scope change through the edit path.
 
 `ApplyUpdate` enforces the material-change rule:
 
-- Scope changed (new recipient, widened source, looser *or tighter*
+- Scope changed (new recipient, widened source, looser _or tighter_
   budget, policy/padding/filter/trigger/expiry change) →
   `consentVersion` bumped, `autoSend=false`, `grantedAt` zeroed,
   status forced to `approval-required`. Budgets are material in both
