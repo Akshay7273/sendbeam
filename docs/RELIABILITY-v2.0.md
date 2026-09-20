@@ -46,14 +46,14 @@ cd ../wire       && go test -run 'TestReliability_' -v -count=1 .
 
 ## Environment
 
-| Field | Value |
-|---|---|
-| Hardware | AMD EPYC 9D25 126-Core (2 vCPUs visible to the VM), 7.7 GiB RAM |
-| OS | Linux 7.0.0-38-generic x86_64 (Ubuntu-based) |
-| Runtime | Go 1.25.5, `go test` without `-race` |
-| Network | loopback only — no real NAT traversal, no WAN, no Wi-Fi/cellular |
+| Field     | Value                                                                       |
+| --------- | --------------------------------------------------------------------------- |
+| Hardware  | AMD EPYC 9D25 126-Core (2 vCPUs visible to the VM), 7.7 GiB RAM             |
+| OS        | Linux 7.0.0-38-generic x86_64 (Ubuntu-based)                                |
+| Runtime   | Go 1.25.5, `go test` without `-race`                                        |
+| Network   | loopback only — no real NAT traversal, no WAN, no Wi-Fi/cellular            |
 | Transport | WebRTC DataChannel (host candidates, loopback) + in-process signaling relay |
-| Date | 2026-09-20 |
+| Date      | 2026-09-20                                                                  |
 
 ## Results
 
@@ -62,15 +62,15 @@ per-transfer WebRTC session setup on loopback in this sandbox, so small
 workloads are setup-dominated; the large-file row shows the engine's
 marginal rate.
 
-| Scenario | Workload | Budget | Measured | Verdict |
-|---|---|---|---|---|
-| large-file | 1 × 256 MiB | complete < 600 s, digest match | 13.1 s, 19.5 MiB/s overall (~120 MiB/s marginal), sender/receiver digests match, byte-identical | **PASS** |
-| tiny-file-set | 200 × 1 KiB | complete < 600 s, all digests match | 11.3 s, all 200 files byte-identical, digests match | **PASS** |
-| concurrent-recipients | 1 → 3 × 16 MiB | all 3 complete < 600 s, byte-identical | 11.3 s, 3/3 byte-identical, broadcast AllOk | **PASS** |
-| wire-cutover | 1 × 32 MiB, path cut over at 50% acked bytes | complete < 300 s, byte-identical | 0.21 s, cut at 16.0 MiB, 149 MiB/s, byte-identical, digest match | **PASS** |
-| driver-cutover | 1 × 32 MiB, direct path killed at 50% | complete < 600 s, byte-identical | **SKIPPED in this sandbox** — UDP loopback is blocked (`sendto: operation not permitted`), so WebRTC direct-path ICE can never establish here; the kill seam only applies to an established direct path. CI (UDP available) is authoritative; the wire-cutover row above measures the same cutover state machine deterministically | **SKIP (environment)** |
-| manifest-ceiling | 2000 × 1 KiB (manifest ≈ 419 KiB) | sender refuses cleanly; receiver gets nothing partial | sender refused in 11.0 s: `frame payload 418978 exceeds u16 max 65535`; receiver dir empty | **PASS** (fail-closed) |
-| slow-sink | 1 × 64 MiB into a 2 MiB/s sink | complete < 300 s, digest match, heap growth < 512 MiB | 32.4 s at 1.98 MiB/s (paced by the sink — backpressure, not buffering), digest match, heap +164 MiB | **PASS** |
+| Scenario              | Workload                                     | Budget                                                | Measured                                                                                                                                                                                                                                                                                                                           | Verdict                |
+| --------------------- | -------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| large-file            | 1 × 256 MiB                                  | complete < 600 s, digest match                        | 13.1 s, 19.5 MiB/s overall (~120 MiB/s marginal), sender/receiver digests match, byte-identical                                                                                                                                                                                                                                    | **PASS**               |
+| tiny-file-set         | 200 × 1 KiB                                  | complete < 600 s, all digests match                   | 11.3 s, all 200 files byte-identical, digests match                                                                                                                                                                                                                                                                                | **PASS**               |
+| concurrent-recipients | 1 → 3 × 16 MiB                               | all 3 complete < 600 s, byte-identical                | 11.3 s, 3/3 byte-identical, broadcast AllOk                                                                                                                                                                                                                                                                                        | **PASS**               |
+| wire-cutover          | 1 × 32 MiB, path cut over at 50% acked bytes | complete < 300 s, byte-identical                      | 0.21 s, cut at 16.0 MiB, 149 MiB/s, byte-identical, digest match                                                                                                                                                                                                                                                                   | **PASS**               |
+| driver-cutover        | 1 × 32 MiB, direct path killed at 50%        | complete < 600 s, byte-identical                      | **SKIPPED in this sandbox** — UDP loopback is blocked (`sendto: operation not permitted`), so WebRTC direct-path ICE can never establish here; the kill seam only applies to an established direct path. CI (UDP available) is authoritative; the wire-cutover row above measures the same cutover state machine deterministically | **SKIP (environment)** |
+| manifest-ceiling      | 2000 × 1 KiB (manifest ≈ 419 KiB)            | sender refuses cleanly; receiver gets nothing partial | sender refused in 11.0 s: `frame payload 418978 exceeds u16 max 65535`; receiver dir empty                                                                                                                                                                                                                                         | **PASS** (fail-closed) |
+| slow-sink             | 1 × 64 MiB into a 2 MiB/s sink               | complete < 300 s, digest match, heap growth < 512 MiB | 32.4 s at 1.98 MiB/s (paced by the sink — backpressure, not buffering), digest match, heap +164 MiB                                                                                                                                                                                                                                | **PASS**               |
 
 ### Reading the numbers
 
