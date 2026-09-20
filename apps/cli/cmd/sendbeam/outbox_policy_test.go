@@ -5,11 +5,32 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/sendbeam/engine/jobs"
 )
+
+// enqueueJob runs the enqueue command with --json and returns the stored
+// job id. List() sorts by random job id, so tests must never assume list
+// order matches enqueue order.
+func enqueueJob(t *testing.T, cfgDir, payload string, extra ...string) string {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	args := []string{"enqueue", "--config-dir", cfgDir, "--json", payload, "--to", "@laptop"}
+	args = append(args, extra...)
+	if code := runOutbox(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("enqueue exit %d: %s", code, stderr.String())
+	}
+	var summary struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil || summary.JobID == "" {
+		t.Fatalf("decode enqueue json: %v output %q", err, stdout.String())
+	}
+	return summary.JobID
+}
 
 // TestOutboxEnqueueNetworkPolicyFlag verifies the enqueue flag binds the
 // policy to the job: local-only binds, the default stays online, and an
@@ -23,11 +44,7 @@ func TestOutboxEnqueueNetworkPolicyFlag(t *testing.T) {
 	seedOutboxDevice(t, env, "laptop")
 	payload := writeOutboxFile(t, "policy payload")
 
-	var stdout, stderr bytes.Buffer
-	code := runOutbox([]string{"enqueue", "--config-dir", cfgDir, payload, "--to", "@laptop", "--network-policy", "local-only"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("enqueue exit %d: %s", code, stderr.String())
-	}
+	localOnlyID := enqueueJob(t, cfgDir, payload, "--network-policy", "local-only")
 
 	// Read the bound policy back through the job store.
 	store, err := openOutboxStore(cfgDir)
@@ -42,39 +59,23 @@ func TestOutboxEnqueueNetworkPolicyFlag(t *testing.T) {
 		}
 		return loaded
 	}
-	stored, err := store.List()
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(stored) != 1 {
-		t.Fatalf("expected 1 job, got %d", len(stored))
-	}
-	if got := load(stored[0].JobID).EffectiveNetworkPolicy().String(); got != "local-only" {
+	if got := load(localOnlyID).EffectiveNetworkPolicy().String(); got != "local-only" {
 		t.Fatalf("expected bound network policy local-only, got %q", got)
 	}
 
 	// Default enqueue stays online.
-	code = runOutbox([]string{"enqueue", "--config-dir", cfgDir, payload, "--to", "@laptop"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("enqueue exit %d: %s", code, stderr.String())
-	}
-	stored, err = store.List()
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(stored) != 2 {
-		t.Fatalf("expected 2 jobs, got %d", len(stored))
-	}
-	if got := load(stored[1].JobID).EffectiveNetworkPolicy().String(); got != "online" {
+	onlineID := enqueueJob(t, cfgDir, payload)
+	if got := load(onlineID).EffectiveNetworkPolicy().String(); got != "online" {
 		t.Fatalf("expected default network policy online, got %q", got)
 	}
 
 	// Unknown policy is rejected before anything is stored.
-	code = runOutbox([]string{"enqueue", "--config-dir", cfgDir, payload, "--to", "@laptop", "--network-policy", "quantum"}, &stdout, &stderr)
+	var stdout, stderr bytes.Buffer
+	code := runOutbox([]string{"enqueue", "--config-dir", cfgDir, payload, "--to", "@laptop", "--network-policy", "quantum"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("expected exit 2 for unknown policy, got %d", code)
 	}
-	stored, _ = store.List()
+	stored, _ := store.List()
 	if len(stored) != 2 {
 		t.Fatalf("rejected enqueue must not store a job; have %d", len(stored))
 	}

@@ -805,12 +805,12 @@ func (r *transferRun) runSendPreferLocal(ctx context.Context, server string, sou
 	defer r.svc.remove(r)
 
 	r.publish("state", func(ev *TransferEvent) { ev.State = "trying local route…" })
-	if err := r.doSendLocal(ctx, sources, peer, endpoint); err == nil {
-		return
-	} else {
+	if err := r.doSendLocal(ctx, sources, peer, endpoint); err != nil {
 		r.publish("state", func(ev *TransferEvent) {
 			ev.State = "local route failed; falling back to online"
 		})
+	} else {
+		return
 	}
 	r.resetLeg()
 	r.runSendTargetedCore(ctx, server, sources, iceServers, peer.opaqueOpts, peer.label, peer.peerDeviceID, "")
@@ -868,7 +868,8 @@ func (s *TransferService) SendToDevicePreferLocal(paths []string, deviceID strin
 	return Handle{ID: id, Role: "send"}, nil
 }
 
-// kind must be "text" or "link". The envelope is a single in-memory payload of
+// SendHandoffToDevice sends a text/link handoff to a device. kind must be
+// "text" or "link". The envelope is a single in-memory payload of
 // at most 256 KiB; it is never recorded as a sender job and never resumes —
 // the payload is verified before the receiver may Copy/Save/Open it.
 func (s *TransferService) SendHandoffToDevice(kind, text, deviceID, server string) (Handle, error) {

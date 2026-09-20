@@ -397,20 +397,20 @@ func runOutboxDispatch(args []string, stdout, stderr io.Writer) int {
 			return outboxLocalSend(ctx, env, job, attempt, paths, netpolicy.LocalOnly, effective, *peerAddr, *requirePadding, *privateMode)
 		case netpolicy.PreferLocal:
 			if effective == netpolicy.PreferLocal && *peerAddr != "" {
-				if out := outboxLocalSend(ctx, env, job, attempt, paths, netpolicy.PreferLocal, effective, *peerAddr, *requirePadding, *privateMode); out.Status == transfer.StatusOk {
+				out := outboxLocalSend(ctx, env, job, attempt, paths, netpolicy.PreferLocal, effective, *peerAddr, *requirePadding, *privateMode)
+				if out.Status == transfer.StatusOk {
 					return out
-				} else {
-					localErr := out.Error
-					fb := outboxTargetSend(ctx, env, localID, attempt, paths, cfg, perTarget)
-					if fb.Status == transfer.StatusOk {
-						_, _ = fmt.Fprintf(stderr, "job %s: local route failed (%s); fell back to online\n", shortJobID(job.JobID), localErr)
-					} else if fb.Error != "" {
-						fb.Error = "local route: " + localErr + "; online fallback: " + fb.Error
-					} else {
-						fb.Error = "local route: " + localErr + "; online fallback: " + string(fb.Status)
-					}
-					return fb
 				}
+				localErr := out.Error
+				fb := outboxTargetSend(ctx, env, localID, attempt, paths, cfg, perTarget)
+				if fb.Status == transfer.StatusOk {
+					_, _ = fmt.Fprintf(stderr, "job %s: local route failed (%s); fell back to online\n", shortJobID(job.JobID), localErr)
+				} else if fb.Error != "" {
+					fb.Error = "local route: " + localErr + "; online fallback: " + fb.Error
+				} else {
+					fb.Error = "local route: " + localErr + "; online fallback: " + string(fb.Status)
+				}
+				return fb
 			}
 		}
 		return outboxTargetSend(ctx, env, localID, attempt, paths, cfg, perTarget)
