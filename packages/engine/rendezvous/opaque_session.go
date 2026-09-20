@@ -56,6 +56,13 @@ type OpaqueOptions struct {
 	ReplayCache       *wire.NonceReplayCache
 	Tombstones        trust.TombstoneStore
 	TrustStore        trust.Store
+	// Serverless, when true, runs the handshake without a rendezvous
+	// server. The two peers already share a direct transport (local-only
+	// mode, v2.1): Start announces directly instead of waiting for the
+	// server's "created", and the peer's rendezvous announcement is treated
+	// as the "peer-joined" pairing event. The cryptographic authentication
+	// ceremony itself is unchanged.
+	Serverless bool
 }
 
 // OpaqueSession drives the sendbeam/3 authenticated session handshake over an opaque rendezvous channel.
@@ -66,6 +73,11 @@ type OpaqueSession struct {
 	done   chan struct{}
 	result *OpaqueResult
 	err    error
+
+	// peerAnnounced records a serverless peer rendezvous that arrived before
+	// Start ran, so a late starter still pairs (the server flow never has
+	// this race: the server buffers the pairing event for both peers).
+	peerAnnounced bool
 
 	privKey  *ecdh.PrivateKey
 	pubBytes []byte
@@ -134,6 +146,20 @@ func (s *OpaqueSession) Start() error {
 	}
 
 	s.setPhaseLocked(OpaquePhaseRendezvousSent)
+	if s.opts.Serverless {
+		// No server will answer "created": the direct transport is the
+		// room, so the announcement itself completes the server's role.
+		s.setPhaseLocked(OpaquePhaseWaitingPeer)
+		if err := s.opts.Transport.Send(NewRendezvous(s.opts.Handle, string(s.opts.Role))); err != nil {
+			return s.failLocked(err)
+		}
+		if s.peerAnnounced {
+			// The peer announced while we were idle: pair now instead of
+			// waiting for an announcement that already arrived.
+			return s.onPairedLocked()
+		}
+		return nil
+	}
 	return s.opts.Transport.Send(NewRendezvous(s.opts.Handle, string(s.opts.Role)))
 }
 
@@ -166,6 +192,21 @@ func (s *OpaqueSession) Handle(m Message) error {
 
 	case typePeerJoined, typePeerRejoined:
 		return s.onPairedLocked()
+
+	case typeRendezvous:
+		if s.opts.Serverless {
+			// Serverless pairing: the peer's direct announcement is the
+			// pairing event (a server would send "peer-joined" instead).
+			// The announcement is remembered so a late Start still pairs;
+			// the phase guard keeps a duplicate announcement harmless and
+			// the TCP ordering of the direct transport guarantees the
+			// peer's later handshake messages arrive after this one.
+			s.peerAnnounced = true
+			if s.phase == OpaquePhaseRendezvousSent || s.phase == OpaquePhaseWaitingPeer {
+				return s.onPairedLocked()
+			}
+		}
+		return nil
 
 	case typeResumed:
 		return nil
