@@ -51,8 +51,10 @@ import {
   crc32Update,
   dataDescriptor,
   endOfCentralDirectory,
+  entryNeedsZip64,
   localHeader,
   type ZipEntry,
+  zip64Limits,
 } from './zip.js';
 
 /** Metadata the host needs for lease release and the Keep/Discard failure surface. */
@@ -552,13 +554,18 @@ export class DurableDestination implements BrowserDestination {
     const { key, writable } = await this.files.openOutput(this.transferId, '__receive.zip');
     let position = 0;
     const entries: ZipEntry[] = [];
+    let zip64 = false;
     try {
       for (const file of manifest.files) {
         const rel = normalizeTransferPath(file.name);
         const entryName = new TextEncoder().encode(rel);
         const offset = position;
-        await writeAt(writable, position, localHeader(entryName));
-        position += 30 + entryName.length;
+        // The journal's verified size is the declared size: ZIP64-ness is decided up front
+        // from authenticated metadata, never from unvalidated bytes.
+        const declared = journal.files[file.idx]!.size;
+        const header = localHeader(entryName, declared);
+        await writeAt(writable, position, header);
+        position += header.length;
         let crc = 0xffffffff;
         let size = 0;
         await this.files.readPartialChunks(this.transferId, rel, async (chunk) => {
@@ -574,21 +581,26 @@ export class DurableDestination implements BrowserDestination {
             `partial ${rel} size mismatch at finalize (have ${size}, want ${expected})`,
           );
         }
-        await writeAt(writable, position, dataDescriptor((crc ^ 0xffffffff) >>> 0, size));
-        position += 16;
-        entries.push({ name: entryName, crc: (crc ^ 0xffffffff) >>> 0, size, offset });
+        const descriptor = dataDescriptor((crc ^ 0xffffffff) >>> 0, size);
+        await writeAt(writable, position, descriptor);
+        position += descriptor.length;
+        const entry = { name: entryName, crc: (crc ^ 0xffffffff) >>> 0, size, offset };
+        zip64 ||= entryNeedsZip64(entry);
+        entries.push(entry);
       }
       const centralOffset = position;
+      zip64 ||= entries.length > zip64Limits.count || centralOffset > zip64Limits.size;
       for (const entry of entries) {
         const header = centralHeader(entry);
         await writeAt(writable, position, header);
         position += header.length;
       }
       const centralSize = position - centralOffset;
+      zip64 ||= centralSize > zip64Limits.size;
       await writeAt(
         writable,
         position,
-        endOfCentralDirectory(entries.length, centralSize, centralOffset),
+        endOfCentralDirectory(entries.length, centralSize, centralOffset, zip64),
       );
       await writable.close();
     } catch (e) {
