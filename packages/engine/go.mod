@@ -1,13 +1,13 @@
 module github.com/sendbeam/engine
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/pion/webrtc/v4 v4.2.20
 	github.com/sendbeam/wire v0.0.0
-	golang.org/x/sys v0.46.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
