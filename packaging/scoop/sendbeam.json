@@ -26,7 +26,7 @@
   "bin": "sendbeam.exe",
   "checkver": "github",
   "description": "Secure, direct, peer-to-peer file transfer in your browser and terminal",
-  "homepage": "https://omnitrix.space",
+  "homepage": "https://github.com/Akshay7273/sendbeam",
   "license": "MIT",
   "version": "1.9.0"
 }

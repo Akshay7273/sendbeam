@@ -15,12 +15,10 @@
   <a href="https://bestpractices.coreinfrastructure.org/projects/sendbeam"><img src="https://bestpractices.coreinfrastructure.org/projects/sendbeam/badge" alt="OpenSSF Best Practices" /></a>
   <a href="https://github.com/Akshay7273/sendbeam/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
   <a href="https://github.com/Akshay7273/sendbeam/pkgs/container/sendbeam"><img src="https://img.shields.io/badge/image-ghcr.io%2Fakshay7273%2Fsendbeam-blue.svg" alt="Container image" /></a>
-  <a href="https://omnitrix.space"><img src="https://img.shields.io/badge/live%20demo-omnitrix.space-8b7cf6.svg" alt="Live demo" /></a>
 </p>
 
 <p align="center">
-  <a href="https://omnitrix.space"><strong>Live demo</strong></a>
-  · <a href="#quick-start">Quick start</a>
+  <a href="#quick-start">Quick start</a>
   · <a href="#browser">Browser</a>
   · <a href="#cli">CLI</a>
   · <a href="#desktop">Desktop</a>
@@ -47,18 +45,14 @@ The design is documented in the [protocol specification](docs/protocol.md) and t
 
 ## Quick start
 
-**Try it live.** Open [https://omnitrix.space](https://omnitrix.space) in two browser tabs,
-create a room, and share the link (or the short code) with the receiver — no account, no
-install, no configuration.
-
-**Run it yourself.** The public container image is the fastest self-hosted path, with no
-toolchain required:
+The public container image is the fastest path, with no toolchain required:
 
 ```bash
 docker run -d --name sendbeam -p 8443:8443 ghcr.io/akshay7273/sendbeam
 ```
 
-Then open `http://localhost:8443` and follow the same flow. Files stream with bounded
+Then open `http://localhost:8443` in two browser tabs, create a room, and share the invite
+link or short code with the receiver — no account, no configuration. Files stream with bounded
 memory — size is not a limit — and the receiver can verify the final SHA-256 against
 `sha256sum`.
 

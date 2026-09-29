@@ -22,7 +22,7 @@ Example sanitized output:
 SendBeam Diagnostics:
   Product Version: 1.4.0 (42105680bc7a)
   OS/Arch:         linux/amd64
-  Signaling:       wss://omnitrix.space/ws [reachable: 48ms]
+  Signaling:       wss://sendbeam.example.com/ws [reachable: 48ms]
   STUN Check:      stun.l.google.com:19302 [srflx candidate gathered: 203.0.113.45:49210]
   Local Interfaces: eth0 (192.168.1.100/24), wlan0 (10.0.0.15/24)
   Relay Readiness: Ready (WebSocket upgrade OK)
