@@ -139,7 +139,7 @@ jobs:
                 *.gz)  tar -xzf "$t" ;;
               esac
             done
-            n=$(grep -rli omnitrix . 2>/dev/null | wc -l)
+            n=$(grep -rli omnitrix . 2>/dev/null | wc -l || true)
             [ "$n" = "0" ] || { echo "[-] $f still dirty ($n files)" >&2; exit 1; }
             cd .. && rm -rf .v
           done
@@ -180,7 +180,7 @@ jobs:
           done
           for f in *.zip; do
             rm -rf .z && mkdir .z && unzip -q "$f" -d .z
-            n=$(grep -rli omnitrix .z 2>/dev/null | wc -l)
+            n=$(grep -rli omnitrix .z 2>/dev/null | wc -l || true)
             [ "$n" = "0" ] || { echo "[-] $f still dirty ($n files)" >&2; exit 1; }
             rm -rf .z
           done
