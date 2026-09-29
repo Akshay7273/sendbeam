@@ -170,4 +170,19 @@ verified post-hoc from the repository and GitHub API, with observed evidence:
 - [x] Documentation synchronized: this file, `docs/recipes.md`, protocol/threat/compat docs, README
 - [x] v2.1 online/browser regressions re-run (full CI matrix green)
 
-**V22-PR08:** PR #___ (merge SHA `________`) — recorded at merge time.
+**V22-PR08:** PR #225 (merge SHA `87d2628fa60f8c55ed174c1a119d86824444df05`) — reconciled post-hoc by V221-PR01 on 2026-09-30 via the GitHub API (the field was left blank at merge time).
+
+## 10.5 v2.0 Gate Evidence Index
+
+There is no single `RELEASE-v2.0.md` gate page; v2.0 release evidence lives in these
+existing documents (recorded at the time, not re-certified here):
+
+- [`docs/RELIABILITY-v2.0.md`](RELIABILITY-v2.0.md) — measured reliability evidence (large files, tiny sets, fanout, slow sinks, cutover; PR #208)
+- [`docs/SECURITY-REVIEW-v2.0.md`](SECURITY-REVIEW-v2.0.md) — v2.0 security review record
+- State-migration and onboarding evidence: PR #209 (`c2d047e`) — migrations with rollback, first-run onboarding, release verification
+- Streaming ZIP64: PR #205 (`7dbcf83`)
+- Pre-flight disk-space/writability checks: PR #204 (`4075d9b`)
+- Transfer center across CLI/desktop/web: PR #203 (`6dcdb92`)
+- Offline queue with bounded retry: PR #202 (`8a74804`)
+- Encrypted text/link handoffs: PR #206 (`66738cd`)
+- Desktop share/Send-With entry points: PR #207 (`fb1d904`)

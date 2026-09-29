@@ -10,7 +10,7 @@ For instructions on deploying the server, refer to [docs/HOSTING.md](HOSTING.md)
 
 ### Custom Signaling / Relay Server
 
-By default, the CLI connects to the public rendezvous server. To target your private server:
+By default, the CLI and desktop app connect to a **local development server** (`wss://localhost:8443/ws`) — there is no public hosted rendezvous service. To reach any machine beyond your own, run your own server (see [HOSTING.md](HOSTING.md)) or pair devices for offline direct transfer (see the `--network-policy=local-only` workflows in the README). To target your private server:
 
 ```bash
 # Send via custom server:

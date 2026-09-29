@@ -232,5 +232,5 @@ The following dated clarifications document exact security and privacy boundarie
    - **Resolution in v1.9 (V19-PR11):** Strict client-side policy enforcement (`--require-padding` / `require_padding`) fails closed (`ErrPaddingRequired`) if the remote peer lacks the padding capability, and rejects unpadded inbound frames fail closed (`ErrUnpaddedFrame`). Production attack matrix vectors (Vector 14) enforce strict padding using live engine and wire calls without test-local simulation mocks.
 
 4. **Storage & Archive Boundaries**:
-   - In-browser ZIP archive fallback utilizes standard 32-bit archive structures (ZIP32) with a strict 4 GiB size ceiling. Streaming ZIP64 is scheduled for v2.0 (V20-PR05).
+   - In-browser ZIP archive fallback historically used 32-bit archive structures (ZIP32) with a strict 4 GiB size ceiling; **streaming ZIP64 shipped in v2.0** (V20-PR05 / #205) and removed that ceiling. Memory usage stays bounded by fixed-size encrypted blocks regardless of archive size.
    - Origin Private File System (OPFS) streaming operates under browser-enforced memory pressure limits; testing in CI via Linux WebKit emulation demonstrates browser engine correctness, but does not substitute for physical iOS hardware profiling.
