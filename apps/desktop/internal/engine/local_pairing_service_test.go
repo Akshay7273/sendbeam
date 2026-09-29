@@ -20,7 +20,11 @@ func newTestLocalPairingService(t *testing.T) *LocalPairingService {
 		t.Fatal(err)
 	}
 	store := trust.NewMemoryTrustStore()
-	return NewLocalPairingService(idMgr, store)
+	secrets, err := trust.NewFileSecretStore(dir + "/secrets.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewLocalPairingService(idMgr, store, secrets)
 }
 
 func TestLocalPairingServiceCreateAndCancel(t *testing.T) {

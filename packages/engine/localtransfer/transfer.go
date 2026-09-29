@@ -227,7 +227,22 @@ func Transfer(ctx context.Context, opts Options) (*transfer.Outcome, error) {
 	}
 	defer func() { _ = sess.Close() }()
 
-	spec, err := opts.buildSpec(handle, pub, kPair, rec.PairCredentialRef, ep.IPs)
+	// Candidate policy: the validated endpoint's pinned IPs PLUS this host's
+	// own session-local address. Without the local side, the ICE agent would
+	// filter out our own interface candidates (the filter pins gathering to
+	// the peer's /32) and a cross-host LAN transfer could never connect —
+	// same-machine loopback kept working, which is why this never surfaced
+	// in loopback-only evidence. The address comes from the established
+	// session (not enumeration), stays within the same approved link, and
+	// the peer is still authenticated by the ceremony — no policy widening
+	// beyond this one link-local address.
+	ips := append([]net.IP{}, ep.IPs...)
+	if host, _, lerr := net.SplitHostPort(sess.LocalAddr().String()); lerr == nil {
+		if ip := net.ParseIP(host); ip != nil {
+			ips = append(ips, ip)
+		}
+	}
+	spec, err := opts.buildSpec(handle, pub, kPair, rec.PairCredentialRef, ips)
 	if err != nil {
 		opts.Table.MarkFailed(opts.PeerDeviceID)
 		return nil, err
