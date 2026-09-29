@@ -28,7 +28,7 @@ func main() {
 		tagFlag      = flag.String("tag", "", "release tag (e.g. v1.7.0)")
 		sumsFlag     = flag.String("sums", "SHA256SUMS.txt", "path to SHA256SUMS.txt manifest")
 		repoFlag     = flag.String("repo", "Akshay7273/sendbeam", "GitHub repository owner/name")
-		homepageFlag = flag.String("homepage", "https://omnitrix.space", "product homepage URL")
+		homepageFlag = flag.String("homepage", "https://github.com/Akshay7273/sendbeam", "product homepage URL")
 		outDirFlag   = flag.String("out-dir", "packaging", "output directory for packaging manifests")
 		syncRootFlag = flag.Bool("sync-root", true, "sync Formula/sendbeam.rb and bucket/sendbeam.json at repo root")
 		validateFlag = flag.Bool("validate", false, "validate existing manifests against SHA256SUMS.txt without writing")

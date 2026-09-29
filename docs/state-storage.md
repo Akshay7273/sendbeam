@@ -80,7 +80,7 @@ SendBeam manages persistent device cryptographic identities and pairwise credent
 
 ### Explicit Browser Security Boundaries & Limits
 
-- **Origin Boundary:** All browser keys, trust records, and pair secrets are restricted to the origin (`omnitrix.space` or `localhost`).
+- **Origin Boundary:** All browser keys, trust records, and pair secrets are restricted to the web app's deployment origin (or `localhost` during development).
 - **No Hardware Security Module / TPM:** In-browser cryptographic keys are maintained within browser IndexedDB storage and protected by browser sandbox boundaries, not OS Keychains or TPMs.
 - **Private Browsing / Incognito:** Identities and pairings established in Private/Incognito windows are ephemeral and cleared on window close.
 - **Fail-Closed on Corrupt Data:** If a stored identity seed in IndexedDB is malformed or invalid hex, the browser runtime strictly throws a descriptive error and refuses to generate a new key over the corrupt entry.
@@ -146,4 +146,4 @@ To remove all local configuration and cached state:
 - **Linux:** `rm -rf ~/.config/sendbeam ~/.local/share/sendbeam`
 - **macOS:** `rm -rf ~/Library/Application\ Support/SendBeam`
 - **Windows (PowerShell):** `Remove-Item -Recurse -Force "$env:APPDATA\SendBeam"`
-- **Web App:** Clear site storage for `omnitrix.space` in browser developer tools.
+- **Web App:** Clear site storage for your SendBeam server's origin in browser developer tools.

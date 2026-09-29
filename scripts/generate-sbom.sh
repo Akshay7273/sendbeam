@@ -86,7 +86,7 @@ done < <(grep -E '^[[:space:]]*[a-zA-Z0-9.\/_~-]+[[:space:]]+v[0-9]' "$GOMOD_PAT
 
 # Build JSON structure
 # Root package
-ROOT_PKG="{\"SPDXID\": \"SPDXRef-Package-${COMPONENT_NAME}\", \"name\": \"${COMPONENT_NAME}\", \"versionInfo\": \"${VERSION}\", \"downloadLocation\": \"git+https://github.com/Akshay7273/sendbeam@${COMMIT}\", \"filesAnalyzed\": false, \"homepage\": \"https://omnitrix.space\", \"licenseConcluded\": \"MIT\", \"licenseDeclared\": \"MIT\", \"supplier\": \"Person: Akshay Kumar <https://github.com/Akshay7273>\", \"originator\": \"Person: Akshay Kumar <https://github.com/Akshay7273>\"}"
+ROOT_PKG="{\"SPDXID\": \"SPDXRef-Package-${COMPONENT_NAME}\", \"name\": \"${COMPONENT_NAME}\", \"versionInfo\": \"${VERSION}\", \"downloadLocation\": \"git+https://github.com/Akshay7273/sendbeam@${COMMIT}\", \"filesAnalyzed\": false, \"homepage\": \"https://github.com/Akshay7273/sendbeam\", \"licenseConcluded\": \"MIT\", \"licenseDeclared\": \"MIT\", \"supplier\": \"Person: Akshay Kumar <https://github.com/Akshay7273>\", \"originator\": \"Person: Akshay Kumar <https://github.com/Akshay7273>\"}"
 
 # Combine packages
 ALL_PACKAGES=("$ROOT_PKG")

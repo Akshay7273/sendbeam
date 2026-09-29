@@ -7,7 +7,7 @@ priority: 'optional'
 maintainer: 'Akshay <https://github.com/Akshay7273/sendbeam>'
 description: 'SendBeam Desktop — Secure, peer-to-peer file transfer'
 vendor: 'Akshay7273'
-homepage: 'https://omnitrix.space'
+homepage: 'https://github.com/Akshay7273/sendbeam'
 license: 'MIT'
 contents:
   - src: '../../../bin/sendbeam-desktop'

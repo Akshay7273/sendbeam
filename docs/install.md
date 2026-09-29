@@ -232,7 +232,7 @@ For full supply chain details and SBOM verification, refer to [docs/supply-chain
 
 ### Web App
 
-Navigate to [omnitrix.space](https://omnitrix.space), drop your files to generate an invite code, or enter an invite code to receive.
+Start the server ([HOSTING.md](HOSTING.md) has full deployment details, or run `docker run -d --name sendbeam -p 8443:8443 ghcr.io/akshay7273/sendbeam`), then open the web app, drop your files to generate an invite code, or enter an invite code to receive.
 
 ### CLI
 

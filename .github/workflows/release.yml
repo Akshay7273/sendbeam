@@ -483,7 +483,7 @@ jobs:
           Maintainer: Akshay <https://github.com/Akshay7273/sendbeam>
           Description: SendBeam Desktop — Secure, peer-to-peer file transfer
           Depends: libgtk-4-1 | libgtk-3-0, libwebkitgtk-6.0-4 | libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37
-          Homepage: https://omnitrix.space
+          Homepage: https://github.com/Akshay7273/sendbeam
           EOF
 
           mkdir -p artifacts
