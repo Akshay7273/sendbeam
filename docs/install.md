@@ -4,13 +4,13 @@ This guide details how to install and run the official SendBeam CLI and Desktop 
 
 ---
 
-## 1. Package Managers (Recommended for CLI)
+## 1. Package Managers (CLI)
 
-SendBeam CLI is available across popular native package managers with zero external hosting cost and automated verification against the signed release manifest:
+The CLI is installable via two package managers with automated verification against the signed release manifest:
 
 ### A. Homebrew (macOS & Linux)
 
-Install the `sendbeam` CLI formula on macOS (Apple Silicon `arm64` and Intel `x86_64`) or Linux:
+Install the `sendbeam` CLI formula on macOS (Apple Silicon `arm64` and Intel `x86_64`) or Linux. This repository doubles as the Homebrew tap:
 
 ```bash
 # Tap the SendBeam repository and install
@@ -39,29 +39,12 @@ scoop install sendbeam
 scoop update sendbeam
 ```
 
-### C. WinGet (Windows)
+### C. WinGet & AUR (manifests generated, not yet published)
 
-Install `sendbeam` CLI via the Windows Package Manager:
-
-```powershell
-# Install SendBeam portable CLI
-winget install --id SendBeam.SendBeam
-
-# Upgrade
-winget upgrade --id SendBeam.SendBeam
-```
-
-### D. Arch Linux (AUR)
-
-Install the pre-compiled binary package `sendbeam-bin` from the Arch User Repository:
-
-```bash
-# Using yay
-yay -S sendbeam-bin
-
-# Using paru
-paru -S sendbeam-bin
-```
+WinGet (`SendBeam.SendBeam`) and AUR (`sendbeam-bin`) manifests are generated into
+`packaging/` by release automation, but the packages have **not been published** to the
+winget-pkgs community repository or the AUR yet. Until that lands, use Scoop or Homebrew,
+or install the release archives directly.
 
 ---
 

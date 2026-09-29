@@ -76,18 +76,19 @@ Send and receive from terminals, servers, and scripts.
 ### Package Managers
 
 ```bash
-# macOS & Linux (Homebrew)
-brew install sendbeam/sendbeam/sendbeam
-
-# Arch Linux (AUR)
-yay -S sendbeam-bin
-
-# Windows (WinGet)
-winget install SendBeam.SendBeam
+# macOS & Linux (Homebrew — this repository is also a Homebrew tap)
+brew tap sendbeam/sendbeam https://github.com/Akshay7273/sendbeam
+brew install sendbeam
 
 # Windows (Scoop)
 scoop bucket add sendbeam https://github.com/Akshay7273/sendbeam && scoop install sendbeam
 ```
+
+> [!NOTE]
+> WinGet (`SendBeam.SendBeam`) and AUR (`sendbeam-bin`) manifests are generated
+> in this repository (`packaging/`) but are **not yet published** to the
+> winget-pkgs community repo or the AUR — install via Scoop, Homebrew, or the
+> release archives for now. See [docs/platform-evidence.md](docs/platform-evidence.md).
 
 ### Install from Source or Task Runner
 
@@ -184,7 +185,9 @@ See [docs/supply-chain.md](docs/supply-chain.md) and [docs/install.md](docs/inst
 
 ## Mobile Web & Progressive Web App (PWA)
 
-SendBeam is fully optimized for mobile devices and installable as a PWA on Android and iOS:
+SendBeam is fully optimized for mobile devices and installable as a PWA on Android and iOS
+(browser-engine correctness is CI-verified via device-emulation profiles; physical-device
+validation is tracked in [docs/platform-evidence.md](docs/platform-evidence.md)):
 
 - **1-Tap Sharing:** Integrate directly with Android and iOS system share sheets via the native Web Share API (`navigator.share`).
 - **Screen Wake Lock:** Keeps your screen active during large file transfers without unnatural battery drain.
@@ -257,6 +260,7 @@ commitments, see [SECURITY.md](SECURITY.md).
 
 - [Security Policy](SECURITY.md) — coordinated disclosure, response SLAs, supported versions
 - [Installation & Quickstart](docs/install.md) — installation instructions for Linux, macOS, and Windows
+- [Cross-platform evidence ledger](docs/platform-evidence.md) — what is implemented, packaged, CI-tested, packaged-UI-verified, and physical-device-verified, per platform
 - [Compatibility matrix](docs/compat-matrix.md) — Browser ↔ CLI ↔ Desktop cross-client matrix, NAT topologies, networks
 - [Continuous Fuzzing](docs/fuzzing.md) — fuzz targets, seed corpora policy, crash reproduction, OSS-Fuzz integration
 - [Self-hosting server](docs/HOSTING.md) — deployment, TLS, STUN/TURN, relay limits, Prometheus metrics

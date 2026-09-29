@@ -139,4 +139,4 @@ Smoke: `sendbeam-linux-amd64 version` → `sendbeam dev (7c094ad3e6f4)`; `--help
 - [x] Documentation synchronized: this file, protocol/threat/compat docs, README
 - [x] v2.0 online/browser regressions re-run (full CI matrix green)
 
-**V21-PR08:** PR #___ (merge SHA `________`) — recorded at merge time.
+**V21-PR08:** PR #217 (merge SHA `1759496892bb94a5ebf862a8fd48f9abbed249bc`) — reconciled post-hoc by V221-PR01 on 2026-09-30 via the GitHub API (the field was left blank at merge time).

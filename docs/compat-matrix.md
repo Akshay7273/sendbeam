@@ -87,8 +87,8 @@ on every change and round-trips files through the real server across desktop and
 
 Sink fallback ladder, in order of preference: **direct-file** (File System Access API,
 Chromium-only) → **OPFS** (all evergreen engines) → **ZIP archive** (always available).
-A sender that picks a folder triggers the receiver's archive sink; single files prefer
-direct-file/OPFS. The ZIP fallback is capped at 4 GiB.
+The ZIP fallback uses streaming ZIP64 (shipped in v2.0, #205), removing the historical
+4 GiB ceiling.
 
 ### Mobile Web & Progressive Web App (PWA)
 
@@ -99,7 +99,7 @@ SendBeam is fully installable as a Progressive Web App (PWA) on mobile (Android 
 - **Mobile Responsive UX:** Prominent QR code pairing on small viewports, auto-populated code joining via `?code=` query parameters, touch-optimized minimum 44px tap targets, and native `navigator.share` integration.
 - **Screen Wake Lock & Visibility Lifecycle:** Keeps screen awake during active mobile transfers where supported. On iOS Safari (where Wake Lock is not exposed), tab backgrounding or screen locks suspend WebKit execution; SendBeam's visibility-change handler transitions the transfer to a deterministic paused state with a prominent Resume action, preventing indefinite socket stalls.
 - **Memory-Bounded OPFS Streaming:** Because neither mobile Safari nor Android Chrome exposes `showSaveFilePicker`, SendBeam streams blocks directly to the Origin Private File System (OPFS) without accumulating chunks in JS heap memory, preventing mobile browser jetsam OOM crashes. Note: A small mobile round-trip with a conditional OPFS assertion in CI demonstrates the streaming path, but is not an unbounded peak-memory proof across all physical devices under system memory pressure.
-- **ZIP Archive Limits:** The ZIP fallback utilizes 32-bit archive fields (ZIP32) and is capped at 4 GiB. Streaming ZIP64 with arbitrary file count/size boundaries is scheduled for v2.0 (V20-PR05).
+- **ZIP64 Streaming:** The ZIP fallback implements streaming ZIP64 (64-bit offsets, ZIP64 EOCD, shipped in v2.0 via #205) — the historical 4 GiB / 65,535-entry ZIP32 limits no longer apply.
 - **Private Browsing Safeguards:** In Safari Private Browsing mode where OPFS or IndexedDB is restricted, SendBeam probes storage capabilities before transfer and fails closed with actionable diagnostic guidance rather than silently failing mid-transfer.
 - **WebKit DataChannel Backpressure Guard:** Protects against WebKit SCTP buffer stalls with dual event-listener registration and adaptive safety drain timers when `bufferedamountlow` events are coalesced or dropped.
 - **CI Test Coverage vs Physical Hardware:** Tested in CI via Playwright mobile device emulation profiles: `mobile-chrome` (Pixel 7 emulation) and `mobile-webkit` (iPhone 14 emulation on Linux WebKit engine). WebKit emulation demonstrates browser engine correctness, but is not physical iOS device hardware testing.
