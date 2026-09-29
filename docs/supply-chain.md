@@ -194,7 +194,7 @@ SendBeam tracks and adheres to the **OpenSSF Best Practices Badge** criteria (Pa
 | :----------------- | :----------------------- | :----- | :---------------------------------------------------------------------------------------------- |
 | **Basics**         | Open Source License      | Met    | MIT License (`LICENSE`)                                                                         |
 | **Basics**         | Clear Documentation      | Met    | `README.md`, `docs/protocol.md`, `docs/threat-model.md`, `docs/HOSTING.md`                      |
-| **Basics**         | Project Website | Met    | Project site: github.com/Akshay7273/sendbeam                                                    |
+| **Basics**         | Project Website          | Met    | Project site: github.com/Akshay7273/sendbeam                                                    |
 | **Change Control** | Public Version Control   | Met    | Git repository on GitHub (`Akshay7273/sendbeam`)                                                |
 | **Change Control** | Unique Version Tags      | Met    | SemVer tags (`v1.7.0`, `v1.8.0`) signed and published with release notes                        |
 | **Reporting**      | Vulnerability Disclosure | Met    | `SECURITY.md` with GitHub Private Vulnerability Reporting and defined response SLAs             |
