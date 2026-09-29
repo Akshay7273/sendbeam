@@ -6,12 +6,12 @@ This document provides a comprehensive mapping of where SendBeam stores persiste
 
 ## 1. Directory Overview by Operating System
 
-| Platform    | Configuration Root (`ConfigDir`)                                          | Durable Data Root (`DataDir`)                                             |
-| :---------- | :------------------------------------------------------------------------ | :------------------------------------------------------------------------ |
-| **Linux**   | `$XDG_CONFIG_HOME/sendbeam`<br>(Default: `~/.config/sendbeam`)            | `$XDG_DATA_HOME/sendbeam`<br>(Default: `~/.local/share/sendbeam`)         |
-| **macOS**   | `~/Library/Application Support/SendBeam`                                  | `~/Library/Application Support/SendBeam`                                  |
-| **Windows** | `%APPDATA%\SendBeam`<br>(e.g. `C:\Users\<User>\AppData\Roaming\SendBeam`) | `%APPDATA%\SendBeam`<br>(e.g. `C:\Users\<User>\AppData\Roaming\SendBeam`) |
-| **Web App** | IndexedDB (`sendbeam-state`)                                              | Origin Private File System (`OPFS`)                                       |
+| Platform    | Configuration Root (`ConfigDir`)                                                             | Durable Data Root (`DataDir`)                                             |
+| :---------- | :------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------ |
+| **Linux**   | `$XDG_CONFIG_HOME/sendbeam`<br>(Default: `~/.config/sendbeam`)                               | `$XDG_DATA_HOME/sendbeam`<br>(Default: `~/.local/share/sendbeam`)         |
+| **macOS**   | `~/Library/Application Support/sendbeam`                                                     | `~/Library/Application Support/sendbeam`                                  |
+| **Windows** | `%APPDATA%\sendbeam`<br>(e.g. `C:\Users\<User>\AppData\Roaming\sendbeam`)                    | `%APPDATA%\sendbeam`<br>(e.g. `C:\Users\<User>\AppData\Roaming\sendbeam`) |
+| **Web App** | IndexedDB (`sendbeam-identity`, `sendbeam-trust`, `sendbeam-secrets`, `sendbeam-tombstones`) | Origin Private File System (`OPFS`)                                       |
 
 ---
 
@@ -37,8 +37,13 @@ This document provides a comprehensive mapping of where SendBeam stores persiste
 
 ### D. Sender Restart Records
 
-- **Directory:** `<DataDir>/senders` (or `~/.sendbeam/senders`)
+- **Directory:** `sender/` under the same config root (`<ConfigDir>/sendbeam/sender/`), overridable with `SENDBEAM_SENDER_STATE` (resolved by `packages/engine/transfer/sender_state.go`)
 - **Purpose:** Stores local path key mappings to transfer IDs and resume secret envelopes so that re-sending the same files can resume an interrupted session without retransmitting already-committed blocks.
+
+### D2. Job & Recipe State (v2.0+)
+
+- **Jobs:** `<ConfigDir>/sendbeam/jobs/` (`SENDBEAM_JOBS_DIR` overrides) — durable recipient-attempt model, retries, and tombstones. Live in the **config** root, not the data dir.
+- **Recipes:** `<ConfigDir>/sendbeam/recipes/` (`SENDBEAM_RECIPES_DIR` overrides) — recipe definitions, automation grants, and run ledgers. Recipes are inert until explicitly approved/granted (see [Trust & Device Identity Model](trust-model.md)).
 
 ### E. Native Credentials & Keychains (v1.9 Trusted Handoffs)
 
@@ -144,6 +149,6 @@ sendbeam transfers discard-all
 To remove all local configuration and cached state:
 
 - **Linux:** `rm -rf ~/.config/sendbeam ~/.local/share/sendbeam`
-- **macOS:** `rm -rf ~/Library/Application\ Support/SendBeam`
-- **Windows (PowerShell):** `Remove-Item -Recurse -Force "$env:APPDATA\SendBeam"`
+- **macOS:** `rm -rf ~/Library/Application\ Support/sendbeam`
+- **Windows (PowerShell):** `Remove-Item -Recurse -Force "$env:APPDATA\sendbeam"`
 - **Web App:** Clear site storage for your SendBeam server's origin in browser developer tools.

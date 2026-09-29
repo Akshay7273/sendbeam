@@ -8,7 +8,7 @@ This document describes SendBeam's software supply chain security architecture, 
 
 | Attack Vector                                            | Countermeasure                                                                                         | Verification Mechanism                                                                                |
 | :------------------------------------------------------- | :----------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------- |
-| **Tampered Build Artifacts**                             | Artifacts built exclusively on ephemeral GitHub-hosted runners; strict linear commit history required. | GitHub Build-Provenance Attestations (`actions/attest-build-provenance@v2`).                          |
+| **Tampered Build Artifacts**                             | Artifacts built exclusively on ephemeral GitHub-hosted runners; strict linear commit history required. | GitHub Build-Provenance Attestations (`actions/attest-build-provenance`, SHA-pinned).                 |
 | **Release Manifest Tampering**                           | Checksum manifest signed with Minisign Ed25519 and Sigstore Cosign keyless OIDC.                       | Dual cryptographic signature verification (`SHA256SUMS.txt.minisig`, `SHA256SUMS.txt.sigstore.json`). |
 | **Dependency Confusion / Malicious Transitive Packages** | Frozen dependencies in `go.sum` and `pnpm-lock.yaml`; automated SPDX 2.3 SBOM generation.              | SPDX SBOM manifests (`sendbeam-cli.spdx.json`, `sendbeam-desktop.spdx.json`) attested in CI.          |
 | **Forged Checksums**                                     | SHA-256 checksum manifest (`SHA256SUMS.txt`) generated strictly inside the CI manifest workflow.       | Pre-distribution and post-distribution checksum verification gates.                                   |
@@ -56,7 +56,7 @@ SendBeam produces verifiable in-toto build provenance attestations for all compi
 1. **Standalone Binaries & Distribution Packages:**
    - Multi-platform CLI archives (`linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`, `windows/arm64`).
    - Desktop installers and bundles (`.dmg`, `.zip`, `.exe`, `.deb`, `.AppImage`).
-   - Attested via `actions/attest-build-provenance@v2` with Sigstore/GitHub OIDC identity tokens.
+   - Attested via `actions/attest-build-provenance` (SHA-pinned) with Sigstore/GitHub OIDC identity tokens.
 
 2. **Container Images:**
    - Multi-arch Docker images (`linux/amd64`, `linux/arm64`) published to GHCR (`ghcr.io/akshay7273/sendbeam`).
@@ -67,6 +67,15 @@ SendBeam produces verifiable in-toto build provenance attestations for all compi
 ## 4. Software Bill of Materials (SBOM)
 
 Standard SPDX 2.3 JSON SBOM documents are generated automatically during CI packaging via `scripts/generate-sbom.sh`:
+
+> [!NOTE]
+> **Scope limitation (honest):** each SBOM is an inventory of the Go module
+> dependencies parsed from the target's `go.mod` — it does not derive
+> dependencies from the built binary, resolve module `replace` directives, or
+> inventory the embedded frontend, native installer payloads, or AppImage
+> runtime. Treat it as a component manifest of the Go module graph, not a
+> verified complete artifact inventory. The filenames' attestation covers the
+> document itself, not inventory completeness.
 
 - **CLI SBOM:** `sendbeam-cli.spdx.json`
 - **Desktop SBOM:** `sendbeam-desktop.spdx.json`
@@ -165,23 +174,21 @@ The authoritative branch (`main`) is protected by automated GitHub branch rulese
 
 1. **Pull Request Requirement:** All changes must land via pull requests; direct pushes to `main` are disabled.
 2. **Linear History:** Squash-merging or fast-forward rebasing is enforced; merge commits are disallowed.
-3. **Required Status Checks:** Every pull request must pass all automated status checks before merge:
-   - `CI/branding (legacy naming check)`
-   - `CI/metadata & attribution hygiene`
-   - `CI/packages/wire (vet, test, race, fuzz smoke)`
-   - `CI/packages/engine (vet, test, race)`
-   - `CI/apps/server (vet, test, race)`
-   - `CI/apps/cli (vet, test, race)`
-   - `CI/desktop (server gates, linux build)`
-   - `CI/web (lint, typecheck, unit tests, svelte-check, build)`
-   - `CI/differential parity (wire, pairing, auth, paths)`
-   - `CI/e2e (chromium, firefox, webkit, mobile-webkit)`
-   - `CI/container (build + smoke)`
-   - `distribution/cli (darwin/amd64, darwin/arm64, linux/amd64, linux/arm64, windows/amd64, windows/arm64)`
-   - `distribution/desktop (linux, macos, windows)`
-   - `distribution/exact artifacts checklist`
-   - `distribution/manifest & checksum verification`
-4. **Attribution & Metadata Enforcement:** The `CI/metadata & attribution hygiene` check rejects AI co-authorship tags, auto-generated bot footers, and malformed commit summaries.
+3. **Required Status Checks:** Every pull request must pass the enforced status checks before merge. The live ruleset (`main-protection`, ruleset id 20922989) currently requires exactly these ten contexts:
+   - `metadata & attribution hygiene`
+   - `web (lint, typecheck, test, build)`
+   - `e2e (chromium, firefox)`
+   - `packages/wire (vet, test, build)`
+   - `packages/engine (vet, test, build)`
+   - `apps/server (vet, test, build)`
+   - `apps/cli (vet, test, build)`
+   - `desktop (server gates + window build)`
+   - `branding (no stale pre-rename references)`
+   - `container (build + smoke)`
+
+   These names match the current `ci.yml` job names. Additional green jobs — `differential parity (Go <-> TS)` (runs in CI but is **not** in the required list) and the `distribution/*` packaging jobs (path-filtered, not required) — are valuable evidence but are **not** merge gates today (see the pending owner decisions below). Earlier prose claiming these were required exceeded the observed settings and has been corrected.
+
+4. **Attribution & Metadata Enforcement:** The `metadata & attribution hygiene` check rejects AI co-authorship tags, auto-generated bot footers, malformed commit summaries, internal planning-tag PR titles, and manual `(#N)` suffixes (GitHub adds those on squash merge).
 5. **No Force Pushes or Deletions:** Protected against history rewrites.
 
 ---
@@ -190,19 +197,19 @@ The authoritative branch (`main`) is protected by automated GitHub branch rulese
 
 SendBeam tracks and adheres to the **OpenSSF Best Practices Badge** criteria (Passing level):
 
-| Section            | Requirement              | Status | SendBeam Implementation / Evidence                                                              |
-| :----------------- | :----------------------- | :----- | :---------------------------------------------------------------------------------------------- |
-| **Basics**         | Open Source License      | Met    | MIT License (`LICENSE`)                                                                         |
-| **Basics**         | Clear Documentation      | Met    | `README.md`, `docs/protocol.md`, `docs/threat-model.md`, `docs/HOSTING.md`                      |
-| **Basics**         | Project Website          | Met    | Project site: github.com/Akshay7273/sendbeam                                                    |
-| **Change Control** | Public Version Control   | Met    | Git repository on GitHub (`Akshay7273/sendbeam`)                                                |
-| **Change Control** | Unique Version Tags      | Met    | SemVer tags (`v1.7.0`, `v1.8.0`) signed and published with release notes                        |
-| **Reporting**      | Vulnerability Disclosure | Met    | `SECURITY.md` with GitHub Private Vulnerability Reporting and defined response SLAs             |
-| **Quality**        | Automated Build & Test   | Met    | Comprehensive test runner (`just test`), unit, integration, and E2E suites                      |
-| **Quality**        | Continuous Integration   | Met    | GitHub Actions workflow (`ci.yml`) runs on all PRs and commits with 22 required checks          |
-| **Security**       | Strong Cryptography      | Met    | SPAKE2+ (RFC 9382), AES-256-GCM, Ed25519 signatures, Minisign, SHA-256                          |
-| **Security**       | Safe Memory Handling     | Met    | Implemented in memory-safe languages (Go, TypeScript); strict buffer bounds                     |
-| **Security**       | Dynamic & Fuzz Testing   | Met    | 22 Go native fuzz targets (`docs/fuzzing.md`), nightly matrix fuzzing, OSS-Fuzz build           |
-| **Security**       | Differential Parity      | Met    | Cross-language test harness exercising Go and TS codecs over 2,000 cases per run                |
-| **Security**       | Supply Chain Assurance   | Met    | SLSA Level 3 provenance, SPDX 2.3 SBOMs, Minisign signatures, Sigstore OIDC, SHA-pinned actions |
-| **Analysis**       | Static Code Analysis     | Met    | `golangci-lint`, `go vet`, `svelte-check`, TypeScript compiler (`tsc`) enforced in CI           |
+| Section            | Requirement              | Status  | SendBeam Implementation / Evidence                                                                                                                                                                                            |
+| :----------------- | :----------------------- | :------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Basics**         | Open Source License      | Met     | MIT License (`LICENSE`)                                                                                                                                                                                                       |
+| **Basics**         | Clear Documentation      | Met     | `README.md`, `docs/protocol.md`, `docs/threat-model.md`, `docs/HOSTING.md`                                                                                                                                                    |
+| **Basics**         | Project Website          | Met     | Project site: github.com/Akshay7273/sendbeam                                                                                                                                                                                  |
+| **Change Control** | Public Version Control   | Met     | Git repository on GitHub (`Akshay7273/sendbeam`)                                                                                                                                                                              |
+| **Change Control** | Unique Version Tags      | Partial | SemVer tags are annotated and published with release notes. **The v2.2.0 tag is not cryptographically signed** (verified against the tag API object); Git-tag signing is a pending owner decision, not an existing assurance. |
+| **Reporting**      | Vulnerability Disclosure | Met     | `SECURITY.md` with GitHub Private Vulnerability Reporting and defined response SLAs                                                                                                                                           |
+| **Quality**        | Automated Build & Test   | Met     | Comprehensive test runner (`just ci-test` for CI parity), unit, integration, and E2E suites                                                                                                                                   |
+| **Quality**        | Continuous Integration   | Met     | GitHub Actions workflow (`ci.yml`) runs on all PRs and commits; ten required checks enforced by the live ruleset (see §8)                                                                                                     |
+| **Security**       | Strong Cryptography      | Met     | SPAKE2 (RFC 9382) pairing with SPAKE2+ derived-credential confirmation, AES-256-GCM, Ed25519 signatures, Minisign, SHA-256                                                                                                    |
+| **Security**       | Safe Memory Handling     | Met     | Implemented in memory-safe languages (Go, TypeScript); strict buffer bounds                                                                                                                                                   |
+| **Security**       | Dynamic & Fuzz Testing   | Met     | 22 Go native fuzz targets (`docs/fuzzing.md`), nightly matrix fuzzing, OSS-Fuzz build                                                                                                                                         |
+| **Security**       | Differential Parity      | Met     | Cross-language test harness exercising Go and TS codecs over 2,000 cases per run                                                                                                                                              |
+| **Security**       | Supply Chain Assurance   | Partial | Build-provenance attestations, SPDX 2.3 SBOMs, Minisign signatures, Sigstore OIDC, SHA-pinned actions. **No independent SLSA-level certification has been performed**; attestations exist, a verified level claim does not.   |
+| **Analysis**       | Static Code Analysis     | Met     | `golangci-lint`, `go vet`, `svelte-check`, TypeScript compiler (`tsc`) enforced in CI                                                                                                                                         |

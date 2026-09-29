@@ -6,12 +6,18 @@ SendBeam is peer-to-peer file transfer software engineered with end-to-end encry
 
 Only the current and immediately preceding minor releases receive security patches. Older versions must be upgraded.
 
-| Version | Supported          | Status                                      |
-| ------- | ------------------ | ------------------------------------------- |
-| 1.8.x   | :white_check_mark: | Current active release (Protocol assurance) |
-| 1.7.x   | :white_check_mark: | Maintained for critical security patches    |
-| 1.6.x   | :x:                | Unsupported — upgrade to 1.7.x or 1.8.x     |
-| < 1.6.0 | :x:                | Unsupported — upgrade immediately           |
+> [!NOTE]
+> **Owner decision pending (audit F12):** the _support-window policy itself_
+> (how many minors, for how long) is an owner decision — the table below states
+> the released version history as of 2026-09-30 without inventing maintenance
+> commitments.
+
+| Version | Supported          | Status                                             |
+| ------- | ------------------ | -------------------------------------------------- |
+| 2.2.x   | :white_check_mark: | Latest stable release                              |
+| 2.1.x   | :white_check_mark: | Previous minor release                             |
+| 2.0.x   | :x:                | Released; patch eligibility pending owner decision |
+| 1.x     | :x:                | Unsupported — upgrade to 2.x                       |
 
 ## Reporting a Vulnerability
 
@@ -49,7 +55,7 @@ SendBeam's security architecture is formally documented in [Threat Model](docs/t
 
 ### In Scope
 
-- **Cryptographic Failures:** Weaknesses in SPAKE2+ key exchange, AES-256-GCM frame sequencing, directional key schedules, HKDF derivations, or traffic padding.
+- **Cryptographic Failures:** Weaknesses in the SPAKE2 (RFC 9382) pairing key exchange and its SPAKE2+ derived-credential confirmation (see [Protocol Specification](docs/protocol.md)), AES-256-GCM frame sequencing, directional key schedules, HKDF derivations, or traffic padding.
 - **Wire Framing & Parsing:** Memory corruption, panics, out-of-bounds reads/writes, or CPU exhaustion from untrusted network frames in Go (`packages/wire`) or TypeScript (`packages/protocol`).
 - **Filesystem Traversal:** Escaping designated receive directories via crafted filenames or symlinks (`NormalizeTransferPath`).
 - **Mesh Trust & Revocation:** Forged revocation records, sequence number rollback attacks, or unauthorized device trust additions (`packages/engine/trust`).
@@ -66,4 +72,4 @@ SendBeam's security architecture is formally documented in [Threat Model](docs/t
 
 ## Supply Chain & Verification
 
-All official releases provide SLSA Level 3 build provenance, SPDX SBOMs, Minisign signatures, and Sigstore/cosign keyless OIDC attestations. For verification instructions, refer to [Supply Chain Security](docs/supply-chain.md).
+Official releases ship **build-provenance attestations** (GitHub `attest-build-provenance`), SPDX SBOMs, Minisign signatures, and Sigstore/cosign keyless OIDC attestations. These are the assurances that exist today; no independent SLSA-level certification has been performed, so no SLSA level is claimed (see [Supply Chain Integrity](docs/supply-chain.md) for the evidence boundaries). For verification instructions, refer to [Supply Chain Security](docs/supply-chain.md).

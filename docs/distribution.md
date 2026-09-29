@@ -71,7 +71,7 @@ Build and packaging metadata is resolved deterministically through [scripts/vers
 | **Debian Package Version**   | `0.0.0~dev+git.<shortsha>`         | `X.Y.Z`                          | `X.Y.Z~rcN`                      | Debian-compliant package version string                              |
 | **Git Commit**               | Exact 40-character commit SHA      | Exact 40-character commit SHA    | Exact 40-character commit SHA    | Full git commit SHA embedded via `-ldflags`                          |
 
-Wire protocol versioning remains immutable (`sendbeam/1` and `sendbeam/2`) and is decoupled from product release versions.
+Wire protocol versioning remains immutable (`sendbeam/1` one-time rooms; `sendbeam/3` forward-secret trusted sessions since v1.9, with `sendbeam/2` accepted as legacy peer input only per ADR 0010) and is decoupled from product release versions.
 
 ### CLI Version UX
 

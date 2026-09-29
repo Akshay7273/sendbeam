@@ -57,10 +57,28 @@ typecheck:
     pnpm -r typecheck
 
 # Run all tests
-test:
+@test:
+    just js-test
+    just go-test
+
+# CI-parity Go tests (race detector, as enforced in ci.yml)
+@ci-test:
+    just js-test
+    just go-test-race
+
+# Fast JS test loop
+@js-test:
     pnpm -r test
+
+# Fast local Go tests (no race detector)
+@go-test:
     for m in packages/wire packages/engine apps/server apps/cli; do ( cd "$m" && go test ./... ) || exit 1; done
     ( cd apps/desktop && CGO_ENABLED=0 go test -tags server ./... ) || exit 1
+
+# CI-parity race-enabled Go tests (mirrors ci.yml)
+@go-test-race:
+    for m in packages/wire packages/engine apps/server apps/cli; do ( cd "$m" && go test -race ./... ) || exit 1; done
+    ( cd apps/desktop && CGO_ENABLED=0 go test -race -tags server ./... ) || exit 1
 
 # Format
 fmt:

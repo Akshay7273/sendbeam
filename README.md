@@ -161,7 +161,7 @@ SendBeam release packages are hashed with SHA-256 and signed cryptographically w
 
 ```bash
 # Clone the repository and run the verification script against your downloaded artifacts:
-./scripts/verify-release.sh ./dist
+./scripts/verify-release.sh --dir ./dist
 ```
 
 ### 2. Manual Verification
@@ -198,7 +198,7 @@ validation is tracked in [docs/platform-evidence.md](docs/platform-evidence.md))
 
 SendBeam v1.5 introduces cryptographic device identity, mutual pairing, and instant transfer automation across your personal device fleet — with zero cloud accounts or centralized directories:
 
-- **Pair Once, Connect Forever:** Pair two devices over an authenticated SPAKE2 ceremony (`sendbeam pair` in CLI, or via Web/Desktop UI). Once paired, devices establish mutual authenticated sessions (`sendbeam/2`) without typing room codes.
+- **Pair Once, Connect Forever:** Pair two devices over an authenticated SPAKE2 (RFC 9382) ceremony (`sendbeam pair` in CLI, or via Web/Desktop UI). Once paired, devices establish mutual forward-secret sessions (`sendbeam/3`) without typing room codes.
 - **Targeted & Multi-Device Broadcast Sending (v1.7):** Send files directly to one or multiple paired devices concurrently with independent failure isolation:
   ```bash
   sendbeam send report.pdf @macbook
@@ -210,7 +210,7 @@ SendBeam v1.5 introduces cryptographic device identity, mutual pairing, and inst
   sendbeam send --private sensitive-doc.pdf
   ```
 - **Signed Mesh Revocation Sync (v1.7):** Revoking a device propagates signed revocation records across mutual peers in your mesh automatically and verifiably.
-- **Privacy-Preserving Presence:** Devices announce availability using 15-minute epoch-rotated blinded handles across the Internet and blinded UDP multicast beacons on LANs. The rendezvous server never learns device identities, IP associations, or pairwise relationships.
+- **Privacy-Preserving Presence:** Devices announce availability using 15-minute epoch-rotated blinded handles across the Internet and blinded UDP multicast beacons on LANs. The rendezvous server never learns device identities or pairwise relationships from the protocol itself — but blinded handles do **not** provide transport anonymity: connections inherently reveal source IP addresses and timing metadata to the server and network observers (see [threat model](docs/threat-model.md)).
 - **Unified Across All Platforms:** Supported in the CLI, Desktop application, and evergreen web browsers via origin-scoped IndexedDB storage.
 
 ## Self-hosting
@@ -269,6 +269,9 @@ commitments, see [SECURITY.md](SECURITY.md).
 - [State Storage Locations](docs/state-storage.md) — persistent config, journals, sender records, and keychains
 - [Supply Chain Integrity](docs/supply-chain.md) — build provenance attestations, SPDX 2.3 SBOMs, checksum manifests
 - [Updater Architecture](docs/updater.md) — self-update channels, cryptographic verification, and rollback safety
+- [Release Gate v2.2](docs/RELEASE-v2.2.md) — v2.2 milestone criteria, upgrade/rollback evidence, and release checklist
+- [Release Gate v2.1](docs/RELEASE-v2.1.md) — v2.1 milestone criteria, offline policy documentation, and release checklist
+- [Cross-platform evidence ledger](docs/platform-evidence.md) — per-platform evidence tiers (code/package/tests/packaged UI/physical devices)
 - [Release Gate v1.9 (Trusted Handoffs)](docs/RELEASE-v1.9.md) — v1.9 milestone criteria, forward-secret key exchange, and release checklist
 - [Release Gate v1.8.1 (Safety Patch)](docs/RELEASE-v1.8.1.md) — v1.8.1 safety patch criteria, honest capability matrix, and verification checklist
 - [Release Gate v1.8](docs/RELEASE-v1.8.md) — v1.8 milestone criteria, verification evidence, and release checklist
@@ -289,10 +292,19 @@ just install     # install JS + Go dependencies
 just dev         # web app with HMR + Go server over https://localhost:8443
 just build       # build the web application and server binary
 just lint        # lint TypeScript, Svelte, and every Go module
-just test        # run JavaScript and Go test suites
+just test        # fast local test loop (no race detector)
+just ci-test     # CI-parity: race-enabled Go tests + full JS suite
 just fuzz-smoke  # fast fuzz seed corpus replay across all targets
 just fuzz        # active Go native continuous fuzzing (configurable duration/target)
 ```
+
+> [!NOTE]
+> `just test`/`just lint` are the fast local loops — no `-race`, and go vet runs
+> even without golangci-lint. CI is stricter: Go tests run with `-race` plus the
+> differential-parity gate. Mirror CI locally with `just ci-test` before pushing.
+> There is no automated docs-drift gate yet (links, version tables, protocol
+> claims) — release records and the evidence ledger are reconciled manually
+> (see [docs/platform-evidence.md](docs/platform-evidence.md)).
 
 For a CLI peer against the local development server, add `--insecure-skip-verify`
 (the local certificate is self-signed); never use it with a deployed server.

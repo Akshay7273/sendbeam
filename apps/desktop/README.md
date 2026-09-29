@@ -67,10 +67,17 @@ go build -tags server -o sendbeam-desktop-server .
 #### Linux (AMD64)
 
 - **AppImage**: Standalone executable bundle `SendBeam-linux-amd64.AppImage`.
-- **Debian package**: Native `.deb` package `sendbeam-desktop_1.4.0_amd64.deb` containing desktop launcher, icons, and binaries.
+- **Debian package**: Native `.deb` package `sendbeam-desktop_<version>_amd64.deb` containing desktop launcher, icons, and binaries.
 
 > [!NOTE]
-> Public signed installers and automated update channels will be published in a future milestone. Current packaging targets are unsigned validation builds.
+> Release artifacts carry **cryptographic artifact signatures** (Minisign +
+> Sigstore, verifiable via `scripts/verify-release.sh` and the documented
+> Minisign public key) and build-provenance attestations. **OS-publisher
+> signing** (Apple notarization/Developer ID, Microsoft code-signing
+> certificates) is a separate trust layer and remains deferred — installers may
+> show Gatekeeper/SmartScreen warnings until then. Signed automated update
+> channels exist (`stable.json`/`beta.json` minisig-signed manifests; see
+> [docs/updater.md](../../docs/updater.md)).
 
 ## Test
 
