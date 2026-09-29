@@ -129,6 +129,30 @@ To be completed by the maintainer at release time (standing authorization for th
 - [ ] Release notes published from this document; v2.0 online/browser regressions re-run (full CI matrix green)
 - [ ] Post-merge evidence: upgrade smoke (v2.1 profile → v2.2, routines stay inert until granted) and rollback smoke (v2.2 → v2.1, recipe files inert on disk)
 
+### Reconciliation addendum (V221-PR01, 2026-09-30)
+
+The checklist above was left unchecked at release time. Items that could be
+verified post-hoc from the repository and GitHub API, with observed evidence:
+
+- **Zero open PRs at publish instant:** verified — API shows 0 PRs open between
+  the #225 merge (18:12:36Z) and release publication (18:23:35Z) on 2026-09-20.
+- **Final-commit CI green:** verified — run `35528318440` on `87d2628`
+  (2026-09-20): all 11 required jobs green.
+- **Tag target SHA:** `87d2628fa60f8c55ed174c1a119d86824444df05` (the #225
+  merge commit).
+- **Tag:** `v2.2.0` is annotated (tag object `0cf3ca5e`, tagger `Akshay7273`,
+  2026-09-20T18:13:03Z, message "SendBeam v2.2.0 — Repeatable Handoffs");
+  release `draft: false`, `prerelease: false`, 21 assets.
+- **Signed artifact verification:** minisign verification of the published
+  `SHA256SUMS.txt` against the committed `minisign.pub` re-performed 2026-09-30
+  — **OK** (key ID `BA67BC598735C8DC`). Note: the current signature comment is
+  `scrub:1` — the release assets and manifest were re-signed with the same key
+  on 2026-09-29 by the disclosed domain-scrub operation (PRs #235–#240),
+  replacing the original release-day signature. Sigstore bundle present.
+- **Remaining unverified (unchanged, still open):** physical upgrade/rollback
+  smoke on real hosts, packaged-UI exercise, and all real-device/real-LAN rows —
+  see `docs/platform-evidence.md` for the per-platform evidence ledger.
+
 ---
 
 ## 10. Milestone Sign-Off Checklist
