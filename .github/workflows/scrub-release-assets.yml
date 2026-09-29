@@ -100,7 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           for f in *.spdx.json; do
-            sed -i 's|https://omnitrix\.space|https://github.com/Akshay7273/sendbeam|g' "$f"
+            sed -i -e 's|https://omnitrix\.space|https://github.com/Akshay7273/sendbeam|g' -e 's|omnitrix\.space|github.com/Akshay7273/sendbeam|g' "$f"
             python3 -m json.tool "$f" > /dev/null
           done
           ! grep -a -q omnitrix *.spdx.json || { echo "[-] SBOM still dirty" >&2; exit 1; }
@@ -122,7 +122,7 @@ jobs:
               *) echo "[-] unknown control compression: $ctrl_t" >&2; exit 1 ;;
             esac
             mkdir ctrl && $dec "$ctrl_t" -C ctrl
-            sed -i 's|https://omnitrix\.space|https://github.com/Akshay7273/sendbeam|g' ctrl/control
+            sed -i -e 's|https://omnitrix\.space|https://github.com/Akshay7273/sendbeam|g' -e 's|omnitrix\.space|github.com/Akshay7273/sendbeam|g' ctrl/control
             $enc "$ctrl_t" -C ctrl .
             ar rc "../$f.new" debian-binary "$ctrl_t" "$data_t"
             cd ..
@@ -153,7 +153,7 @@ jobs:
             members=$(tar -tzf "$f")
             rm -rf .t && mkdir .t
             tar -xzf "$f" -C .t
-            find .t -name 'README.md' -exec sed -i 's|https://omnitrix\.space|https://github.com/Akshay7273/sendbeam|g' {} +
+            find .t -name 'README.md' -exec sed -i -e 's|https://omnitrix\.space|https://github.com/Akshay7273/sendbeam|g' -e 's|omnitrix\.space|github.com/Akshay7273/sendbeam|g' {} +
             (cd .t && printf '%s\n' "$members" | tar -czf "../$f.new" -T -)
             mv "$f.new" "$f"
             rm -rf .t
@@ -173,7 +173,7 @@ jobs:
             zipinfo -1 "$f" > .z/members.txt
             unzip -q "$f" -d .z
             find .z -name 'README.md' -not -path '*/.z/members.txt' \
-              -exec sed -i 's|https://omnitrix\.space|https://github.com/Akshay7273/sendbeam|g' {} +
+              -exec sed -i -e 's|https://omnitrix\.space|https://github.com/Akshay7273/sendbeam|g' -e 's|omnitrix\.space|github.com/Akshay7273/sendbeam|g' {} +
             (cd .z && zip -q -X "../$f.new" -@ < members.txt)
             mv "$f.new" "$f"
             rm -rf .z
