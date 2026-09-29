@@ -22,11 +22,14 @@ import (
 
 // LocalPairingService exposes offline first-time pairing to the desktop
 // frontend (V21-PR06). It wraps the localpairing package with Wails-bound
-// methods.
+// methods and persists the derived pairwise credential on success, exactly
+// like the online pairing path, so subsequent local transfers can resolve the
+// pair secret.
 type LocalPairingService struct {
 	mu       sync.Mutex
 	identity *trust.IdentityManager
 	store    trust.Store
+	secrets  trust.CredentialStore
 
 	// Active invitation state (inviter side).
 	srv        *localrendezvous.Server
@@ -34,9 +37,11 @@ type LocalPairingService struct {
 	masterKey  []byte
 }
 
-// NewLocalPairingService creates the service.
-func NewLocalPairingService(idMgr *trust.IdentityManager, store trust.Store) *LocalPairingService {
-	return &LocalPairingService{identity: idMgr, store: store}
+// NewLocalPairingService creates the service. The credential store is
+// required for pairing to be usable for transfers: without it the derived
+// pair secret is never persisted and sends to the paired device fail.
+func NewLocalPairingService(idMgr *trust.IdentityManager, store trust.Store, secrets trust.CredentialStore) *LocalPairingService {
+	return &LocalPairingService{identity: idMgr, store: store, secrets: secrets}
 }
 
 // LocalInvitationView is the JSON-serializable invitation for the UI.
@@ -139,7 +144,7 @@ func (s *LocalPairingService) AcceptPairing(ctx context.Context, deviceName stri
 		deviceName = "Desktop"
 	}
 
-	coordinator := trust.NewPairingCoordinator(s.identity, s.store)
+	coordinator := trust.NewPairingCoordinatorWithCredentials(s.identity, s.store, s.secrets)
 	res, err := localpairing.Accept(ctx, srv, localpairing.Options{
 		Coordinator: coordinator,
 		DeviceName:  deviceName,
@@ -169,7 +174,7 @@ func (s *LocalPairingService) JoinPairing(ctx context.Context, invitation, devic
 		deviceName = "Desktop"
 	}
 
-	coordinator := trust.NewPairingCoordinator(s.identity, s.store)
+	coordinator := trust.NewPairingCoordinatorWithCredentials(s.identity, s.store, s.secrets)
 	res, err := localpairing.Join(ctx, in, localpairing.Options{
 		Coordinator: coordinator,
 		DeviceName:  deviceName,

@@ -89,7 +89,11 @@ func Join(ctx context.Context, in *Invitation, o Options) (*trust.PairingResult,
 	if len(o.MasterKey) == 0 {
 		return nil, errors.New("localpairing: master key required")
 	}
-	if time.Now().After(in.ExpiresAt) {
+	// A parsed invitation carries no embedded expiry (the encoded form holds
+	// only address/token/fingerprint/master key); the pairing window is
+	// enforced server-side by the rendezvous token TTL. Callers that construct
+	// invitations programmatically may set ExpiresAt; honor it when present.
+	if !in.ExpiresAt.IsZero() && time.Now().After(in.ExpiresAt) {
 		return nil, errors.New("localpairing: invitation expired")
 	}
 

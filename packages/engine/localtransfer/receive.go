@@ -190,10 +190,21 @@ func ServeSession(ctx context.Context, sess *localrendezvous.Session, opts Serve
 
 	// Pin the WebRTC data path to the session's remote network: the
 	// joiner's data channel may only use the validated local peer address.
+	// The joiner's own session-local address is included too — without it
+	// the gather filter (which pins candidates to the peer's /32) would
+	// drop the joiner's interface candidate and a cross-host LAN transfer
+	// could never connect; loopback-only tests never surfaced this. The
+	// extra address comes from the established session, stays on the same
+	// approved link, and the peer is authenticated by the ceremony.
 	var ips []net.IP
 	if host, _, serr := net.SplitHostPort(sess.RemoteAddr().String()); serr == nil {
 		if ip := net.ParseIP(host); ip != nil {
-			ips = []net.IP{ip}
+			ips = append(ips, ip)
+		}
+	}
+	if host, _, lerr := net.SplitHostPort(sess.LocalAddr().String()); lerr == nil {
+		if ip := net.ParseIP(host); ip != nil {
+			ips = append(ips, ip)
 		}
 	}
 

@@ -198,7 +198,7 @@ func main() {
 	var localSvc *engine.LocalService
 	var recipeSvc *engine.RecipeService
 	if deviceSvc != nil {
-		localPairingSvc = engine.NewLocalPairingService(deviceSvc.GetIdentityManager(), deviceSvc.GetStore())
+		localPairingSvc = engine.NewLocalPairingService(deviceSvc.GetIdentityManager(), deviceSvc.GetStore(), deviceSvc.GetCredentialStore())
 
 		// V22-PR02: saved handoff recipes — one-shot manual runs through
 		// the production outbox, sharing the desktop trust store. The

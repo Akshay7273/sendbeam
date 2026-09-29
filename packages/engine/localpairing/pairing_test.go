@@ -266,6 +266,67 @@ func TestJoinExpiredInvitationFails(t *testing.T) {
 	}
 }
 
+// Regression (V221-PR02 harness finding): the wire-encoded invitation carries
+// no embedded expiry, so ParseInvitation leaves ExpiresAt at the zero value —
+// and Join then rejected EVERY parsed invitation as "expired". The zero value
+// means "no client-side deadline; the rendezvous token window governs", and
+// must not fail the join. This exercises the exact production CLI path:
+// Encode → ParseInvitation → Join against a real local rendezvous server.
+func TestJoinAcceptsParsedInvitationWithNoEmbeddedExpiry(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	alice := newTestDevice(t)
+	bob := newTestDevice(t)
+	aliceID := alice.deviceID(t)
+
+	srv, addr := startServer(t, alice.store)
+	in, err := CreateInvitation(srv, addr, aliceID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	masterKey, err := in.MasterKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Production round-trip: the CLI join side receives exactly this string.
+	in2, err := ParseInvitation(in.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !in2.ExpiresAt.IsZero() {
+		t.Fatalf("parsed invitation must carry no embedded expiry, got %v", in2.ExpiresAt)
+	}
+
+	acceptDone := make(chan *trust.PairingResult, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		res, err := Accept(ctx, srv, Options{
+			Coordinator: alice.coord,
+			DeviceName:  "alice",
+			MasterKey:   masterKey,
+		})
+		acceptDone <- res
+		acceptErr <- err
+	}()
+
+	if _, err := Join(ctx, in2, Options{
+		Coordinator: bob.coord,
+		DeviceName:  "bob",
+		MasterKey:   masterKey,
+	}); err != nil {
+		t.Fatalf("join with parsed (zero-expiry) invitation failed: %v", err)
+	}
+	if err := <-acceptErr; err != nil {
+		t.Fatalf("accept failed: %v", err)
+	}
+	<-acceptDone
+	if n, _ := bob.store.ListDevices(ctx); len(n) != 1 {
+		t.Fatalf("bob should hold exactly one paired device, got %v", n)
+	}
+}
+
 func TestJoinNilInvitationFails(t *testing.T) {
 	_, err := Join(context.Background(), nil, Options{})
 	if err == nil {

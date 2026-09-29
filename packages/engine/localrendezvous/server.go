@@ -459,6 +459,9 @@ type Session struct {
 // RemoteAddr returns the peer's network address.
 func (sess *Session) RemoteAddr() net.Addr { return sess.conn.RemoteAddr() }
 
+// LocalAddr returns the local network address of the session connection.
+func (sess *Session) LocalAddr() net.Addr { return sess.conn.LocalAddr() }
+
 // ReadFrame reads one length-prefixed frame, bounded by MaxFrameBytes.
 func (sess *Session) ReadFrame(ctx context.Context) ([]byte, error) {
 	if err := ctx.Err(); err != nil {

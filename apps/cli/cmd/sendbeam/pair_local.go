@@ -131,12 +131,18 @@ func executePairLocalInvite(args []string, stdout, stderr io.Writer) int {
 	if hostname == "" {
 		hostname = "CLI Device"
 	}
-	coordinator := trust.NewPairingCoordinator(env.IdentityMgr, env.TrustStore)
+	// Persist the derived pair credential: without it the paired device can be
+	// trusted but never used — every send to it fails at secret resolution.
+	coordinator := trust.NewPairingCoordinatorWithCredentials(env.IdentityMgr, env.TrustStore, env.Secrets)
 	res, err := localpairing.Accept(ctx, srv, localpairing.Options{
 		Coordinator: coordinator, DeviceName: hostname, MasterKey: masterKey,
 	})
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: pairing failed: %v\n", err)
+		return 1
+	}
+	if err := env.Secrets.SetSecret(res.PeerRecord.DeviceID, res.KPair); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error persisting pair secret: %v\n", err)
 		return 1
 	}
 	if *jsonOutput {
@@ -200,12 +206,18 @@ func executePairLocalJoinStdin(args []string, stdin io.Reader, stdout, stderr io
 	if hostname == "" {
 		hostname = "CLI Device"
 	}
-	coordinator := trust.NewPairingCoordinator(env.IdentityMgr, env.TrustStore)
+	// Persist the derived pair credential: without it the paired device can be
+	// trusted but never used — every send to it fails at secret resolution.
+	coordinator := trust.NewPairingCoordinatorWithCredentials(env.IdentityMgr, env.TrustStore, env.Secrets)
 	res, err := localpairing.Join(ctx, in, localpairing.Options{
 		Coordinator: coordinator, DeviceName: hostname, MasterKey: masterKey,
 	})
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: pairing failed: %v\n", err)
+		return 1
+	}
+	if err := env.Secrets.SetSecret(res.PeerRecord.DeviceID, res.KPair); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error persisting pair secret: %v\n", err)
 		return 1
 	}
 	if *jsonOutput {
