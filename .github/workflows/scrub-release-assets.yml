@@ -60,7 +60,9 @@ jobs:
           mkdir -p work
           cd work
           gh release download "${{ inputs.tag }}" --repo "${{ github.repository }}" --clobber
-          echo "=== assets downloaded ==="
+          rm -f SHA256SUMS.txt SHA256SUMS.txt.minisig SHA256SUMS.txt.sigstore.json \
+                stable.json beta.json stable.json.minisig beta.json.minisig
+          echo "=== assets downloaded (regenerated originals removed) ==="
           ls -la
 
       - name: Scan assets (before)
