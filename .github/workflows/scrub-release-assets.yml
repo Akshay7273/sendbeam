@@ -266,7 +266,7 @@ jobs:
           ls -la updates
           cp updates/* work/
           echo "=== verify manifests reference new sums and are signed ==="
-          python3 - << 'PYEOF'
+          python3 -c '
           import json
           sums = {}
           for line in open("work/SHA256SUMS.txt"):
@@ -274,11 +274,12 @@ jobs:
               sums[n.strip()] = h
           for mf in ("work/stable.json", "work/beta.json"):
               d = json.load(open(mf))
-              assert d["channel"] == mf.split("/")[-1].split(".")[0]
-              for name, asset in d.get("assets", {}).items():
-                  assert name in sums, f"{mf}: {name} missing from SHA256SUMS"
-              print(f"{mf}: {len(d.get('assets', {}))} assets, all present in new SHA256SUMS")
-          PYEOF
+              ch = mf.split("/")[-1].split(".")[0]
+              assert d["channel"] == ch, mf
+              missing = [k for k in d.get("assets", {}) if k not in sums]
+              assert not missing, mf + ": missing " + str(missing)
+              print(mf + ": " + str(len(d.get("assets", {}))) + " assets, all in new SHA256SUMS")
+          '
           for ch in stable beta; do
             if [ -f "work/$ch.json" ]; then
               test -f "work/$ch.json.minisig" || { echo "[-] $ch.json unsigned" >&2; exit 1; }
