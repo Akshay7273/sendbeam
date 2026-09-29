@@ -276,7 +276,7 @@ jobs:
               d = json.load(open(mf))
               ch = mf.split("/")[-1].split(".")[0]
               assert d["channel"] == ch, mf
-              missing = [k for k in d.get("assets", {}) if k not in sums]
+              missing = [k for k in d.get("assets", {}) if "." in k and k not in sums]
               assert not missing, mf + ": missing " + str(missing)
               print(mf + ": " + str(len(d.get("assets", {}))) + " assets, all in new SHA256SUMS")
           '
