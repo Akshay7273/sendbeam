@@ -757,6 +757,9 @@ jobs:
 
       - name: Run Release Verification Gate (Minisign + Cosign + Checksums)
         run: |
+          # Official mode (default): minisign + sigstore bundle + payloads all
+          # required; --strict asserts payload completeness. No opt-out flags:
+          # reduced modes exist for users, not for the release pipeline.
           bash ./scripts/verify-release.sh --dir bundle --pubkey minisign.pub --strict
 
       - name: Verify update channel manifests

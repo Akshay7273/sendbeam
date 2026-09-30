@@ -110,8 +110,15 @@ cosign verify-blob \
 # 3. Verify asset checksums against the signed manifest:
 sha256sum -c SHA256SUMS.txt --ignore-missing
 
-# Or run the automated all-in-one verification script:
+# Or run the automated all-in-one verification script. Default mode is
+# official: minisign + sigstore bundle + at least one payload digest are all
+# REQUIRED, and it fails closed on missing signatures/tools/zero payloads.
 ./scripts/verify-release.sh --dir <release-dir> --pubkey minisign.pub
+
+# Reduced modes (truthful labels): --checksum-only authenticates the manifest
+# and verifies present payloads only; --skip-cosign is an entitlement for
+# releases that predate the sigstore bundle. See the script header for the
+# full signature policy.
 ```
 
 ---

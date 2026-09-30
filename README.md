@@ -160,9 +160,18 @@ SendBeam release packages are hashed with SHA-256 and signed cryptographically w
 ### 1. Automated Verification Script
 
 ```bash
-# Clone the repository and run the verification script against your downloaded artifacts:
+# Clone the repository and run the verification script against your downloaded artifacts.
+# Default mode = OFFICIAL: minisign + sigstore bundle + payload digests are all required;
+# it fails closed on missing signatures, missing tools, or zero verified payloads.
 ./scripts/verify-release.sh --dir ./dist
+
+# Reduced modes (truthful labels, never the official-release banner):
+./scripts/verify-release.sh --dir ./dist --checksum-only   # authenticate the manifest + verify present payloads only
+./scripts/verify-release.sh --dir ./dist --skip-cosign     # only for releases that predate the sigstore bundle
+./scripts/verify-release.sh --dir ./dist --strict          # additionally assert every listed payload is present
 ```
+
+Signature policy (what each mode asserts) is documented in the script header (`./scripts/verify-release.sh --help`).
 
 ### 2. Manual Verification
 
