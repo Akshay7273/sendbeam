@@ -29,3 +29,16 @@ Updated live as fixes merge. Sources of truth: this ledger + `docs/platform-evid
 | F23 | README verify command invalid; distribution.md link               | Medium   | ✅ **Resolved** (#242)                                                                                                                         | --dir form; link verified                                                                        |
 | F24 | Release notes omit limitations; unrelated fallback history        | Medium   | ✅ **Resolved** (#251, `99488bc`)                                                                                                              | own-gate-doc only + full limitations + visible missing-doc warning                               |
 | F25 | Local checks differ from CI; no docs-drift gate                   | Low      | ✅ **Resolved** (#242 ci-test + #252 `a9b5a5f` docs-consistency gate)                                                                          | deterministic links/manifests/required-checks checks in CI                                       |
+
+## v2.3 Desktop Handoff Workspace — milestone chain (completed 2026-09-30, physical rows gated)
+
+| Logical ID | PR                                                      | Merge SHA | Summary                                                                                                                            |
+| ---------- | ------------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| V23-PR01   | [#255](https://github.com/Akshay7273/sendbeam/pull/255) | `02863c4` | Maintainable frontend source tree (`frontend/src/`) + byte-exact deterministic assembler + CI determinism gate                     |
+| V23-PR02   | [#256](https://github.com/Akshay7273/sendbeam/pull/256) | `7be59ab` | Saved-handoff editor: RecipeService upsert surface (create/edit/duplicate, consent-preserving) + recipe UI + 5 service regressions |
+| V23-PR03   | [#257](https://github.com/Akshay7273/sendbeam/pull/257) | `20dbb1d` | Preview → approve → run wired to real service calls; save-gated; separate consent surfaces                                         |
+| V23-PR04   | [#258](https://github.com/Akshay7273/sendbeam/pull/258) | `d6b1a1b` | Delivery status: recipe → job → per-recipient attempts from the real outbox store; honest no-job shapes; 2 regressions             |
+| V23-PR05   | [#259](https://github.com/Akshay7273/sendbeam/pull/259) | `11e240c` | Visible watch/schedule runtime controls over the real service surface; foreground requirement stated in-UI                         |
+| V23-PR06   | [#260](https://github.com/Akshay7273/sendbeam/pull/260) | `dbc3a01` | Packaging rebuilds frontend from sources (8 desktop steps); v2.3 acceptance gate doc with explicit NOT RUN physical rows           |
+
+**Release-blocking:** packaged-UI physical acceptance rows + update/rollback smoke remain NOT RUN (see `docs/RELEASE-v2.3-acceptance.md`). They gate v2.3 publication, not further independent work. v2.4 (background services) and native mobile remain out of scope per the owner's direction.
