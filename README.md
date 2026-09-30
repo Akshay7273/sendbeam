@@ -185,7 +185,7 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 # Verify with Sigstore Cosign (keyless):
 cosign verify-blob \
   --bundle SHA256SUMS.txt.sigstore.json \
-  --certificate-identity-regexp 'https://github.com/Akshay7273/sendbeam/\.github/workflows/release\.yml@.*' \
+  --certificate-identity-regexp '^https://github\\.com/Akshay7273/sendbeam/\\.github/workflows/(release|scrub-release-assets)\\.yml@refs/(tags/v[0-9]+|heads/main)$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   SHA256SUMS.txt
 ```

@@ -100,10 +100,13 @@ Users and package maintainers can verify release assets using the following comm
 # 1. Verify Minisign signature over the checksum manifest:
 minisign -Vm SHA256SUMS.txt -P RWTcyDWHWbxnuo3LVM5mWoZrx0HDwSQzAZvXK1lPRcdtJxshUDxJh+rE
 
-# 2. Verify Sigstore Cosign OIDC bundle:
+# 2. Verify Sigstore Cosign OIDC bundle. The canonical signer identity is
+#    anchored to the release workflow (or the owner-approved asset-repair
+#    workflow) on tag refs / main — same policy the verification script
+#    (scripts/verify-release.sh) enforces:
 cosign verify-blob \
   --bundle SHA256SUMS.txt.sigstore.json \
-  --certificate-identity-regexp 'github.com/Akshay7273/sendbeam' \
+  --certificate-identity-regexp '^https://github\.com/Akshay7273/sendbeam/\.github/workflows/(release|scrub-release-assets)\.yml@refs/(tags/v[0-9]+|heads/main)$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS.txt
 
