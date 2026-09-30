@@ -202,6 +202,7 @@ The authoritative branch (`main`) is protected by automated GitHub branch rulese
    - `differential parity (Go <-> TS)` (cross-language byte parity is a hard merge gate)
    - `offlinelab (real-network local-only evidence)` (automated real-network offline regression)
    - `docs consistency (links, manifests, required-checks)` (documentation drift gate)
+   - `desktop frontend source determinism` (the embedded desktop UI must be byte-for-byte reproducible from `apps/desktop/frontend/src/`)
    - `distribution gate` (always-running aggregate: waits for the applicable distribution jobs when the PR touches distribution-relevant paths, and passes with an explicit _skipped — not applicable_ verdict on unrelated PRs, so path-filtered skips never block unrelated work)
 
    The enforced set matches the live ruleset exactly; earlier prose that overstated or understated it has been corrected.

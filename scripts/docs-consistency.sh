@@ -120,7 +120,7 @@ for mod in ("packages/wire", "packages/engine", "apps/server", "apps/cli"):
 
 sc = open("docs/supply-chain.md").read()
 sec = sc.split("Required Status Checks")[1].split("4. **")[0] if "Required Status Checks" in sc else ""
-doc_names = set(re.findall(r'`([a-z][^`]*(?:vet, test, build|typecheck|build|hygiene|references|firefox|parity|smoke|evidence|consistency)[^`]*)`', sec))
+doc_names = set(re.findall(r'`([a-z][^`]*(?:vet, test, build|typecheck|build|hygiene|references|firefox|parity|smoke|evidence|consistency|determinism)[^`]*)`', sec))
 
 # The doc must claim at least the ci job-name set where the doc row maps by
 # normalized containment; report genuine drift only.

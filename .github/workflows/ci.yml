@@ -275,6 +275,14 @@ jobs:
           curl -fsS http://127.0.0.1:8443/ | grep -q '<title>SendBeam'
           curl -fsS http://127.0.0.1:8443/ | grep -q 'integrity="sha384-'
 
+  desktop-frontend:
+    name: desktop frontend source determinism
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify dist is byte-for-byte reproducible from sources
+        run: python3 apps/desktop/frontend/tools/build.py --check
+
   docs-consistency:
     name: docs consistency (links, manifests, required-checks)
     runs-on: ubuntu-latest
