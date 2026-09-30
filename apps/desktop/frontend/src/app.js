@@ -31,6 +31,9 @@
       }
 
       const state = {
+        recipes: [],        // V23-PR02: saved handoff recipes (editor)
+        recipesLoaded: false,
+        recipeDraft: null,
         mode: "send",
         selected: [],
         devices: [],
@@ -52,7 +55,7 @@
 
       function setMode(mode) {
         state.mode = mode;
-        ["send", "receive", "devices", "interrupted", "settings"].forEach((m) => {
+        ["send", "receive", "devices", "interrupted", "recipes", "settings"].forEach((m) => {
           $("tab-" + m).classList.toggle("active", mode === m);
           $("panel-" + m).classList.toggle("active", mode === m);
         });
@@ -1441,3 +1444,199 @@
           if (localConsents && localConsents.length) showConsentPrompt(localConsents[0]);
         } catch (err) {}
       })();
+
+      // ======================================================================
+      // V23-PR02: saved handoff recipes — editor + list over RecipeService.
+      // New/edited recipes surface their literal errors; a material scope
+      // change drops the recipe back to approval-required (the backend
+      // re-hashes scope on save and resets the grant).
+      // ======================================================================
+      const RECIPES_SVC = SV.Service + ".RecipeService";
+
+      async function refreshRecipes() {
+        try {
+          state.recipes = (await call(RECIPES_SVC + ".ListRecipes")) || [];
+          state.recipesLoaded = true;
+          renderRecipeList();
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Failed to load recipes: " + e);
+        }
+      }
+
+      function renderRecipeList() {
+        const list = $("recipes-list");
+        if (!list) return;
+        list.replaceChildren();
+        if (!state.recipes.length) {
+          const empty = document.createElement("div");
+          empty.className = "muted";
+          empty.textContent = "No saved handoffs yet. Create one with New handoff.";
+          list.appendChild(empty);
+          return;
+        }
+        for (const entry of state.recipes) {
+          const row = document.createElement("button");
+          row.className = "recipe-row" + (state.recipeDraft && state.recipeDraft.id === entry.id ? " selected" : "");
+          row.textContent = `${entry.name} · ${entry.trigger} · ${entry.status}`;
+          row.addEventListener("click", () => openRecipeEditor(entry.id));
+          list.appendChild(row);
+        }
+      }
+
+      async function openRecipeEditor(id) {
+        try {
+          const r = await call(RECIPES_SVC + ".GetRecipe", id);
+          state.recipeDraft = {
+            id: r.id,
+            name: r.name,
+            sources: (r.sources || []).map((s) => ({ path: s.path, recursive: !!s.recursive })),
+            recipientIds: (r.recipients || []).map((x) => x.deviceId),
+            policy: r.networkPolicy || "online",
+            padding: !!r.requirePadding,
+            triggerKind: (r.trigger && r.trigger.kind) || "manual",
+            scheduleParams: (r.trigger && r.trigger.schedule) || null,
+            watchParams: (r.trigger && r.trigger.watch) || null,
+          };
+          renderRecipeEditor();
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Failed to open recipe: " + e);
+        }
+      }
+
+      function newRecipeDraft() {
+        state.recipeDraft = { id: "", name: "", sources: [], recipientIds: [], policy: "online", padding: false, triggerKind: "manual", scheduleParams: null, watchParams: null };
+        renderRecipeEditor();
+      }
+
+      function draftUpsert() {
+        const d = state.recipeDraft || {};
+        return {
+          id: d.id || "",
+          name: $("recipe-name").value.trim(),
+          sources: d.sources,
+          recipientDeviceIDs: d.recipientIds,
+          networkPolicy: $("recipe-policy").value,
+          requirePadding: $("recipe-padding").checked,
+          triggerKind: $("recipe-trigger").value,
+          scheduleParams: $("recipe-trigger").value === "schedule" ? parseScheduleForm() : null,
+        };
+      }
+
+      function parseScheduleForm() {
+        const at = $("recipe-sched-time").value;   // HH:MM
+        const tz = $("recipe-sched-tz").value.trim() || "UTC";
+        const intervalM = parseInt($("recipe-sched-interval").value, 10);
+        if (at) return { kind: "daily", at, tz };
+        if (intervalM > 0) return { kind: "interval", everyMinutes: intervalM };
+        return null;
+      }
+
+      async function saveRecipeDraft() {
+        const btn = $("recipe-save");
+        try {
+          btn.disabled = true;
+          const payload = draftUpsert();
+          const saved = state.recipeDraft.id
+            ? await call(RECIPES_SVC + ".EditRecipe", state.recipeDraft.id, payload)
+            : await call(RECIPES_SVC + ".CreateRecipe", payload);
+          state.recipeDraft.id = saved.id;
+          setLiteral($("recipes-status"), "ok",
+            `Saved "${saved.name}" — status ${saved.status}. It stays inert until approved/previewed.`);
+          await refreshRecipes();
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Save failed: " + e);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function duplicateRecipeDraft() {
+        try {
+          if (!state.recipeDraft || !state.recipeDraft.id) return;
+          const name = ($("recipe-name").value.trim() || "copy") + " (copy)";
+          const dup = await call(RECIPES_SVC + ".DuplicateRecipe", state.recipeDraft.id, name);
+          setLiteral($("recipes-status"), "ok", `Duplicated as "${dup.name}" (${dup.status}).`);
+          await refreshRecipes();
+          await openRecipeEditor(dup.id);
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Duplicate failed: " + e);
+        }
+      }
+
+      function setLiteral(el, cls, text) {
+        if (!el) return;
+        el.replaceChildren();
+        const span = document.createElement("span");
+        span.className = cls;
+        span.textContent = text;
+        el.appendChild(span);
+      }
+
+      function renderRecipeEditor() {
+        const ed = $("recipe-editor");
+        if (!ed) return;
+        const d = state.recipeDraft || {};
+        $("recipe-name").value = d.name || "";
+        $("recipe-policy").value = d.policy || "online";
+        $("recipe-padding").checked = !!d.padding;
+        $("recipe-trigger").value = d.triggerKind || "manual";
+        toggleScheduleRows();
+        const src = $("recipe-sources");
+        src.replaceChildren();
+        for (const s of d.sources || []) {
+          const row = document.createElement("div");
+          row.className = "recipe-source-row";
+          const label = document.createElement("code");
+          label.textContent = s.path + (s.recursive ? " (recursive)" : "");
+          row.appendChild(label);
+          const rm = document.createElement("button");
+          rm.textContent = "Remove";
+          rm.addEventListener("click", () => {
+            state.recipeDraft.sources = state.recipeDraft.sources.filter((x) => x.path !== s.path);
+            renderRecipeEditor();
+          });
+          row.appendChild(rm);
+          src.appendChild(row);
+        }
+        const rec = $("recipe-recipients");
+        rec.replaceChildren();
+        for (const id of d.recipientIds || []) {
+          const chip = document.createElement("code");
+          chip.textContent = id.slice(0, 18) + "…";
+          rec.appendChild(chip);
+        }
+        $("recipe-status-line").textContent = d.id ? `Editing ${d.id.slice(0, 10)}…` : "New handoff (starts approval-required)";
+      }
+
+      function toggleScheduleRows() {
+        const kind = $("recipe-trigger").value;
+        $("recipe-schedule-rows").style.display = kind === "schedule" ? "" : "none";
+      }
+
+      function wireRecipeUI() {
+        $("new-recipe-btn").addEventListener("click", newRecipeDraft);
+        $("recipe-save").addEventListener("click", saveRecipeDraft);
+        $("recipe-dup").addEventListener("click", duplicateRecipeDraft);
+        $("add-source-btn").addEventListener("click", async () => {
+          if (!state.recipeDraft) state.recipeDraft = { id: "", sources: [] };
+          if (!state.recipeDraft.sources) state.recipeDraft.sources = [];
+          try {
+            const picked = await call(SV.Service + ".PickFiles");
+            for (const p of picked || []) {
+              state.recipeDraft.sources.push({ path: p, recursive: $("recipe-recursive").checked });
+            }
+            renderRecipeEditor();
+          } catch (e) {
+            setLiteral($("recipes-status"), "err", "Source pick failed: " + e);
+          }
+        });
+        $("recipe-trigger").addEventListener("change", toggleScheduleRows);
+        $("tab-recipes").addEventListener("click", async () => {
+          setMode("recipes");
+          await refreshRecipes();
+        });
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        if ($("tab-recipes")) wireRecipeUI();
+      });

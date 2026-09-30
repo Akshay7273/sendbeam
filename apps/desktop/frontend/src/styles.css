@@ -377,3 +377,29 @@
         font-size: 0.75rem;
         font-weight: 600;
       }
+
+/* V23-PR02: saved handoff editor */
+.recipe-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.recipe-row {
+  text-align: left; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  cursor: pointer; font-size: 13px;
+}
+.recipe-row:hover { border-color: var(--primary); }
+.recipe-row.selected { border-color: var(--primary); background: #1c2a3a; }
+#recipe-editor { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+#recipe-editor label { display: block; margin: 8px 0; font-size: 13px; }
+#recipe-editor input[type="text"], #recipe-editor select, #recipe-editor input[type="time"],
+#recipe-editor input[type="number"] {
+  width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); margin-top: 4px;
+}
+#recipe-editor h4 { margin: 14px 0 6px; font-size: 13px; color: var(--text-heading); }
+#recipe-sources .recipe-source-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
+#recipe-sources code { color: var(--accent); word-break: break-all; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips code { background: var(--surface); padding: 4px 6px; border-radius: 6px; font-size: 12px; }
+.recipe-actions { display: flex; gap: 8px; margin-top: 12px; }
+#recipes-status { margin: 8px 0; font-size: 12px; }
+#recipes-status .ok { color: var(--accent); }
+#recipes-status .err { color: var(--danger); word-break: break-word; }

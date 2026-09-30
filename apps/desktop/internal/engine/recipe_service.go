@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -417,6 +418,215 @@ func (s *RecipeService) RunRecipe(id string) (string, error) {
 		return "", err
 	}
 	return job.JobID, nil
+}
+
+// RecipeUpsert carries one save-handoff editor submission. Fields are the
+// editor's explicit inputs; validation and consent live in the engine.
+type RecipeUpsert struct {
+	// ID non-empty = edit of an existing recipe; empty = create.
+	ID string `json:"id"`
+	Name string `json:"name"`
+	Sources []RecipeSourceInput `json:"sources"`
+	RecipientDeviceIDs []string `json:"recipientDeviceIDs"`
+	NetworkPolicy string `json:"networkPolicy,omitempty"`
+	RequirePadding bool `json:"requirePadding"`
+	Include []string `json:"include,omitempty"`
+	Exclude []string `json:"exclude,omitempty"`
+	TriggerKind string `json:"triggerKind"`
+	ScheduleParams map[string]any `json:"scheduleParams,omitempty"`
+	WatchParams map[string]any `json:"watchParams,omitempty"`
+	MaxBytesPerRun int64 `json:"maxBytesPerRun,omitempty"`
+	MaxFilesPerRun int64 `json:"maxFilesPerRun,omitempty"`
+}
+
+// RecipeSourceInput is one explicit source root from the editor.
+type RecipeSourceInput struct {
+	Path string `json:"path"`
+	Recursive bool `json:"recursive"`
+}
+
+// CreateRecipe saves a NEW recipe from editor input. New recipes are inert:
+// status approval-required, no automation grant. Invalid sources,
+// untrusted recipients, or bad trigger parameters fail visibly; the caller
+// (frontend) must surface the error literally.
+func (s *RecipeService) CreateRecipe(in RecipeUpsert) (recipes.Recipe, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upsertLocked(in, nil, true)
+}
+
+// DuplicateRecipe copies an existing recipe's material scope into a new,
+// inert recipe under a new name. Grants are never copied.
+func (s *RecipeService) DuplicateRecipe(id, name string) (recipes.Recipe, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src, ok, err := s.store.Load(id)
+	if err != nil {
+		return recipes.Recipe{}, err
+	}
+	if !ok {
+		return recipes.Recipe{}, fmt.Errorf("recipe %q not found", id)
+	}
+	dup, err := s.upsertLocked(upsertFromRecipe(src, name), nil, true)
+	if err != nil {
+		return recipes.Recipe{}, err
+	}
+	return dup, nil
+}
+
+// EditRecipe applies editor input to an existing recipe. A material scope
+// change revokes any prior automation grant and drops the recipe back to
+// approval-required — implemented by re-hashing the scope on save (the
+// store checksum path), plus an explicit grant reset here.
+func (s *RecipeService) EditRecipe(id string, in RecipeUpsert) (recipes.Recipe, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok, err := s.store.Load(id)
+	if err != nil {
+		return recipes.Recipe{}, err
+	}
+	if !ok {
+		return recipes.Recipe{}, fmt.Errorf("recipe %q not found", id)
+	}
+	// ApplyUpdate is the engine's canonical edit path: it reconciles the
+	// grant (material scope change ⇒ consent revoked + status back to
+	// approval-required), validates, and saves atomically. upsertLocked
+	// prepares the edited recipe without saving (persist=false).
+	in.ID = existing.ID
+	in.Name = existing.Name
+	edited, err := s.upsertLocked(in, &existing, false)
+	if err != nil {
+		return recipes.Recipe{}, err
+	}
+	return recipes.ApplyUpdate(s.store, edited)
+}
+
+// upsertLocked applies editor input onto a target recipe (create: fresh
+// NewRecipe; edit: copy onto existing to preserve id/timestamps/ledger),
+// validates recipients against the live trust store, and saves. For edit
+// callers that use recipes.ApplyUpdate, the save is skipped (persist=false)
+// because ApplyUpdate performs the reconciled save itself.
+func (s *RecipeService) upsertLocked(in RecipeUpsert, existing *recipes.Recipe, persist bool) (recipes.Recipe, error) {
+	var r recipes.Recipe
+	if existing == nil {
+		nr, err := recipes.NewRecipe(in.Name, s.nowFunc())
+		if err != nil {
+			return recipes.Recipe{}, err
+		}
+		r = nr
+	} else {
+		r = *existing
+		// Name is a non-material field: rename in place, keep
+		// id/timestamps/ledger; material-scope changes are handled below.
+		if strings.TrimSpace(in.Name) != "" {
+			r.Name = strings.TrimSpace(in.Name)
+		}
+	}
+
+	if len(in.Sources) == 0 {
+		return recipes.Recipe{}, fmt.Errorf("recipes: at least one source root is required")
+	}
+	r.Sources = nil
+	for _, src := range in.Sources {
+		abs, err := filepath.Abs(src.Path)
+		if err != nil {
+			return recipes.Recipe{}, fmt.Errorf("resolve source %q: %w", src.Path, err)
+		}
+		st, serr := os.Stat(abs)
+		if serr != nil {
+			return recipes.Recipe{}, fmt.Errorf("source %q is not accessible: %w", abs, serr)
+		}
+		if !st.IsDir() {
+			return recipes.Recipe{}, fmt.Errorf("source %q is not a directory", abs)
+		}
+		r.Sources = append(r.Sources, recipes.RecipeSource{Path: filepath.Clean(abs), Recursive: src.Recursive})
+	}
+
+	r.Recipients = nil
+	for _, devID := range in.RecipientDeviceIDs {
+		rec, err := s.trust.GetDevice(context.Background(), devID)
+		if err != nil || rec == nil {
+			return recipes.Recipe{}, fmt.Errorf("recipient %q is not a trusted paired device", devID)
+		}
+		if rec.Revoked {
+			return recipes.Recipe{}, fmt.Errorf("recipient %q is revoked", devID)
+		}
+		r.Recipients = append(r.Recipients, recipes.RecipeRecipient{DeviceID: devID, Label: rec.LocalLabel})
+	}
+
+	switch in.NetworkPolicy {
+	case "", "online", "prefer-local", "local-only":
+		r.NetworkPolicy = in.NetworkPolicy
+	default:
+		return recipes.Recipe{}, fmt.Errorf("unknown network policy %q", in.NetworkPolicy)
+	}
+	r.RequirePadding = in.RequirePadding
+	r.Include = in.Include
+	r.Exclude = in.Exclude
+
+	switch in.TriggerKind {
+	case "manual", "":
+		r.Trigger = recipes.RecipeTrigger{Kind: recipes.TriggerManual}
+	case "watch":
+		r.Trigger = recipes.RecipeTrigger{Kind: recipes.TriggerWatch, Watch: in.WatchParams}
+	case "schedule":
+		if in.ScheduleParams == nil {
+			return recipes.Recipe{}, fmt.Errorf("schedule trigger requires schedule parameters")
+		}
+		r.Trigger = recipes.RecipeTrigger{Kind: recipes.TriggerSchedule, Schedule: in.ScheduleParams}
+	default:
+		return recipes.Recipe{}, fmt.Errorf("unknown trigger kind %q", in.TriggerKind)
+	}
+	if in.TriggerKind == "schedule" && in.ScheduleParams != nil {
+		if _, err := recipes.ParseScheduleParams(in.ScheduleParams); err != nil {
+			return recipes.Recipe{}, err
+		}
+	}
+
+	if in.MaxBytesPerRun > 0 {
+		r.Budgets.MaxBytesPerRun = in.MaxBytesPerRun
+	}
+	if in.MaxFilesPerRun > 0 {
+		r.Budgets.MaxFilesPerRun = in.MaxFilesPerRun
+	}
+
+	r.Grant.ScopeHash = r.ScopeHash()
+
+	if err := recipes.ValidateRecipients(context.Background(), s.trust, r); err != nil {
+		return recipes.Recipe{}, err
+	}
+	if persist {
+		if err := s.store.Save(r); err != nil {
+			return recipes.Recipe{}, err
+		}
+	}
+	return r, nil
+}
+
+// upsertFromRecipe converts an existing recipe into editor input for
+// duplication (name overridden; grant/status intentionally dropped —
+// duplicates start inert).
+func upsertFromRecipe(src recipes.Recipe, name string) RecipeUpsert {
+	in := RecipeUpsert{
+		ID: "", // new id
+		Name: name,
+		NetworkPolicy: src.NetworkPolicy,
+		RequirePadding: src.RequirePadding,
+		Include: append([]string(nil), src.Include...),
+		Exclude: append([]string(nil), src.Exclude...),
+		TriggerKind: string(src.Trigger.Kind),
+		ScheduleParams: src.Trigger.Schedule,
+		WatchParams: src.Trigger.Watch,
+		MaxBytesPerRun: src.Budgets.MaxBytesPerRun,
+		MaxFilesPerRun: src.Budgets.MaxFilesPerRun,
+	}
+	for _, s := range src.Sources {
+		in.Sources = append(in.Sources, RecipeSourceInput{Path: s.Path, Recursive: s.Recursive})
+	}
+	for _, r := range src.Recipients {
+		in.RecipientDeviceIDs = append(in.RecipientDeviceIDs, r.DeviceID)
+	}
+	return in
 }
 
 // DeleteRecipe removes one recipe explicitly.

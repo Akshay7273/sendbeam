@@ -28,6 +28,7 @@
       <button class="tab" id="tab-receive">Receive</button>
       <button class="tab" id="tab-devices">Devices</button>
       <button class="tab" id="tab-interrupted">Interrupted</button>
+      <button class="tab" id="tab-recipes">Handoffs</button>
       <button class="tab" id="tab-settings">Settings</button>
     </div>
 
@@ -228,7 +229,54 @@
     </section>
 
     <!-- SETTINGS -->
-    <section class="panel" id="panel-settings">
+    <!-- RECIPES (V23-PR02): saved handoff editor -->
+    <section class="panel" id="panel-recipes" style="display: none;">
+    <h2>Saved handoffs</h2>
+    <p class="muted">Recipes start <b>approval-required</b> and are inert until you preview and approve them. Any material scope change drops them back to approval-required.</p>
+    <div id="recipes-list" class="recipe-list"></div>
+    <div id="recipes-status"></div>
+
+    <div id="recipe-editor">
+      <h3 id="recipe-status-line">New handoff</h3>
+      <label>Name <input id="recipe-name" type="text" placeholder="e.g. Reports → Studio" /></label>
+      <label>Network policy
+        <select id="recipe-policy">
+          <option value="online">online</option>
+          <option value="prefer-local">prefer-local</option>
+          <option value="local-only">local-only</option>
+        </select>
+      </label>
+      <label class="row"><input id="recipe-padding" type="checkbox" /> Require strict traffic padding</label>
+
+      <h4>Sources</h4>
+      <div id="recipe-sources"></div>
+      <label class="row"><input id="recipe-recursive" type="checkbox" checked /> Recurse into subdirectories</label>
+      <button id="add-source-btn">Pick source folder…</button>
+
+      <h4>Recipients</h4>
+      <div id="recipe-recipients" class="chips"></div>
+      <p class="muted">Recipients are paired devices; add them from the Devices tab when pairing.</p>
+
+      <h4>Trigger</h4>
+      <select id="recipe-trigger">
+        <option value="manual">Manual (Run button)</option>
+        <option value="schedule">Schedule</option>
+      </select>
+      <div id="recipe-schedule-rows" style="display:none">
+        <label>Daily at (HH:MM, 24h) <input id="recipe-sched-time" type="time" /></label>
+        <label>…or interval minutes <input id="recipe-sched-interval" type="number" min="0" /></label>
+        <label>Timezone <input id="recipe-sched-tz" type="text" placeholder="UTC" /></label>
+      </div>
+
+      <div class="recipe-actions">
+        <button id="new-recipe-btn">New handoff</button>
+        <button id="recipe-save">Save handoff</button>
+        <button id="recipe-dup">Duplicate</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-settings" style="display: none;">
       <div class="card">
         <h2>Preferences &amp; Network</h2>
         <label for="cfg-server">Signaling Server URL</label>
