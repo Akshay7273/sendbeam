@@ -490,8 +490,11 @@ jobs:
           cp apps/desktop/build/linux/sendbeam-desktop.png "$APPDIR/"
           cp apps/desktop/build/linux/sendbeam-desktop.png "$APPDIR/usr/share/icons/hicolor/512x512/apps/"
 
-          # Fetch appimagetool continuous release
-          curl -sSL -o appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          # Pinned packaging tool input (audit F09): immutable v12 release,
+          # digest-verified before execution, fail-on-HTTP-error download.
+          APPIMAGETOOL_SHA256="d918b4df547b388ef253f3c9e7f6529ca81a885395c31f619d9aaf7030499a13"
+          curl --fail --location --retry 3 -o appimagetool https://github.com/AppImage/AppImageKit/releases/download/12/appimagetool-x86_64.AppImage
+          echo "${APPIMAGETOOL_SHA256}  appimagetool" | sha256sum --check --
           chmod +x appimagetool
           sed -i 's|AI\x02|\x00\x00\x00|' appimagetool || true
 

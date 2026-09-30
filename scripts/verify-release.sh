@@ -180,9 +180,12 @@ elif ! command -v cosign >/dev/null 2>&1; then
   exit 1
 else
   echo "[+] Verifying Sigstore bundle with cosign CLI..."
+  # Canonical signer identity (audit F10): anchored to the release workflow
+  # or the owner-approved asset-repair workflow, on tag refs / main. Kept in
+  # ONE place — this script — and quoted verbatim in the docs.
   cosign verify-blob \
     --bundle "${BUNDLE_FILE}" \
-    --certificate-identity-regexp 'github.com/Akshay7273/sendbeam' \
+    --certificate-identity-regexp '^https://github\.com/Akshay7273/sendbeam/\.github/workflows/(release|scrub-release-assets)\.yml@refs/(tags/v[0-9]+|heads/main)$' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     SHA256SUMS.txt
   COSIGN_VERIFIED="true"
