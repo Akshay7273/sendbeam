@@ -199,6 +199,53 @@ func TestRecipeServiceDuplicateIsInert(t *testing.T) {
 	}
 }
 
+func TestRecipeDeliveryStatusNoRunYet(t *testing.T) {
+	fx := newRecipeServiceFixture(t)
+	root := fx.mkdir("watched")
+	in := newEditorInput("nightly", root, fx.deviceID)
+	r, err := fx.svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatalf("CreateRecipe: %v", err)
+	}
+	st, err := fx.svc.RecipeDeliveryStatus(r.ID)
+	if err != nil {
+		t.Fatalf("RecipeDeliveryStatus: %v", err)
+	}
+	if st.LastRun != nil || st.Job != nil {
+		t.Fatalf("fresh recipe must show no run/job, got %+v", st)
+	}
+}
+
+func TestRecipeDeliveryStatusRefusedRunHasNoJob(t *testing.T) {
+	fx := newRecipeServiceFixture(t)
+	root := fx.mkdir("watched")
+	in := newEditorInput("nightly", root, fx.deviceID)
+	r, err := fx.svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatalf("CreateRecipe: %v", err)
+	}
+	// Record a REFUSED run (e.g. recipe still approval-required): queue
+	// success never exists here, so the status must not show a job.
+	if err := fx.svc.store.RecordRun(r.ID, recipes.RecipeRunInfo{
+		At:      time.Now().UTC(),
+		Trigger: recipes.TriggerManual,
+		Status:  recipes.RunStatusRefused,
+		Detail:  "recipe is approval-required",
+	}); err != nil {
+		t.Fatalf("RecordRun: %v", err)
+	}
+	st, err := fx.svc.RecipeDeliveryStatus(r.ID)
+	if err != nil {
+		t.Fatalf("RecipeDeliveryStatus: %v", err)
+	}
+	if st.LastRun == nil || st.LastRun.Status != recipes.RunStatusRefused {
+		t.Fatalf("expected refused last-run, got %+v", st.LastRun)
+	}
+	if st.Job != nil {
+		t.Fatalf("refused run must not surface a job view, got %+v", st.Job)
+	}
+}
+
 // storeRecipe composes and saves a manual-status recipe over root.
 func storeRecipe(t *testing.T, svc *RecipeService, root, name, deviceID string) string {
 	t.Helper()

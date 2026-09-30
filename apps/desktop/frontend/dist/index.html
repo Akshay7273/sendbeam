@@ -415,6 +415,12 @@
 #recipe-preview-btn { border-color: var(--primary); color: var(--primary); }
 #recipe-approve-btn { border-color: var(--accent); color: var(--accent); }
 #recipe-run-btn { border-color: var(--accent); color: #fff; background: var(--accent); }
+
+.attempt-line { font-size: 12px; margin: 4px 0; }
+.attempt-verified, .attempt-completed { color: var(--accent); }
+.attempt-failed { color: var(--danger); }
+.attempt-active { color: var(--primary); }
+#recipe-delivery { background: var(--bg); border: 1px solid var(--border); padding: 10px; border-radius: 8px; margin-top: 8px; }
     </style>
   </head>
   <body>
@@ -686,8 +692,10 @@
         <button id="recipe-preview-btn">Preview (dry-run)</button>
         <button id="recipe-approve-btn">Approve</button>
         <button id="recipe-run-btn">Run now</button>
+        <button id="recipe-status-btn">Delivery status</button>
       </div>
       <pre id="recipe-preview" style="display:none"></pre>
+      <div id="recipe-delivery" style="display:none"></div>
     </div>
   </section>
 
@@ -2574,6 +2582,64 @@
         pane.style.display = "";
       }
 
+      // V23-PR04: recipe → job → per-recipient attempt → outcome. Reads the
+      // REAL production job store via RecipeDeliveryStatus; a queued attempt
+      // is never shown as delivered (verified/completed only), a refused/
+      // failed run is never shown as a job at all.
+      async function loadDeliveryStatus() {
+        const target = state.recipeDraft && state.recipeDraft.id;
+        const pane = $("recipe-delivery");
+        if (!pane) return;
+        if (!target) {
+          setLiteral($("recipes-status"), "err", "Save the handoff first.");
+          return;
+        }
+        try {
+          const st = await call(RECIPES_SVC + ".RecipeDeliveryStatus", target);
+          pane.replaceChildren();
+          const head = document.createElement("h4");
+          head.textContent = "Delivery status";
+          pane.appendChild(head);
+
+          if (!st.lastRun) {
+            const none = document.createElement("div");
+            none.className = "muted";
+            none.textContent = "No run recorded yet — nothing dispatched, nothing delivered.";
+            pane.appendChild(none);
+          } else {
+            const runLine = document.createElement("div");
+            runLine.textContent = `Last run: ${st.lastRun.status} (${st.lastRun.trigger})` + (st.lastRun.jobId ? ` → job ${st.lastRun.jobId.slice(0, 10)}…` : " — no job (refused/failed)");
+            pane.appendChild(runLine);
+            if (st.lastRun.detail) {
+              const det = document.createElement("div");
+              det.className = "muted";
+              det.textContent = st.lastRun.detail;
+              pane.appendChild(det);
+            }
+          }
+
+          if (st.job) {
+            const jl = document.createElement("div");
+            jl.textContent = `Job ${st.job.jobId.slice(0, 10)}… · ${st.job.status} · ${st.job.totalSize} bytes`;
+            pane.appendChild(jl);
+            for (const a of st.job.attempts || []) {
+              const line = document.createElement("div");
+              line.className = "attempt-line attempt-" + a.status;
+              const bits = [`${a.label || a.deviceId.slice(0, 14)}…: ${a.status}`];
+              if (a.verifiedDigest) bits.push(`verified ✓ ${a.verifiedDigest.slice(0, 12)}…`);
+              else if (a.bytesTransferred) bits.push(`${a.bytesTransferred} bytes (not verified)`);
+              if (a.nextRetryAt) bits.push(`retry at ${a.nextRetryAt}`);
+              if (a.lastError) bits.push(a.lastError);
+              line.textContent = bits.join(" · ");
+              pane.appendChild(line);
+            }
+          }
+          pane.style.display = "";
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Status failed: " + e);
+        }
+      }
+
       async function approveRecipeDraft() {
         const target = state.recipeDraft && state.recipeDraft.id;
         if (!target) {
@@ -2673,6 +2739,7 @@
         $("recipe-preview-btn").addEventListener("click", previewRecipeDraft);
         $("recipe-approve-btn").addEventListener("click", approveRecipeDraft);
         $("recipe-run-btn").addEventListener("click", runRecipeDraft);
+        $("recipe-status-btn").addEventListener("click", loadDeliveryStatus);
         $("add-source-btn").addEventListener("click", async () => {
           if (!state.recipeDraft) state.recipeDraft = { id: "", sources: [] };
           if (!state.recipeDraft.sources) state.recipeDraft.sources = [];
