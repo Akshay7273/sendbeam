@@ -19,21 +19,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  image:
-    name: build + publish image
+  # F03: the image is built and pushed ONLY under its immutable SHA tag.
+  # 'latest' is a promotion decision made by a separate job after the run's
+  # checks pass — a build can never publish latest by itself, and an older
+  # commit can never overwrite a newer promoted one (monotonic guard below).
+  candidate:
+    name: build + push SHA candidate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set image tag
+      - name: Set image tags
         id: tag
         run: |
           echo "image=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-          fi
+          echo "sha_tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -50,7 +50,7 @@ jobs:
         with:
           driver: docker-container
 
-      - name: Build and push
+      - name: Build and push (immutable SHA candidate)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -59,5 +59,75 @@ jobs:
           sbom: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}
-            ${{ steps.tag.outputs.image }}:${{ github.sha }}
+            ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.sha_tag }}
+
+  # F03: promotion of mutable channels is gated on THIS commit's CI result and
+  # serialized with a monotonic guard: the promotion only applies if the
+  # currently promoted image was built from an OLDER commit (or absent).
+  # Channel semantics (audit owner decision): latest = newest GREEN main
+  # commit; version tags additionally promote their own tag alias.
+  promote:
+    name: promote channels (CI-gated, monotonic)
+    runs-on: ubuntu-latest
+    needs: [candidate]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Wait for required CI on this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+          echo "Waiting for CI on ${SHA}..."
+          for i in $(seq 1 60); do
+            RUNS="$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${SHA}" --jq '[.workflow_runs[] | select(.name == "CI")] | length')"
+            if [ "${RUNS}" -gt 0 ]; then
+              CONC="$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${SHA}" --jq '[.workflow_runs[] | select(.name == "CI") | .conclusion] | unique')"
+              echo "CI runs: ${CONC}"
+              case "${CONC}" in
+                *null*|*failure*|*cancelled*) echo "[-] CI not green on ${SHA}; refusing to promote." >&2; exit 1 ;;
+              esac
+              echo "[+] CI green on ${SHA}."
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "[-] No CI run appeared for ${SHA} within the deadline; refusing to promote." >&2
+          exit 1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote (monotonic; newest green commit wins)
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Monotonic guard: compare commit timestamps. If the promoted image
+          # is already built from a NEWER commit, skip — an older completion
+          # must never overwrite a newer promotion.
+          CREATED="$(docker buildx imagetools inspect "${IMAGE}:latest" --format '{{json .Created}}' 2>/dev/null | tr -d '"' || true)"
+          THIS_CREATED="$(docker buildx imagetools inspect "${IMAGE}:${SHA}" --format '{{json .Created}}' 2>/dev/null | tr -d '"' || true)"
+          if [ -n "${CREATED}" ] && [ -n "${THIS_CREATED}" ]; then
+            # ISO-8601 timestamps compare lexicographically; the newer date
+            # sorts LAST. If latest is already newer (or same-commit), skip.
+            NEWER="$(printf '%s\n%s\n' "${CREATED}" "${THIS_CREATED}" | sort | tail -n1)"
+            if [ "${NEWER}" = "${CREATED}" ] && [ "${CREATED}" != "${THIS_CREATED}" ]; then
+              echo "[i] Skipping promotion: latest already points at a NEWER build (promoted ${CREATED} > this ${THIS_CREATED})."
+              exit 0
+            fi
+          fi
+          docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}:${SHA}"
+          echo "[+] Promoted ${SHA} → latest"
+          if [ "${REF_TYPE}" = "tag" ]; then
+            docker buildx imagetools create -t "${IMAGE}:${REF_NAME}" "${IMAGE}:${SHA}"
+            echo "[+] Promoted ${SHA} → ${REF_NAME}"
+          fi
