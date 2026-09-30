@@ -416,14 +416,14 @@ carries no TypeScript source for the desktop frontend (only the built
 - **Auto-dispatch needs an explicit grant.** Nothing runs automatically
   without `sendbeam recipe grant <id>` (or the desktop equivalent), and
   any material change revokes it.
-- **Desktop UI pending.** The service bindings are done; the visual
-  composer ships when the frontend source does.
-  **Dated clarification (2026-09-30, verified against the built `dist/`):**
-  the shipped desktop UI contains text/link handoff controls only — no
-  recipe/schedule/watch elements or service calls. The backend
-  `RecipeService` surface (create/preview/approve/grant/watch/schedule/run
-  controls) is complete and test-covered; the missing part is purely the
-  frontend wiring plus the in-repo frontend source (V23-PR01).
+- **Desktop UI status (updated 2026-09-30, V23-PR01/02 merged):** the
+  maintainable frontend source now exists in-repo
+  (`apps/desktop/frontend/src/`, byte-exact deterministic build) and the
+  shipped UI ships a saved-handoff editor (create/edit/duplicate,
+  preview → approve → run, delivery status, watch/schedule runtime
+  controls) over the complete `RecipeService` surface. Physical packaged-UI
+  acceptance rows remain NOT RUN — see
+  [docs/RELEASE-v2.3-acceptance.md](RELEASE-v2.3-acceptance.md).
 - Preview is an estimate, not a lock: re-resolution at run time is
   deliberate, so always re-preview after changing sources if the exact
   file set matters.
