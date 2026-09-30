@@ -160,9 +160,18 @@ SendBeam release packages are hashed with SHA-256 and signed cryptographically w
 ### 1. Automated Verification Script
 
 ```bash
-# Clone the repository and run the verification script against your downloaded artifacts:
+# Clone the repository and run the verification script against your downloaded artifacts.
+# Default mode = OFFICIAL: minisign + sigstore bundle + payload digests are all required;
+# it fails closed on missing signatures, missing tools, or zero verified payloads.
 ./scripts/verify-release.sh --dir ./dist
+
+# Reduced modes (truthful labels, never the official-release banner):
+./scripts/verify-release.sh --dir ./dist --checksum-only   # authenticate the manifest + verify present payloads only
+./scripts/verify-release.sh --dir ./dist --skip-cosign     # only for releases that predate the sigstore bundle
+./scripts/verify-release.sh --dir ./dist --strict          # additionally assert every listed payload is present
 ```
+
+Signature policy (what each mode asserts) is documented in the script header (`./scripts/verify-release.sh --help`).
 
 ### 2. Manual Verification
 
@@ -270,6 +279,7 @@ commitments, see [SECURITY.md](SECURITY.md).
 - [Supply Chain Integrity](docs/supply-chain.md) — build provenance attestations, SPDX 2.3 SBOMs, checksum manifests
 - [Updater Architecture](docs/updater.md) — self-update channels, cryptographic verification, and rollback safety
 - [Release Gate v2.2](docs/RELEASE-v2.2.md) — v2.2 milestone criteria, upgrade/rollback evidence, and release checklist
+- [v2.2.1 candidate gate evidence](docs/RELEASE-v2.2.1-candidate-evidence.md) — release/install/update regression rows performed, clean, and explicitly BLOCKED (no publication)
 - [Release Gate v2.1](docs/RELEASE-v2.1.md) — v2.1 milestone criteria, offline policy documentation, and release checklist
 - [Cross-platform evidence ledger](docs/platform-evidence.md) — per-platform evidence tiers (code/package/tests/packaged UI/physical devices)
 - [Release Gate v1.9 (Trusted Handoffs)](docs/RELEASE-v1.9.md) — v1.9 milestone criteria, forward-secret key exchange, and release checklist
