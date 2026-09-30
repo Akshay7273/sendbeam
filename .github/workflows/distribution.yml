@@ -201,6 +201,10 @@ jobs:
           GOOS: windows
           GOARCH: amd64
         run: |
+          # V23-PR06: rebuild the embedded frontend from its sources first —
+          # the embed is deterministic and the determinism gate asserts
+          # dist == sources on every PR.
+          python3 frontend/tools/build.py
           mkdir -p bin
           go build -trimpath \
             -ldflags "-H windowsgui -s -w -X github.com/sendbeam/desktop/internal/engine.ProductVersion=${{ steps.meta.outputs.version }} -X github.com/sendbeam/desktop/internal/engine.GitCommit=${{ steps.meta.outputs.commit }}" \
@@ -329,6 +333,10 @@ jobs:
           GOARCH: arm64
           MACOSX_DEPLOYMENT_TARGET: '11.0'
         run: |
+          # V23-PR06: rebuild the embedded frontend from its sources first —
+          # the embed is deterministic and the determinism gate asserts
+          # dist == sources on every PR.
+          python3 frontend/tools/build.py
           mkdir -p bin
           go build -trimpath \
             -ldflags "-s -w -X github.com/sendbeam/desktop/internal/engine.ProductVersion=${{ steps.meta.outputs.version }} -X github.com/sendbeam/desktop/internal/engine.GitCommit=${{ steps.meta.outputs.commit }}" \
@@ -342,6 +350,10 @@ jobs:
           GOARCH: amd64
           MACOSX_DEPLOYMENT_TARGET: '11.0'
         run: |
+          # V23-PR06: rebuild the embedded frontend from its sources first —
+          # the embed is deterministic and the determinism gate asserts
+          # dist == sources on every PR.
+          python3 frontend/tools/build.py
           mkdir -p bin
           go build -trimpath \
             -ldflags "-s -w -X github.com/sendbeam/desktop/internal/engine.ProductVersion=${{ steps.meta.outputs.version }} -X github.com/sendbeam/desktop/internal/engine.GitCommit=${{ steps.meta.outputs.commit }}" \
@@ -458,6 +470,10 @@ jobs:
           GOOS: linux
           GOARCH: amd64
         run: |
+          # V23-PR06: rebuild the embedded frontend from its sources first —
+          # the embed is deterministic and the determinism gate asserts
+          # dist == sources on every PR.
+          python3 frontend/tools/build.py
           mkdir -p bin
           go build -trimpath \
             -ldflags "-s -w -X github.com/sendbeam/desktop/internal/engine.ProductVersion=${{ steps.meta.outputs.version }} -X github.com/sendbeam/desktop/internal/engine.GitCommit=${{ steps.meta.outputs.commit }}" \
