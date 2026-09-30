@@ -414,3 +414,6 @@
 .attempt-failed { color: var(--danger); }
 .attempt-active { color: var(--primary); }
 #recipe-delivery { background: var(--bg); border: 1px solid var(--border); padding: 10px; border-radius: 8px; margin-top: 8px; }
+
+#watch-state-line, #sched-state-line { font-size: 12px; margin: 6px 0; color: var(--text-heading); }
+#runtime-note code { color: var(--accent); }

@@ -421,6 +421,9 @@
 .attempt-failed { color: var(--danger); }
 .attempt-active { color: var(--primary); }
 #recipe-delivery { background: var(--bg); border: 1px solid var(--border); padding: 10px; border-radius: 8px; margin-top: 8px; }
+
+#watch-state-line, #sched-state-line { font-size: 12px; margin: 6px 0; color: var(--text-heading); }
+#runtime-note code { color: var(--accent); }
     </style>
   </head>
   <body>
@@ -696,6 +699,19 @@
       </div>
       <pre id="recipe-preview" style="display:none"></pre>
       <div id="recipe-delivery" style="display:none"></div>
+
+      <h4>Runtime (watch / schedule)</h4>
+      <p class="muted" id="runtime-note">Watches and schedules run inside this app — they live only while SendBeam Desktop is open. There is no background service yet; the CLI <code>recipe watch</code>/<code>recipe scheduler</code> foreground commands cover headless use.</p>
+      <div id="watch-state-line"></div>
+      <div class="recipe-actions">
+        <button id="watch-start">Start watch</button>
+        <button id="watch-stop">Stop watch</button>
+      </div>
+      <div id="sched-state-line"></div>
+      <div class="recipe-actions">
+        <button id="sched-start">Start scheduler</button>
+        <button id="sched-stop">Stop scheduler</button>
+      </div>
     </div>
   </section>
 
@@ -2494,6 +2510,7 @@
             watchParams: (r.trigger && r.trigger.watch) || null,
           };
           renderRecipeEditor();
+          await loadRuntimeState();
         } catch (e) {
           setLiteral($("recipes-status"), "err", "Failed to open recipe: " + e);
         }
@@ -2586,6 +2603,71 @@
       // REAL production job store via RecipeDeliveryStatus; a queued attempt
       // is never shown as delivered (verified/completed only), a refused/
       // failed run is never shown as a job at all.
+      // V23-PR05: visible watch/schedule runtime controls — real service
+      // calls, real runtime state; per-process foreground requirement is
+      // stated in the UI (no daemon: watches/schedules live only while this
+      // process does).
+      async function startWatch() {
+        try {
+          await call(RECIPES_SVC + ".StartWatch", state.recipeDraft.id);
+          setLiteral($("recipes-status"), "ok", "Watch started for this handoff (runs while this app is open).");
+          await loadRuntimeState();
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Start watch refused: " + e);
+        }
+      }
+
+      async function stopWatch() {
+        try {
+          await call(RECIPES_SVC + ".StopWatch", state.recipeDraft.id);
+          setLiteral($("recipes-status"), "ok", "Watch stopped.");
+          await loadRuntimeState();
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Stop watch failed: " + e);
+        }
+      }
+
+      async function startScheduler() {
+        try {
+          await call(RECIPES_SVC + ".StartScheduler");
+          setLiteral($("recipes-status"), "ok", "Scheduler started (runs while this app is open).");
+          await loadRuntimeState();
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Start scheduler refused: " + e);
+        }
+      }
+
+      async function stopScheduler() {
+        try {
+          await call(RECIPES_SVC + ".StopScheduler");
+          setLiteral($("recipes-status"), "ok", "Scheduler stopped.");
+          await loadRuntimeState();
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Stop scheduler failed: " + e);
+        }
+      }
+
+      async function loadRuntimeState() {
+        const d = state.recipeDraft;
+        if (!d || !d.id) return;
+        const [watching, schedRunning] = await Promise.all([
+          call(RECIPES_SVC + ".IsWatching", d.id),
+          call(RECIPES_SVC + ".SchedulerRunning"),
+        ]);
+        const w = $("watch-state-line");
+        if (w) w.textContent = `Watch for this handoff: ${watching ? "RUNNING" : "stopped"}`;
+        const s = $("sched-state-line");
+        if (s) s.textContent = `Scheduler: ${schedRunning ? "RUNNING" : "stopped"}`;
+        const bw = $("watch-start");
+        if (bw) bw.disabled = !!watching;
+        const bs = $("watch-stop");
+        if (bs) bs.disabled = !watching;
+        const bsch = $("sched-start");
+        if (bsch) bsch.disabled = !!schedRunning;
+        const bsss = $("sched-stop");
+        if (bsss) bsss.disabled = !schedRunning;
+      }
+
       async function loadDeliveryStatus() {
         const target = state.recipeDraft && state.recipeDraft.id;
         const pane = $("recipe-delivery");
@@ -2740,6 +2822,10 @@
         $("recipe-approve-btn").addEventListener("click", approveRecipeDraft);
         $("recipe-run-btn").addEventListener("click", runRecipeDraft);
         $("recipe-status-btn").addEventListener("click", loadDeliveryStatus);
+        $("watch-start").addEventListener("click", startWatch);
+        $("watch-stop").addEventListener("click", stopWatch);
+        $("sched-start").addEventListener("click", startScheduler);
+        $("sched-stop").addEventListener("click", stopScheduler);
         $("add-source-btn").addEventListener("click", async () => {
           if (!state.recipeDraft) state.recipeDraft = { id: "", sources: [] };
           if (!state.recipeDraft.sources) state.recipeDraft.sources = [];
