@@ -195,6 +195,8 @@ The authoritative branch (`main`) is protected by automated GitHub branch rulese
    - `desktop (server gates + window build)`
    - `branding (no stale pre-rename references)`
    - `container (build + smoke)`
+   - `offlinelab (real-network local-only evidence)`
+   - `docs consistency (links, manifests, required-checks)`
 
    These names match the current `ci.yml` job names. Additional green jobs — `differential parity (Go <-> TS)` (runs in CI but is **not** in the required list) and the `distribution/*` packaging jobs (path-filtered, not required) — are valuable evidence but are **not** merge gates today (see the pending owner decisions below). Earlier prose claiming these were required exceeded the observed settings and has been corrected.
 

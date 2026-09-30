@@ -58,7 +58,7 @@ Manifest generation and strict verification are automated via `scripts/generate-
 
 ## Authoritative Version Resolution Policy
 
-Build and packaging metadata is resolved deterministically through [scripts/version-metadata.sh](scripts/version-metadata.sh) across all CLI and desktop platforms:
+Build and packaging metadata is resolved deterministically through [scripts/version-metadata.sh](../scripts/version-metadata.sh) across all CLI and desktop platforms:
 
 | Version Field                | Untagged / Development / PR Builds | Tagged Release Builds (`vX.Y.Z`) | Prerelease Builds (`vX.Y.Z-rcN`) | Description                                                          |
 | :--------------------------- | :--------------------------------- | :------------------------------- | :------------------------------- | :------------------------------------------------------------------- |
