@@ -54,11 +54,28 @@ if [[ ! -f "$GOMOD_PATH" ]]; then
   exit 1
 fi
 
-TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-DOC_UUID="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-DOC_NAMESPACE="https://github.com/Akshay7273/sendbeam/spdxdocs/${COMPONENT_NAME}-${VERSION}-${DOC_UUID}"
+# F19: prefer the resolved module graph over raw go.mod text. `go list -m all`
+# applies replace directives and yields the effective versions actually
+# compiled; the text parse remains as a fallback for environments without Go
+# (and the output is then labelled as an unresolved go.mod inventory).
+RESOLUTION="resolved (go list -m all)"
+if command -v go >/dev/null 2>&1; then
+  MODULE_LIST="$( (cd "apps/${TARGET}" && go list -m all 2>/dev/null) || true )"
+fi
+if [ -z "${MODULE_LIST:-}" ]; then
+  RESOLUTION="unresolved (go.mod text parse; Go unavailable — versions are require-line values, replace directives NOT applied)"
+  MODULE_LIST=""
+fi
 
-# Extract Go dependencies from go.mod
+# F19: deterministic document identity — derived from version+commit+module
+# list instead of wall-clock/random values, so identical inputs produce
+# identical SPDX documents (reproducibility scope: this document only).
+TIMESTAMP="$(printf '%s' "${VERSION}-${COMMIT}-${MODULE_LIST}" | sha256sum | awk '{print substr($1,1,12)}')"
+DOC_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo 1970-01-01T00:00:00Z)"
+DOC_NAMESPACE="https://github.com/Akshay7273/sendbeam/spdxdocs/${COMPONENT_NAME}-${VERSION}-${COMMIT}-${TIMESTAMP}"
+CREATED="${DOC_DATE}"
+
+# Extract Go dependencies
 DEPENDENCIES_JSON="[]"
 DEPS=()
 RELATIONSHIPS=()
@@ -66,23 +83,33 @@ RELATIONSHIPS=()
 # Main document describes root package
 RELATIONSHIPS+=("{\"spdxElementId\": \"SPDXRef-DOCUMENT\", \"relatedSpdxElement\": \"SPDXRef-Package-${COMPONENT_NAME}\", \"relationshipType\": \"DESCRIBES\"}")
 
-# Parse direct/indirect require lines in go.mod
-while IFS= read -r line; do
-  line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-  # Match: module.path vX.Y.Z
-  if [[ "$line" =~ ^([a-zA-Z0-9.\/_~-]+)[[:space:]]+(v[0-9a-zA-Z.-]+) ]]; then
-    MOD_PATH="${BASH_REMATCH[1]}"
-    MOD_VER="${BASH_REMATCH[2]}"
-    
-    # Sanitize identifier for SPDXID
-    SAFE_ID="SPDXRef-Package-$(echo "${MOD_PATH}" | tr '/.~_' '----')"
-    
-    PKG_ENTRY="{\"SPDXID\": \"${SAFE_ID}\", \"name\": \"${MOD_PATH}\", \"versionInfo\": \"${MOD_VER}\", \"downloadLocation\": \"https://${MOD_PATH}\", \"filesAnalyzed\": false, \"licenseConcluded\": \"NOASSERTION\", \"licenseDeclared\": \"NOASSERTION\", \"supplier\": \"NOASSERTION\"}"
-    DEPS+=("$PKG_ENTRY")
-    
-    RELATIONSHIPS+=("{\"spdxElementId\": \"SPDXRef-Package-${COMPONENT_NAME}\", \"relatedSpdxElement\": \"${SAFE_ID}\", \"relationshipType\": \"DEPENDS_ON\"}")
-  fi
-done < <(grep -E '^[[:space:]]*[a-zA-Z0-9.\/_~-]+[[:space:]]+v[0-9]' "$GOMOD_PATH" || true)
+add_dep() {
+  local MOD_PATH="$1" MOD_VER="$2"
+  [ -z "${MOD_PATH}" ] && return 0
+  case "${MOD_VER}" in v*) ;; *) return 0 ;; esac
+  local SAFE_ID="SPDXRef-Package-$(echo "${MOD_PATH}" | tr '/.~_' '----')"
+  local PKG_ENTRY="{\"SPDXID\": \"${SAFE_ID}\", \"name\": \"${MOD_PATH}\", \"versionInfo\": \"${MOD_VER}\", \"downloadLocation\": \"https://${MOD_PATH}\", \"filesAnalyzed\": false, \"licenseConcluded\": \"NOASSERTION\", \"licenseDeclared\": \"NOASSERTION\", \"supplier\": \"NOASSERTION\"}"
+  DEPS+=("${PKG_ENTRY}")
+  RELATIONSHIPS+=("{\"spdxElementId\": \"SPDXRef-Package-${COMPONENT_NAME}\", \"relatedSpdxElement\": \"${SAFE_ID}\", \"relationshipType\": \"DEPENDS_ON\"}")
+}
+
+if [ -n "${MODULE_LIST}" ]; then
+  # Resolved mode: first line is the root module itself — skip it.
+  while IFS= read -r line; do
+    MOD_PATH="${line%% *}"
+    MOD_VER="${line##* }"
+    [ "${MOD_PATH}" = "${MOD_VER}" ] && continue
+    add_dep "${MOD_PATH}" "${MOD_VER}"
+  done <<< "${MODULE_LIST}"
+else
+  # Fallback mode: parse require lines (unresolved versions).
+  while IFS= read -r line; do
+    line="$(echo "${line}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    if [[ "${line}" =~ ^([a-zA-Z0-9.\/_~-]+)[[:space:]]+(v[0-9a-zA-Z.-]+) ]]; then
+      add_dep "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    fi
+  done < <(grep -E '^[[:space:]]*[a-zA-Z0-9.\/_~-]+[[:space:]]+v[0-9]' "${GOMOD_PATH}" || true)
+fi
 
 # Build JSON structure
 # Root package
@@ -104,7 +131,7 @@ SPDX_JSON=$(cat <<EOF
   "name": "${COMPONENT_NAME}-${VERSION}-SBOM",
   "documentNamespace": "${DOC_NAMESPACE}",
   "creationInfo": {
-    "created": "${TIMESTAMP}",
+    "created": "${CREATED}",
     "creators": [
       "Tool: SendBeam-SBOM-Generator-1.0",
       "Organization: SendBeam Open Source Project",
