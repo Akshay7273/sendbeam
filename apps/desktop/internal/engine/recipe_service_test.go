@@ -39,6 +39,166 @@ func seedRecipeTrust(t *testing.T, ts *trust.MemoryTrustStore) string {
 	return gen.DeviceID
 }
 
+// recipeServiceFixture wraps a RecipeService with a real on-disk store, a
+// live memory trust store (one trusted device), and a writable source root —
+// everything the editor scenarios need.
+type recipeServiceFixture struct {
+	svc      *RecipeService
+	trust    *trust.MemoryTrustStore
+	root     string
+	deviceID string
+}
+
+func newRecipeServiceFixture(t *testing.T) *recipeServiceFixture {
+	t.Helper()
+	dir := t.TempDir()
+	ts := trust.NewMemoryTrustStore()
+	deviceID := seedRecipeTrust(t, ts)
+	svc, err := NewRecipeService(dir, ts)
+	if err != nil {
+		t.Fatalf("NewRecipeService: %v", err)
+	}
+	return &recipeServiceFixture{
+		svc:      svc,
+		trust:    ts,
+		root:     dir,
+		deviceID: deviceID,
+	}
+}
+
+func (f *recipeServiceFixture) mkdir(name string) string {
+	t := filepath.Join(f.root, name)
+	if err := os.MkdirAll(t, 0o755); err != nil {
+		panic(err)
+	}
+	return t
+}
+
+// newEditorInput builds a minimal valid editor submission over root with
+// one trusted recipient.
+func newEditorInput(name, root, deviceID string) RecipeUpsert {
+	return RecipeUpsert{
+		Name: name,
+		Sources: []RecipeSourceInput{{Path: root, Recursive: true}},
+		RecipientDeviceIDs: []string{deviceID},
+		NetworkPolicy: "online",
+		TriggerKind: "manual",
+	}
+}
+
+func TestRecipeServiceCreateStartsInert(t *testing.T) {
+	fx := newRecipeServiceFixture(t)
+	root := fx.mkdir("watched")
+	in := newEditorInput("nightly", root, fx.deviceID)
+
+	r, err := fx.svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatalf("CreateRecipe: %v", err)
+	}
+	if r.Status != recipes.RecipeApprovalRequired {
+		t.Fatalf("new recipe status = %q, want approval-required", r.Status)
+	}
+	if r.Grant.ScopeHash == "" {
+		t.Fatal("scope hash must be set on save")
+	}
+	// Inert: no grant means an automation run must refuse.
+	if ok := r.GrantValid(time.Now().UTC()); ok {
+		t.Fatal("fresh recipe must not carry a valid automation grant")
+	}
+}
+
+func TestRecipeServiceCreateRejectsUntrustedRecipient(t *testing.T) {
+	fx := newRecipeServiceFixture(t)
+	root := fx.mkdir("watched")
+	in := newEditorInput("nightly", root, "sb-dev-does-not-exist")
+	if _, err := fx.svc.CreateRecipe(in); err == nil {
+		t.Fatal("expected visible failure for untrusted recipient")
+	}
+}
+
+func TestRecipeServiceCreateRejectsMissingSource(t *testing.T) {
+	fx := newRecipeServiceFixture(t)
+	in := newEditorInput("nightly", fx.root+"/missing-dir", fx.deviceID)
+	if _, err := fx.svc.CreateRecipe(in); err == nil {
+		t.Fatal("expected visible failure for missing source")
+	}
+}
+
+func TestRecipeServiceEditMaterialChangeDropsGrant(t *testing.T) {
+	fx := newRecipeServiceFixture(t)
+	root := fx.mkdir("watched")
+	in := newEditorInput("nightly", root, fx.deviceID)
+	r, err := fx.svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatalf("CreateRecipe: %v", err)
+	}
+
+	// Approve + grant, then make a MATERIAL scope change.
+	if _, err := fx.svc.ApproveRecipe(r.ID); err != nil {
+		t.Fatalf("ApproveRecipe: %v", err)
+	}
+	if _, err := fx.svc.GrantAutomation(r.ID); err != nil {
+		t.Fatalf("GrantAutomation: %v", err)
+	}
+	granted, err := fx.svc.GetRecipe(r.ID)
+	if err != nil {
+		t.Fatalf("GetRecipe: %v", err)
+	}
+	if !granted.GrantValid(time.Now().UTC()) {
+		t.Fatal("grant should be valid right after GrantAutomation")
+	}
+
+	in.Name = "nightly"
+	in.Exclude = []string{"*.tmp"}
+	out, err := fx.svc.EditRecipe(r.ID, in)
+	if err != nil {
+		t.Fatalf("EditRecipe: %v", err)
+	}
+	if out.Grant.ScopeHash != granted.Grant.ScopeHash {
+		if out.Status != recipes.RecipeApprovalRequired {
+			t.Fatalf("material scope change must drop the recipe back to approval-required; got %q", out.Status)
+		}
+		if out.GrantValid(time.Now().UTC()) {
+			t.Fatal("material scope change must invalidate the prior automation grant")
+		}
+		return
+	}
+	t.Fatal("exclude change should alter the material scope hash")
+}
+
+func TestRecipeServiceDuplicateIsInert(t *testing.T) {
+	fx := newRecipeServiceFixture(t)
+	root := fx.mkdir("watched")
+	in := newEditorInput("nightly", root, fx.deviceID)
+	r, err := fx.svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatalf("CreateRecipe: %v", err)
+	}
+	if _, err := fx.svc.ApproveRecipe(r.ID); err != nil {
+		t.Fatalf("ApproveRecipe: %v", err)
+	}
+	if _, err := fx.svc.GrantAutomation(r.ID); err != nil {
+		t.Fatalf("GrantAutomation: %v", err)
+	}
+
+	dup, err := fx.svc.DuplicateRecipe(r.ID, "nightly-copy")
+	if err != nil {
+		t.Fatalf("DuplicateRecipe: %v", err)
+	}
+	if dup.ID == r.ID {
+		t.Fatal("duplicate must mint a fresh id")
+	}
+	if dup.Status != recipes.RecipeApprovalRequired {
+		t.Fatalf("duplicate status = %q, want approval-required", dup.Status)
+	}
+	if dup.GrantValid(time.Now().UTC()) {
+		t.Fatal("duplicate must never inherit the automation grant")
+	}
+	if len(dup.Sources) != len(r.Sources) || len(dup.Recipients) != len(r.Recipients) {
+		t.Fatal("duplicate must copy the material scope")
+	}
+}
+
 // storeRecipe composes and saves a manual-status recipe over root.
 func storeRecipe(t *testing.T, svc *RecipeService, root, name, deviceID string) string {
 	t.Helper()
