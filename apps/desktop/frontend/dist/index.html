@@ -410,6 +410,11 @@
 #recipes-status { margin: 8px 0; font-size: 12px; }
 #recipes-status .ok { color: var(--accent); }
 #recipes-status .err { color: var(--danger); word-break: break-word; }
+
+#recipe-preview { background: var(--bg); border: 1px solid var(--border); padding: 10px; border-radius: 8px; max-height: 240px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
+#recipe-preview-btn { border-color: var(--primary); color: var(--primary); }
+#recipe-approve-btn { border-color: var(--accent); color: var(--accent); }
+#recipe-run-btn { border-color: var(--accent); color: #fff; background: var(--accent); }
     </style>
   </head>
   <body>
@@ -678,7 +683,11 @@
         <button id="new-recipe-btn">New handoff</button>
         <button id="recipe-save">Save handoff</button>
         <button id="recipe-dup">Duplicate</button>
+        <button id="recipe-preview-btn">Preview (dry-run)</button>
+        <button id="recipe-approve-btn">Approve</button>
+        <button id="recipe-run-btn">Run now</button>
       </div>
+      <pre id="recipe-preview" style="display:none"></pre>
     </div>
   </section>
 
@@ -2529,6 +2538,71 @@
         }
       }
 
+      // V23-PR03: preview → approve → run — real service calls, real
+      // handlers, separate consent surfaces. Preview/plan have no transfer
+      // effects (engine contract); approve moves approval-required → manual
+      // (the click IS the approval; it never grants auto-send); run
+      // enqueues an ordinary production outbox job and the transfer-center
+      // owns delivery. Approve/Run require an explicit save first: the
+      // draft cannot run un-persisted.
+      let lastPreviewText = "";
+
+      async function previewRecipeDraft() {
+        const target = state.recipeDraft && state.recipeDraft.id;
+        if (!target) {
+          setLiteral($("recipes-status"), "err", "Save the handoff first — preview runs on the stored recipe.");
+          return;
+        }
+        try {
+          lastPreviewText = await call(RECIPES_SVC + ".PreviewRecipe", target);
+          const plan = await call(RECIPES_SVC + ".PlanRecipe", target);
+          renderPreview(lastPreviewText, plan);
+          const r = await call(RECIPES_SVC + ".GetRecipe", target);
+          setLiteral($("recipes-status"), "ok", `Previewed "${r.name}" — nothing was sent, no jobs created.`);
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Preview failed: " + e);
+        }
+      }
+
+      function renderPreview(text, planJson) {
+        const pane = $("recipe-preview");
+        if (!pane) return;
+        pane.replaceChildren();
+        const pre = document.createElement("pre");
+        pre.textContent = text + "\n--- plan ---\n" + planJson;
+        pane.appendChild(pre);
+        pane.style.display = "";
+      }
+
+      async function approveRecipeDraft() {
+        const target = state.recipeDraft && state.recipeDraft.id;
+        if (!target) {
+          setLiteral($("recipes-status"), "err", "Save first, then approve.");
+          return;
+        }
+        try {
+          const r = await call(RECIPES_SVC + ".ApproveRecipe", target);
+          setLiteral($("recipes-status"), "ok", `Approved "${r.name}" — one-shot runs allowed. Automation still needs its own grant.`);
+          await refreshRecipes();
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Approve failed: " + e);
+        }
+      }
+
+      async function runRecipeDraft() {
+        const target = state.recipeDraft && state.recipeDraft.id;
+        if (!target) {
+          setLiteral($("recipes-status"), "err", "Save first, then run.");
+          return;
+        }
+        try {
+          const jobId = await call(RECIPES_SVC + ".RunRecipe", target);
+          setLiteral($("recipes-status"), "ok", `Run enqueued: job ${jobId}. Delivery status appears in Interrupted/Transfer center.`);
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Run refused: " + e);
+        }
+      }
+
       async function duplicateRecipeDraft() {
         try {
           if (!state.recipeDraft || !state.recipeDraft.id) return;
@@ -2596,6 +2670,9 @@
         $("new-recipe-btn").addEventListener("click", newRecipeDraft);
         $("recipe-save").addEventListener("click", saveRecipeDraft);
         $("recipe-dup").addEventListener("click", duplicateRecipeDraft);
+        $("recipe-preview-btn").addEventListener("click", previewRecipeDraft);
+        $("recipe-approve-btn").addEventListener("click", approveRecipeDraft);
+        $("recipe-run-btn").addEventListener("click", runRecipeDraft);
         $("add-source-btn").addEventListener("click", async () => {
           if (!state.recipeDraft) state.recipeDraft = { id: "", sources: [] };
           if (!state.recipeDraft.sources) state.recipeDraft.sources = [];

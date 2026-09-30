@@ -403,3 +403,8 @@
 #recipes-status { margin: 8px 0; font-size: 12px; }
 #recipes-status .ok { color: var(--accent); }
 #recipes-status .err { color: var(--danger); word-break: break-word; }
+
+#recipe-preview { background: var(--bg); border: 1px solid var(--border); padding: 10px; border-radius: 8px; max-height: 240px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
+#recipe-preview-btn { border-color: var(--primary); color: var(--primary); }
+#recipe-approve-btn { border-color: var(--accent); color: var(--accent); }
+#recipe-run-btn { border-color: var(--accent); color: #fff; background: var(--accent); }
