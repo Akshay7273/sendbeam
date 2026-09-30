@@ -629,6 +629,96 @@ func upsertFromRecipe(src recipes.Recipe, name string) RecipeUpsert {
 	return in
 }
 
+// RecipeDeliveryStatus is the recipe → job → recipient-attempt → outcome
+// chain for one run, read from the REAL production stores. Queue success is
+// never presented as delivered: per-recipient verified/completed states are
+// the only delivery proof.
+type RecipeDeliveryStatus struct {
+	RecipeID string `json:"recipeId"`
+	// LastRun ledger entry (dispatch attempt): nil when no attempt ever
+	// recorded. A refusal/failure here is NOT a delivery.
+	LastRun *recipes.RecipeRunInfo `json:"lastRun,omitempty"`
+	// Job mirrors the production job record when one exists for the last
+	// dispatched run.
+	Job *DeliveryJobView `json:"job,omitempty"`
+}
+
+// DeliveryJobView is the outbox job as the status surface needs it.
+type DeliveryJobView struct {
+	JobID     string                  `json:"jobId"`
+	Status    string                  `json:"status"`
+	TotalSize int64                   `json:"totalSize"`
+	Attempts  []DeliveryAttemptView   `json:"attempts"`
+}
+
+// DeliveryAttemptView is one recipient attempt: queue/active/verified/
+// completed/failed states stay distinct — a queued attempt never appears
+// as delivered.
+type DeliveryAttemptView struct {
+	DeviceID         string `json:"deviceId"`
+	Label            string `json:"label"`
+	Status           string `json:"status"`
+	Attempts         int    `json:"attempts"`
+	NextRetryAt      string `json:"nextRetryAt,omitempty"`
+	LastError        string `json:"lastError,omitempty"`
+	BytesTransferred int64  `json:"bytesTransferred,omitempty"`
+	VerifiedDigest   string `json:"verifiedDigest,omitempty"`
+	UpdatedAt        string `json:"updatedAt"`
+}
+
+// RecipeDeliveryStatus resolves the delivery chain for a recipe's most recent run:
+// the ledger entry (what was dispatched and how it ended) plus the real job
+// record (per-recipient attempt states from the outbox store). A job that
+// was never dispatched (refused/failed/skipped run) carries no job view.
+func (s *RecipeService) RecipeDeliveryStatus(id string) (RecipeDeliveryStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := RecipeDeliveryStatus{RecipeID: id}
+
+	r, ok, err := s.store.Load(id)
+	if err != nil {
+		return out, err
+	}
+	if !ok {
+		return out, fmt.Errorf("recipe %q not found", id)
+	}
+	out.LastRun = r.LastRun
+	if out.LastRun == nil || out.LastRun.JobID == "" {
+		// No dispatched run yet (inert/approval-required, refused, failed,
+		// or skipped) — honest shape: lastRun may still explain why.
+		return out, nil
+	}
+
+	job, found, err := s.jobs.Load(out.LastRun.JobID)
+	if err != nil || !found {
+		// Ledger says dispatched but the job record is gone (expired/
+		// discarded): surface that honestly rather than inventing an outcome.
+		return out, nil
+	}
+	view := DeliveryJobView{
+		JobID:     job.JobID,
+		Status:    string(job.Status),
+		TotalSize: job.TotalSize,
+	}
+	for _, a := range job.Attempts {
+		view.Attempts = append(view.Attempts, DeliveryAttemptView{
+			DeviceID:         a.DeviceID,
+			Label:            a.Label,
+			Status:           string(a.Status),
+			Attempts:         a.Attempts,
+			LastError:        a.LastError,
+			BytesTransferred: a.BytesTransferred,
+			VerifiedDigest:   a.VerifiedDigest,
+			UpdatedAt:        a.UpdatedAt.UTC().Format(time.RFC3339),
+		})
+		if !a.NextRetryAt.IsZero() {
+			view.Attempts[len(view.Attempts)-1].NextRetryAt = a.NextRetryAt.UTC().Format(time.RFC3339)
+		}
+	}
+	out.Job = &view
+	return out, nil
+}
+
 // DeleteRecipe removes one recipe explicitly.
 func (s *RecipeService) DeleteRecipe(id string) error {
 	s.mu.Lock()

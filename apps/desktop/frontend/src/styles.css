@@ -408,3 +408,9 @@
 #recipe-preview-btn { border-color: var(--primary); color: var(--primary); }
 #recipe-approve-btn { border-color: var(--accent); color: var(--accent); }
 #recipe-run-btn { border-color: var(--accent); color: #fff; background: var(--accent); }
+
+.attempt-line { font-size: 12px; margin: 4px 0; }
+.attempt-verified, .attempt-completed { color: var(--accent); }
+.attempt-failed { color: var(--danger); }
+.attempt-active { color: var(--primary); }
+#recipe-delivery { background: var(--bg); border: 1px solid var(--border); padding: 10px; border-radius: 8px; margin-top: 8px; }
