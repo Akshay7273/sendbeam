@@ -279,6 +279,19 @@
       </div>
       <pre id="recipe-preview" style="display:none"></pre>
       <div id="recipe-delivery" style="display:none"></div>
+
+      <h4>Runtime (watch / schedule)</h4>
+      <p class="muted" id="runtime-note">Watches and schedules run inside this app — they live only while SendBeam Desktop is open. There is no background service yet; the CLI <code>recipe watch</code>/<code>recipe scheduler</code> foreground commands cover headless use.</p>
+      <div id="watch-state-line"></div>
+      <div class="recipe-actions">
+        <button id="watch-start">Start watch</button>
+        <button id="watch-stop">Stop watch</button>
+      </div>
+      <div id="sched-state-line"></div>
+      <div class="recipe-actions">
+        <button id="sched-start">Start scheduler</button>
+        <button id="sched-stop">Stop scheduler</button>
+      </div>
     </div>
   </section>
 
