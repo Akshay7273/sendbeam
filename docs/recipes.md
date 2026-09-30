@@ -418,6 +418,12 @@ carries no TypeScript source for the desktop frontend (only the built
   any material change revokes it.
 - **Desktop UI pending.** The service bindings are done; the visual
   composer ships when the frontend source does.
+  **Dated clarification (2026-09-30, verified against the built `dist/`):**
+  the shipped desktop UI contains text/link handoff controls only — no
+  recipe/schedule/watch elements or service calls. The backend
+  `RecipeService` surface (create/preview/approve/grant/watch/schedule/run
+  controls) is complete and test-covered; the missing part is purely the
+  frontend wiring plus the in-repo frontend source (V23-PR01).
 - Preview is an estimate, not a lock: re-resolution at run time is
   deliberate, so always re-preview after changing sources if the exact
   file set matters.
