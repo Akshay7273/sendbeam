@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SendBeam Desktop</title>
+    <!-- @styles.css -->
+  </head>
+  <body>
+    <header>
+      <h1>SendBeam</h1>
+      <span class="sub">End-to-end encrypted, peer-to-peer file transfer</span>
+    </header>
+
+    <!-- UPDATE BANNER -->
+    <div class="update-banner hidden" id="update-banner">
+      <div class="update-banner-content">
+        <span class="update-banner-text" id="update-banner-text">SendBeam update available</span>
+        <div class="update-banner-actions">
+          <button class="primary small" id="update-banner-apply">Update now</button>
+          <button class="ghost small" id="update-banner-dismiss">Dismiss</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" id="tab-send">Send</button>
+      <button class="tab" id="tab-receive">Receive</button>
+      <button class="tab" id="tab-devices">Devices</button>
+      <button class="tab" id="tab-interrupted">Interrupted</button>
+      <button class="tab" id="tab-settings">Settings</button>
+    </div>
+
+    <!-- SEND -->
+    <section class="panel active" id="panel-send">
+      <div class="hidden" id="policy-banner" style="margin-bottom:1rem; padding:0.75rem; border:1px solid var(--accent); border-radius:6px; font-size:0.85rem; background:var(--surface);"></div>
+      <div class="card">
+        <h2>Files &amp; folders</h2>
+        <div class="drop" id="drop-send" data-file-drop-target>
+          Drop files or folders here, or click to choose
+        </div>
+        <ul class="file-list hidden" id="send-list"></ul>
+        <div class="statusline" id="send-sel-status"></div>
+
+        <div style="margin-top:0.75rem;">
+          <label for="send-recipient" style="margin-bottom:0.25rem;">Recipient</label>
+          <select id="send-recipient" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.45rem; border-radius:6px; font-size:0.85rem; outline:none;">
+            <option value="code">Anyone with invite code / link / QR (Default)</option>
+          </select>
+        </div>
+
+        <div class="controls" style="margin-top:0.75rem;">
+          <button id="pick-send">Choose files &amp; folders…</button>
+          <button class="primary" id="start-send" disabled>Start Transfer</button>
+        </div>
+      </div>
+
+      <!-- V20-PR06: encrypted text/link handoff composer for a paired trusted device. -->
+      <div class="card" id="card-handoff">
+        <h2>Text / link handoff</h2>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin:0 0 0.75rem;">
+          Send an encrypted text note or link directly to a paired trusted device — held for
+          deliberate Copy/Save/Open after verification, never opened automatically.
+        </p>
+        <label for="handoff-kind">Kind</label>
+        <select id="handoff-kind" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.45rem; border-radius:6px; font-size:0.85rem; outline:none;">
+          <option value="text">Text note</option>
+          <option value="link">Link</option>
+        </select>
+        <label for="handoff-text" style="margin-top:0.6rem;">Content</label>
+        <textarea id="handoff-text" rows="3" placeholder="Text note, or an https:// link — up to 256 KiB, encrypted end to end" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.45rem; border-radius:6px; font-size:0.85rem; outline:none; resize:vertical;"></textarea>
+        <div class="controls" style="margin-top:0.75rem;">
+          <button class="primary" id="start-handoff" disabled>Send Handoff</button>
+        </div>
+        <div class="statusline" id="handoff-status"></div>
+      </div>
+
+      <div class="card hidden" id="invite-card">
+        <h2>Invite</h2>
+        <div class="invite">
+          <div>
+            <div class="code mono" id="invite-code"></div>
+            <button class="ghost copy" id="copy-invite">Copy code</button>
+            <div class="statusline" id="invite-link" style="word-break: break-all;"></div>
+          </div>
+          <img id="invite-qr" alt="Invite QR code" />
+        </div>
+        <div class="statusline" id="invite-status"></div>
+      </div>
+
+      <div class="card hidden" id="send-progress-card">
+        <h2>Transfer</h2>
+        <div class="chips" id="send-chips"></div>
+        <div class="progress"><div id="send-bar"></div></div>
+        <div class="row"><span class="k">Progress</span><span class="v" id="send-percent"></span></div>
+        <div class="row"><span class="k">Current file</span><span class="v" id="send-file"></span></div>
+        <div class="row"><span class="k">Speed / ETA</span><span class="v" id="send-rate"></span></div>
+        <div class="row"><span class="k">Aggregate</span><span class="v" id="send-aggregate"></span></div>
+        <div class="row"><span class="k">Security</span><span class="v mono" id="send-fingerprint"></span></div>
+        <div class="row-sep"></div>
+        <div class="controls">
+          <button id="send-pause">Pause</button>
+          <button id="send-resume" disabled>Resume</button>
+          <button class="danger" id="send-cancel">Cancel</button>
+        </div>
+        <div class="statusline" id="send-status"></div>
+      </div>
+    </section>
+
+    <!-- RECEIVE -->
+    <section class="panel" id="panel-receive">
+      <div class="card">
+        <h2>Receive</h2>
+        <label for="recv-code">Invite code (or full join link)</label>
+        <input type="text" id="recv-code" placeholder="e.g. 7-alpha-bravo" autocomplete="off" />
+        <label for="recv-dir">Destination folder</label>
+        <div style="display:flex; gap:0.5rem;">
+          <input type="text" id="recv-dir" placeholder="download folder" autocomplete="off" style="flex:1" />
+          <button class="ghost" id="pick-dest">Choose…</button>
+        </div>
+        <div class="controls">
+          <button class="primary" id="start-recv" disabled>Receive Transfer</button>
+        </div>
+        <div class="hidden" id="recv-local-note" style="font-size:0.85rem; color:var(--text-muted); margin-top:0.5rem;">
+          Local only: paired devices send to you automatically through the
+          offline listener — no invite code is needed. Make sure the listener
+          is running in Settings.
+        </div>
+        <div class="statusline" id="recv-status"></div>
+      </div>
+
+      <div class="card hidden" id="recv-progress-card">
+        <h2>Transfer</h2>
+        <div class="chips" id="recv-chips"></div>
+        <div class="progress"><div id="recv-bar"></div></div>
+        <div class="row"><span class="k">Progress</span><span class="v" id="recv-percent"></span></div>
+        <div class="row"><span class="k">Current file</span><span class="v" id="recv-file"></span></div>
+        <div class="row"><span class="k">Speed / ETA</span><span class="v" id="recv-rate"></span></div>
+        <div class="row"><span class="k">Aggregate</span><span class="v" id="recv-aggregate"></span></div>
+        <div class="row"><span class="k">Security</span><span class="v mono" id="recv-fingerprint"></span></div>
+        <div class="row"><span class="k">Saved to</span><span class="v" id="recv-out"></span></div>
+        <div class="row-sep"></div>
+        <div class="controls">
+          <button id="recv-pause">Pause</button>
+          <button id="recv-resume" disabled>Resume</button>
+          <button class="danger" id="recv-cancel">Cancel</button>
+          <button class="ghost hidden" id="recv-reveal">Reveal in Folder</button>
+        </div>
+        <div class="statusline" id="recv-status-line"></div>
+        <!-- V20-PR06: verified handoff receiver view — literal rendering only,
+             deliberate Copy/Save/Open; nothing is opened or copied automatically. -->
+        <div class="hidden" id="recv-handoff-card">
+          <div class="row-sep"></div>
+          <div class="row"><span class="k">Handoff</span><span class="v" id="recv-handoff-kind"></span></div>
+          <pre id="recv-handoff-text" style="white-space:pre-wrap; word-break:break-word; max-height:14rem; overflow:auto; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:0.75rem; font-size:0.85rem; margin:0.5rem 0;"></pre>
+          <p id="recv-handoff-note" style="font-size:0.8rem; color:var(--text-muted); margin:0 0 0.5rem;">Nothing was opened, copied, or saved automatically.</p>
+          <div class="controls" style="justify-content:flex-start;">
+            <button class="primary small" id="recv-handoff-copy">Copy</button>
+            <button class="ghost small" id="recv-handoff-save">Save…</button>
+            <button class="ghost small hidden" id="recv-handoff-open">Open</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- DEVICES -->
+    <section class="panel" id="panel-devices">
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+          <div>
+            <h2 style="margin-bottom:0.25rem;">Trusted Devices</h2>
+            <span style="font-size:0.8rem; color:var(--text-muted);">Paired devices for authenticated, peer-to-peer transfers without one-time codes.</span>
+          </div>
+          <button class="primary small" id="open-pair-btn">+ Pair Device</button>
+        </div>
+
+        <div style="overflow-x:auto;">
+          <table class="table" id="devices-table">
+            <thead>
+              <tr>
+                <th>Device</th>
+                <th>Fingerprint</th>
+                <th>Status</th>
+                <th>Auto-Accept</th>
+                <th>Last Seen</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="devices-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="devices-empty" class="hidden" style="padding:2.5rem 1rem; text-align:center; color:var(--text-muted); font-size:0.85rem;">
+          No trusted devices paired yet. Click &ldquo;+ Pair Device&rdquo; to connect another computer or phone.
+        </div>
+        <div class="statusline" id="devices-status"></div>
+      </div>
+    </section>
+
+    <!-- INTERRUPTED / DURABLE TRANSFERS -->
+    <section class="panel" id="panel-interrupted">
+      <div class="card">
+        <h2>
+          <span>Interrupted Transfers</span>
+          <div>
+            <button class="ghost" id="refresh-durable">Refresh</button>
+            <button class="danger ghost" id="discard-all-durable">Discard All</button>
+          </div>
+        </h2>
+        <div id="durable-list-container">
+          <p class="statusline" id="durable-empty">Scanning for interrupted transfers…</p>
+          <table class="table hidden" id="durable-table">
+            <thead>
+              <tr>
+                <th>Role</th>
+                <th>Transfer ID</th>
+                <th>Files</th>
+                <th>Progress</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="durable-tbody"></tbody>
+          </table>
+        </div>
+        <div class="statusline" id="durable-status"></div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="panel" id="panel-settings">
+      <div class="card">
+        <h2>Preferences &amp; Network</h2>
+        <label for="cfg-server">Signaling Server URL</label>
+        <input type="text" id="cfg-server" placeholder="wss://localhost:8443/ws" />
+
+        <label for="cfg-ice">ICE Servers (STUN / TURN, one per line)</label>
+        <textarea id="cfg-ice" rows="3" placeholder="stun:stun.l.google.com:19302"></textarea>
+
+        <label for="cfg-downdir">Default Download Folder</label>
+        <div style="display:flex; gap:0.5rem;">
+          <input type="text" id="cfg-downdir" placeholder="Downloads" style="flex:1" />
+          <button class="ghost" id="cfg-pick-dir">Browse…</button>
+        </div>
+
+        <label style="display: flex; align-items: center; gap: 0.5rem; margin-top: 1rem; cursor: not-allowed; opacity: 0.8;">
+          <input type="checkbox" id="cfg-auto-accept" disabled />
+          <span>Auto-Accept Incoming Transfers (Strictly disabled by default for security)</span>
+        </label>
+
+        <label style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; cursor: pointer;">
+          <input type="checkbox" id="cfg-require-padding" />
+          <span>Require Traffic Padding (Reject unpadded peers and frames fail-closed)</span>
+        </label>
+
+        <label for="cfg-network-policy" style="display:block; margin-top: 1rem;">Network Policy</label>
+        <select id="cfg-network-policy" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.5rem; border-radius:6px; font-size:0.85rem; outline:none;">
+          <option value="online">Online — signaling server + LAN (default)</option>
+          <option value="prefer-local">Prefer local — LAN first, online fallback</option>
+          <option value="local-only">Local only — no internet (LAN transfers only)</option>
+        </select>
+        <p style="font-size:0.8rem; color:var(--text-muted); margin:0.4rem 0 0;">Local only disables the signaling server, STUN/TURN, relay, invite codes, and update checks. Pairing and transfers stay on your local network.</p>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:1rem;">
+          <div style="font-size:0.85rem; color:var(--text-muted);">Offline listener: <span id="local-listener-state" style="color:var(--text-heading);">—</span></div>
+          <button id="local-listener-toggle">Start listener</button>
+        </div>
+        <div class="statusline" id="local-listener-status"></div>
+
+        <div class="controls" style="margin-top: 1.25rem;">
+          <button class="primary" id="save-settings">Save Settings</button>
+          <button id="reset-settings">Reload</button>
+        </div>
+        <div class="statusline" id="settings-status"></div>
+      </div>
+
+      <div class="card" id="card-offline" style="margin-top: 1.25rem;">
+        <h2>Offline Pairing &amp; Listener</h2>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-top:0;">
+          Pair with a nearby device over your local network — no account, no
+          server, no internet. While the offline listener is running, paired
+          devices can also send files to you directly.
+        </p>
+        <div class="controls">
+          <button class="primary" id="offline-invite-btn">Create offline invitation</button>
+        </div>
+        <div id="offline-invite-view" class="hidden" style="margin-top:0.75rem;">
+          <img id="offline-invite-qr" alt="Offline invitation QR code" style="width:180px; height:180px; border:1px solid var(--border); border-radius:6px;" />
+          <div class="mono" id="offline-invite-text" style="margin-top:0.5rem; word-break:break-all; font-size:0.8rem;"></div>
+          <div style="font-size:0.85rem; margin-top:0.5rem;">Listening on <span class="mono" id="offline-invite-addr"></span></div>
+          <div style="font-size:0.85rem;">Fingerprint: <span class="mono" id="offline-invite-fp"></span></div>
+          <div style="font-size:0.85rem;">Expires: <span id="offline-invite-exp"></span></div>
+          <div class="statusline" id="offline-invite-status"></div>
+          <div class="controls">
+            <button id="offline-invite-copy">Copy invitation</button>
+            <button id="offline-invite-cancel">Cancel invitation</button>
+          </div>
+        </div>
+        <h3 style="margin-top:1rem;">Join with an invitation</h3>
+        <textarea id="offline-join-inv" rows="3" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.5rem; border-radius:6px; font-size:0.85rem;" placeholder="Paste the offline invitation text"></textarea>
+        <input type="text" id="offline-join-name" placeholder="This device's name (optional)" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.5rem; border-radius:6px; font-size:0.85rem; margin-top:0.5rem;" />
+        <div class="controls" style="margin-top:0.5rem;">
+          <button class="primary" id="offline-join-btn">Pair offline</button>
+        </div>
+        <div class="statusline" id="offline-join-status"></div>
+      </div>
+
+      <div class="card" id="card-updates" style="margin-top: 1.25rem;">
+        <h2>Software Updates &amp; Channel</h2>
+        <label for="cfg-update-channel">Release Channel</label>
+        <select id="cfg-update-channel" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.5rem; border-radius:6px; font-size:0.85rem; outline:none;">
+          <option value="stable">Stable (Official releases)</option>
+          <option value="beta">Beta (Release candidates &amp; betas)</option>
+        </select>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:1rem;">
+          <div>
+            <span id="update-status-label" style="font-size:0.85rem; color:var(--text-muted);">SendBeam Desktop is up to date.</span>
+          </div>
+          <button id="check-update-btn">Check for updates</button>
+        </div>
+        <div id="update-details" class="hidden" style="margin-top:0.75rem; padding:0.75rem; background:var(--surface); border-radius:6px; font-size:0.8rem;">
+          <div id="update-notes" style="white-space:pre-wrap; margin-bottom:0.5rem; max-height:100px; overflow-y:auto; color:var(--text-muted);"></div>
+          <button class="primary small" id="update-install-btn">Install Update</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- PAIR MODAL -->
+    <div class="modal-backdrop hidden" id="modal-pair">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Pair Trusted Device</h3>
+          <button class="ghost small" id="pair-modal-close">&times;</button>
+        </div>
+        <div class="tabs" style="margin-bottom:1rem;">
+          <button class="tab active" id="pair-tab-offer">Show Code</button>
+          <button class="tab" id="pair-tab-join">Enter Code</button>
+        </div>
+
+        <!-- OFFER VIEW -->
+        <div id="pair-offer-view">
+          <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+            Scan this QR code with the SendBeam mobile/web app or enter the 7-word code below on your other device to establish mutual cryptographic trust.
+          </p>
+          <div style="display:flex; justify-content:center; margin-bottom:1rem;">
+            <img id="pair-offer-qr" alt="Pairing QR Code" style="width:200px; height:200px; background:#fff; border-radius:6px; padding:8px;" class="hidden" />
+          </div>
+          <div style="text-align:center; margin-bottom:1rem;">
+            <span class="mono" id="pair-offer-code" style="font-size:1.15rem; font-weight:600; color:var(--primary-hover); word-break:break-all;">Generating invite code…</span>
+          </div>
+          <div class="statusline" id="pair-offer-status" style="text-align:center; margin-bottom:1rem;">Waiting for peer to connect…</div>
+          <div class="controls" style="justify-content:flex-end;">
+            <button id="pair-offer-cancel">Cancel</button>
+          </div>
+        </div>
+
+        <!-- JOIN VIEW -->
+        <div id="pair-join-view" class="hidden">
+          <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.75rem;">
+            Enter the 7-word invite code displayed on the other SendBeam device.
+          </p>
+          <label for="pair-join-code">Invite Code</label>
+          <input type="text" id="pair-join-code" placeholder="e.g. 7-words-here" />
+
+          <label for="pair-join-label">Custom Device Name (Optional)</label>
+          <input type="text" id="pair-join-label" placeholder="e.g. Work Laptop" />
+
+          <label style="display:flex; align-items:center; gap:0.5rem; margin-top:0.75rem;">
+            <input type="checkbox" id="pair-join-auto-accept" />
+            <span>Auto-accept incoming transfers from this device</span>
+          </label>
+
+          <div id="pair-join-dest-container" class="hidden" style="margin-top:0.5rem;">
+            <label for="pair-join-dest-dir">Destination Folder</label>
+            <div style="display:flex; gap:0.5rem;">
+              <input type="text" id="pair-join-dest-dir" placeholder="/path/to/downloads" style="flex:1" />
+              <button class="ghost" id="pair-join-browse-dest">Browse…</button>
+            </div>
+          </div>
+
+          <div class="statusline" id="pair-join-status"></div>
+          <div class="controls" style="justify-content:flex-end; margin-top:1rem;">
+            <button id="pair-join-cancel">Cancel</button>
+            <button class="primary" id="pair-join-submit">Pair Device</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- POLICY MODAL -->
+    <div class="modal-backdrop hidden" id="modal-policy">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Device Policy</h3>
+          <button class="ghost small" id="policy-modal-close">&times;</button>
+        </div>
+        <div id="policy-device-info" style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;"></div>
+
+        <label style="display:flex; align-items:center; gap:0.5rem; margin-top:0.5rem;">
+          <input type="checkbox" id="policy-auto-accept" />
+          <span>Auto-accept incoming transfers from this device</span>
+        </label>
+
+        <label style="display:flex; align-items:center; gap:0.5rem; margin-top:0.5rem;">
+          <input type="checkbox" id="policy-require-padding" />
+          <span>Require traffic padding (reject transfers if peer lacks padding)</span>
+        </label>
+
+        <div id="policy-dest-container" class="hidden" style="margin-top:0.75rem;">
+          <label for="policy-dest-dir">Auto-Accept Destination Folder</label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="text" id="policy-dest-dir" placeholder="/path/to/downloads" style="flex:1" />
+            <button class="ghost" id="policy-browse-dest">Browse…</button>
+          </div>
+        </div>
+
+        <div class="statusline" id="policy-status"></div>
+        <div class="controls" style="justify-content:flex-end; margin-top:1rem;">
+          <button id="policy-cancel-btn">Cancel</button>
+          <button class="primary" id="policy-save-btn">Save Policy</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RENAME MODAL -->
+    <div class="modal-backdrop hidden" id="modal-rename">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Rename Device</h3>
+          <button class="ghost small" id="rename-modal-close">&times;</button>
+        </div>
+        <label for="rename-label-input">Device Name</label>
+        <input type="text" id="rename-label-input" placeholder="e.g. Work Phone" />
+
+        <div class="statusline" id="rename-status"></div>
+        <div class="controls" style="justify-content:flex-end; margin-top:1rem;">
+          <button id="rename-cancel-btn">Cancel</button>
+          <button class="primary" id="rename-save-btn">Save Name</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- UNPAIR MODAL -->
+    <div class="modal-backdrop hidden" id="modal-unpair">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 style="color:var(--danger-hover);">Unpair Device</h3>
+          <button class="ghost small" id="unpair-modal-close">&times;</button>
+        </div>
+        <p id="unpair-device-prompt" style="font-size:0.85rem; margin-bottom:1rem;"></p>
+
+        <div style="display:flex; flex-direction:column; gap:0.75rem; margin-bottom:1rem;">
+          <label style="display:flex; align-items:flex-start; gap:0.5rem; cursor:pointer;">
+            <input type="radio" name="unpair-mode" value="revoke" checked style="margin-top:0.25rem;" />
+            <div>
+              <strong style="color:var(--text-heading);">Revoke trust (Recommended)</strong>
+              <div style="font-size:0.75rem; color:var(--text-muted);">Creates a cryptographic tombstone that permanently prevents unauthorized re-pairing from this device ID until tombstone expiration.</div>
+            </div>
+          </label>
+          <label style="display:flex; align-items:flex-start; gap:0.5rem; cursor:pointer;">
+            <input type="radio" name="unpair-mode" value="purge" style="margin-top:0.25rem;" />
+            <div>
+              <strong style="color:var(--text-heading);">Purge completely</strong>
+              <div style="font-size:0.75rem; color:var(--text-muted);">Deletes all local trust records and cryptographic keys without issuing a tombstone.</div>
+            </div>
+          </label>
+        </div>
+
+        <div class="statusline" id="unpair-status"></div>
+        <div class="controls" style="justify-content:flex-end; margin-top:1rem;">
+          <button id="unpair-cancel-btn">Cancel</button>
+          <button class="danger" id="unpair-confirm-btn">Unpair</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- INCOMING CONSENT MODAL -->
+    <div class="modal-backdrop hidden" id="modal-consent">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Incoming Transfer Request</h3>
+        </div>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.75rem;">
+          A paired trusted device is sending files to you.
+        </p>
+
+        <div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:0.75rem; margin-bottom:1rem; font-size:0.85rem;">
+          <div style="margin-bottom:0.4rem;">
+            <span style="color:var(--text-muted);">From: </span>
+            <strong id="consent-device-name" style="color:var(--text-heading);"></strong>
+          </div>
+          <div style="margin-bottom:0.4rem;">
+            <span style="color:var(--text-muted);">Fingerprint: </span>
+            <span class="mono small" id="consent-fingerprint"></span>
+          </div>
+          <div>
+            <span style="color:var(--text-muted);">Files: </span>
+            <span id="consent-files-summary" style="color:var(--text-heading);"></span>
+          </div>
+        </div>
+
+        <!-- V20-PR06: encrypted handoff notice — shown only for text/link envelopes. -->
+        <p id="consent-handoff-note" class="hidden" style="font-size:0.85rem; color:var(--text-muted); margin:0 0 1rem;">
+          An encrypted handoff — it will be shown only after verification. It will not be
+          opened, copied, or saved automatically.
+        </p>
+
+        <div id="consent-dest-row">
+          <label for="consent-dest-dir">Save into folder</label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="text" id="consent-dest-dir" placeholder="/path/to/downloads" style="flex:1" />
+            <button class="ghost" id="consent-browse-dest">Browse…</button>
+          </div>
+        </div>
+
+        <div class="statusline" id="consent-status"></div>
+        <div class="controls" style="justify-content:flex-end; margin-top:1.25rem;">
+          <button class="danger small" id="consent-decline-btn">Decline</button>
+          <button class="primary small" id="consent-accept-btn">Accept Transfer</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- @app.js -->
+  </body>
+</html>

@@ -38,14 +38,18 @@ deployment out of the box.
   - `loopback.go` — in-process signaling relay used by tests and the self-check.
   - `transfer_service_test.go` — loopback transfers (single/multi-file, pause/resume/
     cancel, QR, invite links) and a real-WebSocket interop transfer.
-- `frontend/dist/` — the product UI (plain HTML/JS over the Wails runtime bridge).
+- `frontend/src/` — maintainable frontend sources: `index.template.html` (markup + slot markers), `styles.css`, `app.js` (all product logic over the Wails runtime bridge).
+- `frontend/dist/` — generated artifact. Rebuilt deterministically with `python3 frontend/tools/build.py` (byte-for-byte reconstruction; no bundler/minifier). CI asserts dist matches sources (`frontend source determinism` job); run `just build-desktop-frontend` after editing sources.
 
 ## Build and Packaging
 
 ### Source Builds
 
 ```bash
-# Native window (needs platform WebView deps, e.g. libgtk-4-dev + libwebkitgtk-6.0-dev on Linux)
+# 1. Rebuild the embedded frontend from sources (deterministic, byte-exact)
+python3 frontend/tools/build.py
+
+# 2. Native window (needs platform WebView deps, e.g. libgtk-4-dev + libwebkitgtk-6.0-dev on Linux)
 go build -o sendbeam-desktop .
 
 # Headless server (no GUI deps; used by CI and tests)

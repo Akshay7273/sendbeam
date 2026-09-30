@@ -86,6 +86,14 @@ fmt:
     for m in packages/wire packages/engine apps/server apps/cli; do ( cd "$m" && go fmt ./... ); done
     ( cd apps/desktop && go fmt ./... )
 
+# Rebuild the desktop frontend dist from its maintainable sources
+@build-desktop-frontend:
+    python3 apps/desktop/frontend/tools/build.py
+
+# Verify dist matches sources (CI parity)
+@check-desktop-frontend:
+    python3 apps/desktop/frontend/tools/build.py --check
+
 # Replay all committed fuzz seed corpora (fast, smoke gate)
 fuzz-smoke:
     ./scripts/run_fuzz.sh smoke
