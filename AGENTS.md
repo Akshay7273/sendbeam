@@ -25,13 +25,20 @@ The `metadata & attribution hygiene` check validates every PR title:
 
 - All changes land via **squash-merge PRs** against `main`; linear history is
   required; force-pushes and deletions are blocked.
-- Ten required status checks must pass on the exact final commit (see
-  `docs/supply-chain.md` §8 for the live list). Additional jobs
-  (`differential parity`, path-filtered `distribution/*` jobs) run as evidence
-  but are **not** merge gates today.
-- `required_approving_review_count` is currently **0** — independent review is a
-  contract expectation, not an enforced gate. Owner decision pending; do not
-  represent a self-merge as independently reviewed.
+- Fourteen required status checks must pass on the exact final commit (see
+  `docs/supply-chain.md` §8 for the live list): the CI suite, the
+  cross-language parity gate, the real-network offline evidence job, the docs
+  consistency gate, and the always-running distribution aggregate gate (which
+  waits for the applicable distribution jobs when a PR touches
+  distribution-relevant paths and passes with an explicit _skipped — not
+  applicable_ verdict otherwise).
+- **Review policy (owner decision, 2026-09-30):** solo-maintainer exception —
+  SendBeam has a single maintainer who has granted standing automation
+  authorization (open and merge scoped PRs when required checks and repository
+  protections pass). Independent human review is not enforced or claimed;
+  agent self-review is **never** represented as independent approval.
+  Assurance comes from required checks, the hard binding/verification gates in
+  the release pipeline, and honest evidence ledgers.
 
 ## Working rules for agents
 

@@ -6,18 +6,17 @@ SendBeam is peer-to-peer file transfer software engineered with end-to-end encry
 
 Only the current and immediately preceding minor releases receive security patches. Older versions must be upgraded.
 
-> [!NOTE]
-> **Owner decision pending (audit F12):** the _support-window policy itself_
-> (how many minors, for how long) is an owner decision — the table below states
-> the released version history as of 2026-09-30 without inventing maintenance
-> commitments.
+| Version | Supported          | Status                                  |
+| ------- | ------------------ | --------------------------------------- |
+| 2.2.x   | :white_check_mark: | Current stable release                  |
+| 2.1.x   | :white_check_mark: | Immediately preceding minor             |
+| 2.0.x   | :x:                | Unsupported — upgrade to 2.1.x or 2.2.x |
+| 1.x     | :x:                | Unsupported — upgrade to 2.x            |
 
-| Version | Supported          | Status                                             |
-| ------- | ------------------ | -------------------------------------------------- |
-| 2.2.x   | :white_check_mark: | Latest stable release                              |
-| 2.1.x   | :white_check_mark: | Previous minor release                             |
-| 2.0.x   | :x:                | Released; patch eligibility pending owner decision |
-| 1.x     | :x:                | Unsupported — upgrade to 2.x                       |
+Support policy (decided by the maintainer, 2026-09-30): only the current
+stable minor and the immediately preceding minor receive security patches.
+Older versions are unsupported. No fixed end-date is promised beyond that
+rule.
 
 ## Reporting a Vulnerability
 
