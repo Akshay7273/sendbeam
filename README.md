@@ -270,6 +270,7 @@ commitments, see [SECURITY.md](SECURITY.md).
 - [Supply Chain Integrity](docs/supply-chain.md) — build provenance attestations, SPDX 2.3 SBOMs, checksum manifests
 - [Updater Architecture](docs/updater.md) — self-update channels, cryptographic verification, and rollback safety
 - [Release Gate v2.2](docs/RELEASE-v2.2.md) — v2.2 milestone criteria, upgrade/rollback evidence, and release checklist
+- [v2.2.1 candidate gate evidence](docs/RELEASE-v2.2.1-candidate-evidence.md) — release/install/update regression rows performed, clean, and explicitly BLOCKED (no publication)
 - [Release Gate v2.1](docs/RELEASE-v2.1.md) — v2.1 milestone criteria, offline policy documentation, and release checklist
 - [Cross-platform evidence ledger](docs/platform-evidence.md) — per-platform evidence tiers (code/package/tests/packaged UI/physical devices)
 - [Release Gate v1.9 (Trusted Handoffs)](docs/RELEASE-v1.9.md) — v1.9 milestone criteria, forward-secret key exchange, and release checklist
