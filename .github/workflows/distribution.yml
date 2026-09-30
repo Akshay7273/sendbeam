@@ -3,15 +3,6 @@ name: distribution
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'apps/cli/**'
-      - 'apps/desktop/**'
-      - 'packages/**'
-      - 'scripts/**'
-      - 'packaging/**'
-      - 'Formula/**'
-      - 'bucket/**'
-      - '.github/workflows/distribution.yml'
   workflow_dispatch:
 
 permissions:
@@ -24,8 +15,43 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # F05 aggregate gate: always runs, so the required check exists on every PR.
+  # Detects whether this PR touches distribution-relevant paths; the final
+  # 'gate' job turns that into a green/skip/fail verdict. Legitimate
+  # path-filtered skips never block unrelated PRs.
+  aggregate:
+    name: distribution aggregate (detection)
+    runs-on: ubuntu-latest
+    outputs:
+      applicable: ${{ steps.detect.outputs.applicable }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Detect distribution-relevant changes
+        id: detect
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PR}" ]; then
+            echo "applicable=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          FILES="$(gh api "repos/${REPO}/pulls/${PR}/files?per_page=100" --paginate --jq '.[].filename')"
+          if echo "${FILES}" | grep -qE '^(apps/cli/|apps/desktop/|packages/|scripts/|packaging/|Formula/|bucket/|go\.work|\.github/workflows/(distribution|release)\.yml)'; then
+            echo "applicable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "[i] no distribution-relevant changes"
+            echo "applicable=false" >> "$GITHUB_OUTPUT"
+          fi
+
   cli:
     name: cli (${{ matrix.os }}/${{ matrix.arch }})
+    needs: aggregate
+    if: needs.aggregate.outputs.applicable == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -124,6 +150,8 @@ jobs:
 
   desktop-windows:
     name: desktop (windows/amd64)
+    needs: aggregate
+    if: needs.aggregate.outputs.applicable == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -278,6 +306,8 @@ jobs:
 
   desktop-macos:
     name: desktop (macos/universal)
+    needs: aggregate
+    if: needs.aggregate.outputs.applicable == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -393,6 +423,8 @@ jobs:
 
   desktop-linux:
     name: desktop (linux/amd64)
+    needs: aggregate
+    if: needs.aggregate.outputs.applicable == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -678,3 +710,40 @@ jobs:
             --out-dir pr-packaging \
             --sync-root=false \
             --validate
+
+  # F05: the required check. Always runs; resolves the verdict:
+  #   applicable + any red job → FAIL; applicable + all green → PASS;
+  #   not applicable → PASS with explicit skip verdict.
+  gate:
+    name: distribution gate
+    runs-on: ubuntu-latest
+    needs: [aggregate, cli, desktop-windows, desktop-macos, desktop-linux]
+    if: always()
+    steps:
+      - name: Resolve verdict
+        env:
+          APPLICABLE: ${{ needs.aggregate.outputs.applicable }}
+          R_CLI: ${{ needs.cli.result }}
+          R_WIN: ${{ needs.desktop-windows.result }}
+          R_MAC: ${{ needs.desktop-macos.result }}
+          R_LIN: ${{ needs.desktop-linux.result }}
+        run: |
+          set -euo pipefail
+          echo "aggregate applicable=${APPLICABLE} | cli=${R_CLI} win=${R_WIN} mac=${R_MAC} linux=${R_LIN}"
+          if [ "${APPLICABLE}" != "true" ]; then
+            echo "[+] distribution gate: SKIPPED — no distribution-relevant changes in this PR"
+            exit 0
+          fi
+          FAILS=0
+          for pair in "cli:${R_CLI}" "windows:${R_WIN}" "macos:${R_MAC}" "linux:${R_LIN}"; do
+            name="${pair%%:*}"; res="${pair##*:}"
+            if [ "${res}" != "success" ]; then
+              echo "[-] distribution job ${name}: ${res}"
+              FAILS=$((FAILS + 1))
+            fi
+          done
+          if [ "${FAILS}" -gt 0 ]; then
+            echo "[-] distribution gate: FAILED (${FAILS} red job(s))" >&2
+            exit 1
+          fi
+          echo "[+] distribution gate: all applicable distribution jobs green"

@@ -107,6 +107,21 @@ Packaging is automated across native GitHub-hosted runners in two dedicated work
    - Runs a **Release Verification Gate** (`scripts/verify-release.sh`) that downloads the release bundle, re-checks SHA-256 sums, smoke tests the native binary, and validates draft status.
    - Maintainer reviews the draft release notes and publishes the release.
 
+### Container Channel Semantics (decided 2026-09-30)
+
+- `latest` = the newest successfully validated (CI-green) `main` commit. It is
+  a **development channel**, not "the latest stable release".
+- Release identification is by version tag and the immutable `:sha` digests
+  published for every build; promotion of channels is CI-gated and monotonic
+  (an older commit can never overwrite a newer promoted one).
+
+### Release Tag Signing (pending owner-provisioned identity)
+
+Release workflow tags should carry an owner-provisioned cryptographic
+signing identity. Until that identity is provided and configured, tags remain
+**unsigned**, and this setup is recorded as **pending** — no key was
+generated, imported, or retroactively applied by automation.
+
 ### Checksum Manifest & Supply Chain Integrity
 
 All produced distribution archives, installers, and SPDX 2.3 SBOM manifests are hashed with SHA-256 and signed:

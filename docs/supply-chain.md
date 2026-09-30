@@ -198,7 +198,13 @@ The authoritative branch (`main`) is protected by automated GitHub branch rulese
    - `offlinelab (real-network local-only evidence)`
    - `docs consistency (links, manifests, required-checks)`
 
-   These names match the current `ci.yml` job names. Additional green jobs — `differential parity (Go <-> TS)` (runs in CI but is **not** in the required list) and the `distribution/*` packaging jobs (path-filtered, not required) — are valuable evidence but are **not** merge gates today (see the pending owner decisions below). Earlier prose claiming these were required exceeded the observed settings and has been corrected.
+   Plus, per the owner's 2026-09-30 policy decision, the following are **enforced** required checks:
+   - `differential parity (Go <-> TS)` (cross-language byte parity is a hard merge gate)
+   - `offlinelab (real-network local-only evidence)` (automated real-network offline regression)
+   - `docs consistency (links, manifests, required-checks)` (documentation drift gate)
+   - `distribution gate` (always-running aggregate: waits for the applicable distribution jobs when the PR touches distribution-relevant paths, and passes with an explicit _skipped — not applicable_ verdict on unrelated PRs, so path-filtered skips never block unrelated work)
+
+   The enforced set matches the live ruleset exactly; earlier prose that overstated or understated it has been corrected.
 
 4. **Attribution & Metadata Enforcement:** The `metadata & attribution hygiene` check rejects AI co-authorship tags, auto-generated bot footers, malformed commit summaries, internal planning-tag PR titles, and manual `(#N)` suffixes (GitHub adds those on squash merge).
 5. **No Force Pushes or Deletions:** Protected against history rewrites.
@@ -218,7 +224,7 @@ SendBeam tracks and adheres to the **OpenSSF Best Practices Badge** criteria (Pa
 | **Change Control** | Unique Version Tags      | Partial | SemVer tags are annotated and published with release notes. **The v2.2.0 tag is not cryptographically signed** (verified against the tag API object); Git-tag signing is a pending owner decision, not an existing assurance. |
 | **Reporting**      | Vulnerability Disclosure | Met     | `SECURITY.md` with GitHub Private Vulnerability Reporting and defined response SLAs                                                                                                                                           |
 | **Quality**        | Automated Build & Test   | Met     | Comprehensive test runner (`just ci-test` for CI parity), unit, integration, and E2E suites                                                                                                                                   |
-| **Quality**        | Continuous Integration   | Met     | GitHub Actions workflow (`ci.yml`) runs on all PRs and commits; ten required checks enforced by the live ruleset (see §8)                                                                                                     |
+| **Quality**        | Continuous Integration   | Met     | GitHub Actions runs on all PRs and commits; fourteen required checks enforced by the live ruleset (see §8), including cross-language parity and real-network evidence                                                         |
 | **Security**       | Strong Cryptography      | Met     | SPAKE2 (RFC 9382) pairing with SPAKE2+ derived-credential confirmation, AES-256-GCM, Ed25519 signatures, Minisign, SHA-256                                                                                                    |
 | **Security**       | Safe Memory Handling     | Met     | Implemented in memory-safe languages (Go, TypeScript); strict buffer bounds                                                                                                                                                   |
 | **Security**       | Dynamic & Fuzz Testing   | Met     | 22 Go native fuzz targets (`docs/fuzzing.md`), nightly matrix fuzzing, OSS-Fuzz build                                                                                                                                         |
