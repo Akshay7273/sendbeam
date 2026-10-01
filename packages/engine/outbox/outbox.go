@@ -61,12 +61,15 @@ type DispatchOptions struct {
 	// a clear skip reason and their attempts are left untouched. Zero
 	// value means Online (the v2.0 behavior).
 	EffectivePolicy netpolicy.Policy
-	// EndpointAvailable (v2.3 correction C, gap 3): when non-nil, reports
-	// whether a delivery endpoint for the device exists RIGHT NOW. A job
-	// whose recipient has no endpoint is HELD — rep.Skipped with a clear
-	// reason, attempts untouched, retry budget unconsumed — instead of
-	// consuming an attempt on a guaranteed failure.
-	EndpointAvailable func(deviceID string) bool
+	// EndpointAvailable (v2.3 correction C, gap 3): when non-nil, the
+	// ROUTE-AWARE admission check — given the device, the job's bound
+	// policy and the current effective policy, reports whether THIS job
+	// can be dispatched to that device right now. Online jobs need no LAN
+	// endpoint; prefer-local needs one only when the current policy
+	// forbids online fallback; local-only always needs one. A false return
+	// HELDs the job: rep.Skipped with a clear reason, attempts untouched,
+	// retry budget unconsumed.
+	EndpointAvailable func(deviceID string, jobPolicy, effective netpolicy.Policy) bool
 }
 
 // AttemptReport describes what one dispatch pass did to one attempt.
@@ -93,7 +96,7 @@ type DispatchReport struct {
 type Outbox struct {
 	// endpointGate (optional): recipients without a delivery endpoint are
 	// held before any attempt mutates (v2.3 correction C, gap 3).
-	endpointGate func(deviceID string) bool
+	endpointGate func(deviceID string, jobPolicy, effective netpolicy.Policy) bool
 	store *jobs.JobStore
 	send  SendFunc
 	now   func() time.Time
@@ -113,7 +116,7 @@ func New(store *jobs.JobStore, send SendFunc) *Outbox {
 
 // SetEndpointGate wires the endpoint-availability check used to HOLD jobs
 // whose recipients lack a delivery endpoint (v2.3 correction C, gap 3).
-func (o *Outbox) SetEndpointGate(fn func(deviceID string) bool) {
+func (o *Outbox) SetEndpointGate(fn func(deviceID string, jobPolicy, effective netpolicy.Policy) bool) {
 	o.endpointGate = fn
 }
 
@@ -453,14 +456,17 @@ func (o *Outbox) dispatchJob(ctx context.Context, job *jobs.Job, owner string, t
 			policyHoldReason(job.EffectiveNetworkPolicy(), effective))
 		return
 	}
-	// v2.3 correction C (gap 3): a local-route job whose endpoint is not
-	// configured is HELD before any attempt mutates — zero send attempts,
-	// retry budget untouched, honest skip reason.
+	// v2.3 correction C (gap 3, route-aware): admission is per JOB POLICY —
+	// online recipes need no LAN endpoint; prefer-local needs one only when
+	// the current policy forbids online fallback; local-only always needs
+	// one. A failed admission HELDs the job before any attempt mutates:
+	// zero send attempts, retry budget untouched, honest skip reason.
 	if o.endpointGate != nil {
+		jp := job.EffectiveNetworkPolicy()
 		for _, a := range job.Attempts {
-			if a.Status == jobs.AttemptQueued && !o.endpointGate(a.DeviceID) {
+			if a.Status == jobs.AttemptQueued && !o.endpointGate(a.DeviceID, jp, effective) {
 				rep.Skipped = append(rep.Skipped,
-					job.JobID+"/"+a.DeviceID+": no delivery endpoint configured — HELD (no attempt made)")
+					job.JobID+"/"+a.DeviceID+": no delivery endpoint for "+fmt.Sprint(jp)+" — HELD (no attempt made)")
 				return
 			}
 		}

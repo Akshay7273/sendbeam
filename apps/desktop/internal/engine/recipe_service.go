@@ -80,6 +80,8 @@ type RecipeService struct {
 	// (wired from the TransferService); nil keeps online dispatch
 	// fail-closed.
 	onlineSender func(ctx context.Context, req onlineSendRequest) (transfer.Outcome, error)
+	// wg tracks the owned dispatcher goroutine for bounded-shutdown joins.
+	wg sync.WaitGroup
 	// scheduler hosts every enabled schedule-triggered recipe in this
 	// process between StartScheduler and StopScheduler; nil when not
 	// started. schedCancel stops the scheduler's context.
@@ -817,7 +819,9 @@ func (s *RecipeService) StartDispatcher(interval time.Duration) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.dispatchCancel = cancel
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -849,9 +853,24 @@ func (s *RecipeService) StopDispatcher() {
 // dispatcher loop (in-flight passes finish under the bounded lease; the
 // lease expires naturally on crash). Called on app quit — the dispatcher's
 // lifecycle IS the desktop process lifecycle (v2.3 correction C, gap 2).
-func (s *RecipeService) Shutdown(_ time.Duration) error {
+func (s *RecipeService) Shutdown(timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
 	s.StopDispatcher()
-	return nil
+	s.StopAllWatches()
+	_ = s.StopScheduler()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.wg.Wait()
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("recipe service: shutdown timed out after %s — owned worker(s) still settling", timeout)
+	}
 }
 
 // DispatchOnceNow performs ONE dispatch pass now (also the immediate kick
@@ -959,8 +978,24 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 	// Gap 3 (real HELD): recipients without a configured endpoint are held
 	// BEFORE any attempt mutates — zero send attempts, retry budget
 	// untouched, honest skip reason.
-	ob.SetEndpointGate(func(deviceID string) bool {
-		return peerAddrs[deviceID] != ""
+	// Route-aware admission (gap 1): online recipes need NO LAN endpoint;
+	// prefer-local needs one only when the current policy forbids online
+	// fallback; local-only always needs one. Held = zero attempts, budget
+	// untouched.
+	ob.SetEndpointGate(func(deviceID string, jobPolicy, curPolicy netpolicy.Policy) bool {
+		if peerAddrs[deviceID] != "" {
+			return true
+		}
+		switch jobPolicy {
+		case netpolicy.LocalOnly:
+			return false // endpoint required, always
+		case netpolicy.PreferLocal:
+			// Endpoint missing: dispatchable only if online fallback is
+			// permitted by the CURRENT policy.
+			return curPolicy == netpolicy.Online || curPolicy == netpolicy.PreferLocal
+		default:
+			return true // online job: no endpoint needed
+		}
 	})
 	return ob.DispatchOnce(ctx, outbox.DispatchOptions{
 		Concurrency:     2,

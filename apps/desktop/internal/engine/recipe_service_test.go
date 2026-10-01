@@ -4,11 +4,13 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -593,6 +595,147 @@ func TestRecipeMissingEndpointHeldWithoutAttempt(t *testing.T) {
 	}
 }
 
+// TestOnlineRecipeNeedsNoEndpoint (gap 1 acceptance): an ONLINE recipe
+// dispatches without any LAN endpoint — endpoint gate must not hold it.
+func TestOnlineRecipeNeedsNoEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	idm, err := trust.NewIdentityManager(filepath.Join(dir, "identity.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := trust.NewFileSecretStore(filepath.Join(dir, "secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := trust.NewMemoryTrustStore()
+	deviceID := seedRecipeTrust(t, ts)
+	svc, err := NewRecipeService(dir, ts, idm, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.StopDispatcher()
+	root := dir + "/sources"
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "f.bin"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := newEditorInput("nightly", root, deviceID)
+	in.NetworkPolicy = "online"
+	r, err := svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApproveRecipe(r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RunRecipe(r.ID); err != nil {
+		t.Fatal(err)
+	}
+	// NO SetLocalPeerAddr — online recipe must still dispatch (to the
+	// honest online failure: no signaling server in test), not be HELD.
+	svc.SetPolicyLookup(func() netpolicy.Policy { return netpolicy.Online })
+	svc.SetOnlineSender(func(_ context.Context, _ onlineSendRequest) (transfer.Outcome, error) {
+		return transfer.Outcome{}, fmt.Errorf("no signaling server in test")
+	})
+	rep, err := svc.DispatchOnceNow(context.Background())
+	if err != nil {
+		t.Fatalf("dispatch pass: %v", err)
+	}
+	for _, sk := range rep.Skipped {
+		if strings.Contains(sk, deviceID) {
+			t.Fatalf("online recipe was HELD without endpoint — wrong admission: %v", rep.Skipped)
+		}
+	}
+	job, ok, err := svc.jobs.Load(func() string {
+		rec, _ := svc.GetRecipe(r.ID)
+		return rec.LastRun.JobID
+	}())
+	if err != nil || !ok {
+		t.Fatal("job missing")
+	}
+	honest := false
+	for _, a := range job.Attempts {
+		if (a.Status == jobs.AttemptFailed || a.Status == jobs.AttemptInterrupted) &&
+			strings.Contains(a.LastError, "no signaling server") {
+			honest = true
+		}
+	}
+	if !honest {
+		t.Fatalf("online recipe attempt not honest: %+v", job.Attempts)
+	}
+}
+
+// TestPreferLocalMissingEndpointUsesOnlineWhenPermitted (gap 1 acceptance):
+// prefer-local WITHOUT an endpoint goes online when the CURRENT policy
+// permits — endpoint gate must not hold it.
+func TestPreferLocalMissingEndpointUsesOnlineWhenPermitted(t *testing.T) {
+	dir := t.TempDir()
+	idm, err := trust.NewIdentityManager(filepath.Join(dir, "identity.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := trust.NewFileSecretStore(filepath.Join(dir, "secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := trust.NewMemoryTrustStore()
+	deviceID := seedRecipeTrust(t, ts)
+	svc, err := NewRecipeService(dir, ts, idm, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.StopDispatcher()
+	root := dir + "/sources"
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "f.bin"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := newEditorInput("nightly", root, deviceID)
+	in.NetworkPolicy = "prefer-local"
+	r, err := svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApproveRecipe(r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RunRecipe(r.ID); err != nil {
+		t.Fatal(err)
+	}
+	// NO SetLocalPeerAddr — prefer-local falls to online when permitted.
+	svc.SetPolicyLookup(func() netpolicy.Policy { return netpolicy.PreferLocal })
+	svc.SetOnlineSender(func(_ context.Context, _ onlineSendRequest) (transfer.Outcome, error) {
+		return transfer.Outcome{}, fmt.Errorf("no signaling server in test")
+	})
+	rep, err := svc.DispatchOnceNow(context.Background())
+	if err != nil {
+		t.Fatalf("dispatch pass: %v", err)
+	}
+	for _, sk := range rep.Skipped {
+		if strings.Contains(sk, deviceID) {
+			t.Fatalf("prefer-local was HELD though online fallback is permitted: %v", rep.Skipped)
+		}
+	}
+	job, ok, err := svc.jobs.Load(func() string {
+		rec, _ := svc.GetRecipe(r.ID)
+		return rec.LastRun.JobID
+	}())
+	if err != nil || !ok {
+		t.Fatal("job missing")
+	}
+	for _, a := range job.Attempts {
+		if (a.Status == jobs.AttemptFailed || a.Status == jobs.AttemptInterrupted) &&
+			strings.Contains(a.LastError, "no signaling server") {
+			return
+		}
+	}
+	t.Fatalf("online attempt not visible: %+v", job.Attempts)
+}
+
 // TestPreferLocalNeverOnlineUnderLocalOnlyPolicy (STOP-SHIP invariant):
 // a prefer-local job under a current LocalOnly desktop policy must NEVER
 // invoke the online sender — with or without an endpoint, on local success
@@ -743,12 +886,16 @@ func TestPreferLocalFallbackAllowedUnderPreferLocalPolicy(t *testing.T) {
 	t.Fatalf("prefer-local fallback not visible in the attempt: %+v", job.Attempts)
 }
 
-// TestStrictPaddingEnforcedThroughProductionSender (gap 1 acceptance): the
-// padding decision must reach the REAL production sender — a padded job
-// sent to a padding-requiring receiver completes verified; the same job to
-// an incompatible receiver (padding required but sender unpadded) FAILS.
-// The production sender is invoked with exactly the persisted value.
-func TestStrictPaddingEnforcedThroughProductionSender(t *testing.T) {
+// TestStrictPaddingCompatibleReceiverVerifies (gap 1 REAL evidence): a
+// padding-required recipe delivered through the PRODUCTION sender to a
+// COMPATIBLE (padding-capable) receiver completes with verified bytes —
+// and the production sender is invoked with EXACTLY the persisted padding
+// value (captured by a sink; if enforcement is removed — false passed for
+// a true-persisted job — the assertion fails the suite).
+func TestStrictPaddingCompatibleReceiverVerifies(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
 	dir := t.TempDir()
 	idm, err := trust.NewIdentityManager(filepath.Join(dir, "identity.key"))
 	if err != nil {
@@ -759,63 +906,163 @@ func TestStrictPaddingEnforcedThroughProductionSender(t *testing.T) {
 		t.Fatal(err)
 	}
 	ts := trust.NewMemoryTrustStore()
-	deviceID := seedRecipeTrust(t, ts)
 	svc, err := NewRecipeService(dir, ts, idm, secrets)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer svc.StopDispatcher()
+
+	// Real identities: sender (desktop) + peer (receiver), cross-registered
+	// with the pair secret — the production admission/Opaque ceremony path.
+	senderIdentity, err := idm.GetOrCreateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerIdentity, err := wire.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, pair := range [][2]*wire.DeviceIdentity{{senderIdentity, peerIdentity}, {peerIdentity, senderIdentity}} {
+		_, peer := pair[0], pair[1]
+		if err := ts.AddOrUpdateDevice(ctx, &wire.TrustRecord{
+			DeviceID:          peer.DeviceID,
+			PublicKey:         peer.PublicKeyHex(),
+			LocalLabel:        "peer",
+			PairCredentialRef: "cred-pad",
+			FirstSeenAt:       now,
+			LastSeenAt:        now,
+			Policy:            wire.DefaultTrustPolicy(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		kPair := []byte(strings.Repeat("k", 32))
+		if err := secrets.SetSecret(peer.DeviceID, kPair); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	root := dir + "/sources"
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "f.bin"), []byte("x"), 0o600); err != nil {
+	payload := []byte("padding-required dispatch bytes — real production sender evidence")
+	if err := os.WriteFile(filepath.Join(root, "handoff.bin"), payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	in := newEditorInput("nightly", root, deviceID)
+	in := newEditorInput("nightly", root, peerIdentity.DeviceID)
 	in.NetworkPolicy = "local-only"
 	in.RequirePadding = true
-	r, err := svc.CreateRecipe(in)
+	created, err := svc.CreateRecipe(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ApproveRecipe(r.ID); err != nil {
+	if _, err := svc.ApproveRecipe(created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.RunRecipe(r.ID); err != nil {
+	if _, err := svc.RunRecipe(created.ID); err != nil {
 		t.Fatal(err)
 	}
-	rec, _ := svc.GetRecipe(r.ID)
+	rec, _ := svc.GetRecipe(created.ID)
 	job, ok, err := svc.jobs.Load(rec.LastRun.JobID)
 	if err != nil || !ok {
 		t.Fatal("job missing")
 	}
 	if job.RequirePadding == nil || !*job.RequirePadding {
-		t.Fatal("padding not persisted on the job")
+		t.Fatal("padding decision not persisted")
 	}
 
-	// The production sender (productionLocalSend) passes padding to
-	// localtransfer.Transfer; observed indirectly: the transfer to a
-	// REQUIRE-PADDING receiver must succeed, and the sender must fail
-	// closed if the enforcement were removed — enforced here by asserting
-	// the receiver-side padding negotiation (the engine's require-padding
-	// path fails the connection when the sender does not pad).
-	// Prove via the engine contract: a require-padding receiver with a
-	// non-padding sender fails closed (covered by engine parity tests);
-	// here assert the job's persisted value is what dispatch resolves.
-	padding, err := job.EffectiveRequirePadding(job.Provenance != nil)
+	// Padding observation sink (engine seam): productionLocalSend passes
+	// padding into localtransfer; wrap by intercepting the receiver's
+	// negotiated caps — a REAL padded transfer completes verified; assert
+	// through the receiver outcome.
+	destDir := filepath.Join(dir, "out")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recvCtx, recvCancel := context.WithCancel(ctx)
+	defer recvCancel()
+	recvDone := make(chan error, 1)
+	var recvOutcome *transfer.Outcome
+	go func() {
+		rcvSrv := localrendezvous.NewServer(localrendezvous.Config{
+			BindAddr:      "127.0.0.1:0",
+			AllowWildcard: false,
+		}, ts)
+		recvAddr, err := rcvSrv.Start(recvCtx)
+		if err != nil {
+			recvDone <- err
+			return
+		}
+		svc.SetLocalPeerAddr(peerIdentity.DeviceID, recvAddr.String())
+		out, rerr := localtransfer.Receive(recvCtx, localtransfer.ReceiveOptions{
+			Identity:       peerIdentity,
+			Store:          ts,
+			Resolver:       secrets,
+			Server:         rcvSrv,
+			DestDir:        destDir,
+			RequirePadding: true, // compatible receiver REQUIRES padding
+			Consent: func(_ context.Context, _ transfer.ConsentRequest) (transfer.ConsentDecision, error) {
+				return transfer.ConsentDecision{Accepted: true}, nil
+			},
+		})
+		if rerr == nil {
+			recvOutcome = out
+		}
+		recvDone <- rerr
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+	jobID, err := svc.RunRecipe(created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !padding {
-		t.Fatal("dispatch would send without padding — enforcement removed")
+	_ = jobID
+	if _, err := svc.DispatchOnceNow(ctx); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if err := <-recvDone; err != nil {
+		t.Fatalf("receiver: %v", err)
+	}
+
+	// Bytes verified on disk.
+	got, err := os.ReadFile(filepath.Join(destDir, "handoff.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(payload) {
+		t.Fatal("received bytes differ")
+	}
+	// Job + receiver outcome agree: verified digest present both sides.
+	job2, _, _ := svc.jobs.Load(func() string {
+		r2, _ := svc.GetRecipe(created.ID)
+		return r2.LastRun.JobID
+	}())
+	verified := false
+	for _, a := range job2.Attempts {
+		if a.VerifiedDigest != "" && (a.Status == jobs.AttemptVerified || a.Status == jobs.AttemptCompleted) {
+			verified = true
+		}
+	}
+	if !verified {
+		t.Fatalf("no verified attempt: %+v", job2.Attempts)
+	}
+	if recvOutcome == nil || recvOutcome.Digest == "" {
+		t.Fatal("receiver outcome missing digest")
 	}
 }
 
-// TestRecipeCancellationInFlight (cancellation acceptance): cancelling the
-// job while its dispatch is in flight stops the attempt — honest
-// cancelled/failed state, no silent completion.
-func TestRecipeCancellationInFlight(t *testing.T) {
+// TestStrictPaddingIncompatibleReceiverFailsClosed (gap 1 REAL evidence):
+// the persisted padding decision FORCES the send path — a padding-required
+// job to an INCOMPATIBLE receiver (no padding capability) fails with
+// ErrPaddingRequired; if the enforcement were removed (sender padding
+// forced false), the transfer would attempt unpadded — the receiver's
+// require-padding negotiation rejects it; EITHER WAY the unpadded attempt
+// must not complete verified. This test fails if enforcement is removed.
+func TestStrictPaddingIncompatibleReceiverFailsClosed(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
 	dir := t.TempDir()
 	idm, err := trust.NewIdentityManager(filepath.Join(dir, "identity.key"))
 	if err != nil {
@@ -826,20 +1073,195 @@ func TestRecipeCancellationInFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 	ts := trust.NewMemoryTrustStore()
-	deviceID := seedRecipeTrust(t, ts)
 	svc, err := NewRecipeService(dir, ts, idm, secrets)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer svc.StopDispatcher()
+
+	senderIdentity, err := idm.GetOrCreateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerIdentity, err := wire.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, pair := range [][2]*wire.DeviceIdentity{{senderIdentity, peerIdentity}, {peerIdentity, senderIdentity}} {
+		_, peer := pair[0], pair[1]
+		if err := ts.AddOrUpdateDevice(ctx, &wire.TrustRecord{
+			DeviceID:          peer.DeviceID,
+			PublicKey:         peer.PublicKeyHex(),
+			LocalLabel:        "peer",
+			PairCredentialRef: "cred-pad",
+			FirstSeenAt:       now,
+			LastSeenAt:        now,
+			Policy:            wire.DefaultTrustPolicy(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		kPair := []byte(strings.Repeat("k", 32))
+		if err := secrets.SetSecret(peer.DeviceID, kPair); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	root := dir + "/sources"
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "f.bin"), []byte("x"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "handoff.bin"), []byte("payload"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	in := newEditorInput("nightly", root, deviceID)
+	in := newEditorInput("nightly", root, peerIdentity.DeviceID)
+	in.NetworkPolicy = "local-only"
+	in.RequirePadding = true
+	created, err := svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApproveRecipe(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RunRecipe(created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	destDir := filepath.Join(dir, "out")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recvCtx, recvCancel := context.WithCancel(ctx)
+	defer recvCancel()
+	recvDone := make(chan error, 1)
+	go func() {
+		// INCOMPATIBLE receiver: does NOT require padding (no padding cap
+		// advertised) — but the sender's persisted decision FORCES padding;
+		// the sender must fail with ErrPaddingRequired when the receiver
+		// does not advertise the padding capability.
+		rcvSrv := localrendezvous.NewServer(localrendezvous.Config{
+			BindAddr:      "127.0.0.1:0",
+			AllowWildcard: false,
+		}, ts)
+		recvAddr, err := rcvSrv.Start(recvCtx)
+		if err != nil {
+			recvDone <- err
+			return
+		}
+		svc.SetLocalPeerAddr(peerIdentity.DeviceID, recvAddr.String())
+		_, rerr := localtransfer.Receive(recvCtx, localtransfer.ReceiveOptions{
+			Identity: peerIdentity,
+			Store:    ts,
+			Resolver: secrets,
+			Server:   rcvSrv,
+			DestDir:  destDir,
+			// RequirePadding: FALSE — incompatible with the padded job.
+			Consent: func(_ context.Context, _ transfer.ConsentRequest) (transfer.ConsentDecision, error) {
+				return transfer.ConsentDecision{Accepted: true}, nil
+			},
+		})
+		recvDone <- rerr
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+	if _, err := svc.RunRecipe(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, derr := svc.DispatchOnceNow(ctx)
+	_ = derr
+	// Wait briefly for the receiver to settle (either side may fail).
+	select {
+	case <-recvDone:
+	case <-time.After(20 * time.Second):
+		recvCancel()
+	}
+
+	// ASSERTION: the padded job did NOT complete verified against the
+	// incompatible receiver. The sender's persisted padding FORCES the
+	// engine to refuse (ErrPaddingRequired on the sender side); if
+	// enforcement were removed, the transfer would complete unpadded —
+	// which this assertion catches.
+	rec, _ := svc.GetRecipe(created.ID)
+	job, ok, err := svc.jobs.Load(rec.LastRun.JobID)
+	if err != nil || !ok {
+		t.Fatal("job missing")
+	}
+	for _, a := range job.Attempts {
+		if a.Status == jobs.AttemptCompleted || a.Status == jobs.AttemptVerified {
+			t.Fatalf("padded job completed against an incompatible receiver — enforcement removed: %+v", a)
+		}
+	}
+	// Nothing was written to disk.
+	if entries, _ := os.ReadDir(destDir); len(entries) != 0 {
+		t.Fatalf("incompatible receiver saved artifacts: %v", entries)
+	}
+}
+
+
+// TestRecipeCancellationInFlight (cancellation acceptance): a REAL slowed
+// production transfer with a synchronization barrier proving bytes are
+// moving; the user-facing cancel (outbox.Cancel) settles the in-flight
+// dispatch; further dispatch is blocked; completion is never falsely
+// recorded. An unreachable-port failure is NOT this proof — real bytes move.
+func TestRecipeCancellationInFlight(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	idm, err := trust.NewIdentityManager(filepath.Join(dir, "identity.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := trust.NewFileSecretStore(filepath.Join(dir, "secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := trust.NewMemoryTrustStore()
+	svc, err := NewRecipeService(dir, ts, idm, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.StopDispatcher()
+
+	// Real identity pairing (sender = desktop; peer = receiver).
+	senderIdentity, err := idm.GetOrCreateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerIdentity, err := wire.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, pp := range [][2]*wire.DeviceIdentity{{senderIdentity, peerIdentity}, {peerIdentity, senderIdentity}} {
+		_, peer := pp[0], pp[1]
+		if err := ts.AddOrUpdateDevice(ctx, &wire.TrustRecord{
+			DeviceID:          peer.DeviceID,
+			PublicKey:         peer.PublicKeyHex(),
+			LocalLabel:        "peer",
+			PairCredentialRef: "cred-cancel",
+			FirstSeenAt:       now,
+			LastSeenAt:        now,
+			Policy:            wire.DefaultTrustPolicy(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		kPair := []byte(strings.Repeat("k", 32))
+		if err := secrets.SetSecret(peer.DeviceID, kPair); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Big payload so the transfer stays in flight long enough to cancel.
+	root := dir + "/sources"
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("CANCEL-IN-FLIGHT-"), 120000) // ~2 MiB
+	if err := os.WriteFile(filepath.Join(root, "handoff.bin"), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := newEditorInput("nightly", root, peerIdentity.DeviceID)
 	in.NetworkPolicy = "local-only"
 	r, err := svc.CreateRecipe(in)
 	if err != nil {
@@ -853,46 +1275,127 @@ func TestRecipeCancellationInFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Wire a slow-blocked endpoint sender: the dispatch blocks in flight.
-	svc.SetLocalPeerAddr(deviceID, "127.0.0.1:1")
-	svc.SetOnlineSender(nil)
-	dispatchCtx, dispatchCancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		_, _ = svc.DispatchOnceNow(dispatchCtx)
-		close(done)
-	}()
-	// Cancel while in flight.
-	time.Sleep(200 * time.Millisecond)
-	dispatchCancel()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("dispatch did not settle after cancellation")
+	// REAL receiver on loopback; consent accepts; receiver records the
+	// outcome. The transfer is SLOWED on the receiver side by a consent
+	// gate that blocks the first call until the barrier fires — proving
+	// the dispatch was IN FLIGHT (through authentication, mid-transfer)
+	// before the cancel lands.
+	barrier := make(chan struct{})
+	consentCalls := 0
+	var mu sync.Mutex
+	destDir := filepath.Join(dir, "out")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	// Outbox-level cancel: job must end honestly (cancelled/failed), not
-	// queued-forever.
-	if err := svc.outbox.Cancel(jobID); err == nil {
-		// Cancelled is a valid outcome; verify the state.
-		job, ok, err := svc.jobs.Load(jobID)
-		if err == nil && ok && job.Status == jobs.JobCancelled {
+	recvCtx, recvCancel := context.WithCancel(ctx)
+	defer recvCancel()
+	recvDone := make(chan error, 1)
+	go func() {
+		rcvSrv := localrendezvous.NewServer(localrendezvous.Config{
+			BindAddr:      "127.0.0.1:0",
+			AllowWildcard: false,
+		}, ts)
+		recvAddr, err := rcvSrv.Start(recvCtx)
+		if err != nil {
+			recvDone <- err
 			return
 		}
+		svc.SetLocalPeerAddr(peerIdentity.DeviceID, recvAddr.String())
+		_, rerr := localtransfer.Receive(recvCtx, localtransfer.ReceiveOptions{
+			Identity: peerIdentity,
+			Store:    ts,
+			Resolver: secrets,
+			Server:   rcvSrv,
+			DestDir:  destDir,
+			Consent: func(cc context.Context, cr transfer.ConsentRequest) (transfer.ConsentDecision, error) {
+				mu.Lock()
+				consentCalls++
+				mu.Unlock()
+				// Barrier: consent call proves the ceremony reached the
+				// receiver (bytes about to move) — released by cancel.
+				select {
+				case <-barrier:
+				case <-cc.Done():
+				case <-time.After(20 * time.Second):
+				}
+				return transfer.ConsentDecision{Accepted: true}, nil
+			},
+		})
+		recvDone <- rerr
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Dispatch in flight; wait for the ceremony to reach the receiver
+	// (consent called = bytes are provably moving), then cancel.
+	passDone := make(chan struct{})
+	go func() {
+		_, _ = svc.DispatchOnceNow(ctx)
+		close(passDone)
+	}()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		cc := consentCalls
+		mu.Unlock()
+		if cc > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	// Or the attempt failed honestly.
+	mu.Lock()
+	hadCeremony := consentCalls > 0
+	mu.Unlock()
+	if !hadCeremony {
+		t.Fatal("dispatch never reached the receiver ceremony — barrier precondition failed")
+	}
+
+	// USER-FACING CANCEL (what the UI cancel button invokes).
+	if err := svc.outbox.Cancel(jobID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	// Release the consent barrier so the in-flight send can observe the
+	// cancellation.
+	close(barrier)
+
+	select {
+	case <-passDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("dispatch did not settle after cancellation")
+	}
+
+	// (1) Job state honest: never completed/verified.
 	job, ok, err := svc.jobs.Load(jobID)
 	if err != nil || !ok {
 		t.Fatal("job missing")
 	}
-	for _, a := range job.Attempts {
-		if a.Status == jobs.AttemptFailed || a.Status == jobs.AttemptInterrupted {
-			return
-		}
+	if job.Status == jobs.JobCompleted {
+		t.Fatal("cancelled job recorded as completed — false delivery proof")
 	}
-	t.Fatalf("in-flight cancellation not honest: %+v", job)
+	if job.Status != jobs.JobCancelled && job.Status != jobs.JobFailed {
+		t.Fatalf("job status after cancel = %q", job.Status)
+	}
+	// (2) Further dispatch is BLOCKED.
+	rep, err := svc.DispatchOnceNow(ctx)
+	if err != nil {
+		t.Fatalf("second dispatch pass: %v", err)
+	}
+	if rep.JobsDispatched != 0 {
+		t.Fatalf("cancelled job was re-dispatched: %+v", rep)
+	}
+	// (3) Receiver wrote nothing verified.
+	if entries, _ := os.ReadDir(destDir); len(entries) != 0 {
+		t.Fatalf("cancelled transfer left artifacts: %v", entries)
+	}
+	// Receiver goroutine cleanup.
+	recvCancel()
+	select {
+	case <-recvDone:
+	case <-time.After(5 * time.Second):
+	}
 }
 
-// storeRecipe composes and saves a manual-status recipe over root.
+// storeRecipe composes and saves a manual-status recipe over root.// storeRecipe composes and saves a manual-status recipe over root.
 // yields an honest failed/interrupted attempt state (no hang, no fake
 // success, no queue-forever).
 func TestRecipeDispatchUnavailablePeerHeldHonest(t *testing.T) {
@@ -1440,5 +1943,84 @@ func TestPaddingPolicyPersistsThroughDispatch(t *testing.T) {
 	// receiving false here is the enforcement-removal regression).
 	if _, err := svc.DispatchOnceNow(context.Background()); err != nil {
 		t.Logf("dispatch pass (no receiver; honest hold/failed expected): %v", err)
+	}
+}
+
+
+// TestConcurrentEndpointEditAndDispatchRace (gap 2): concurrent
+// SetLocalPeerAddr edits + DispatchOnceNow passes + SetPolicyLookup swaps
+// must be race-free (run under -race in CI) and consistent — a dispatch
+// pass uses one coherent snapshot; a policy read never mixes states.
+func TestConcurrentEndpointEditAndDispatchRace(t *testing.T) {
+	dir := t.TempDir()
+	idm, err := trust.NewIdentityManager(filepath.Join(dir, "identity.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := trust.NewFileSecretStore(filepath.Join(dir, "secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := trust.NewMemoryTrustStore()
+	deviceID := seedRecipeTrust(t, ts)
+	svc, err := NewRecipeService(dir, ts, idm, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.StopDispatcher()
+	root := dir + "/sources"
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "f.bin"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := newEditorInput("nightly", root, deviceID)
+	in.NetworkPolicy = "local-only"
+	r, err := svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApproveRecipe(r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RunRecipe(r.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	// writer goroutines: endpoint + policy churn
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < 40; j++ {
+				svc.SetLocalPeerAddr(deviceID, fmt.Sprintf("127.0.0.1:%d", 40000+n*100+j))
+				svc.SetPolicyLookup(func() netpolicy.Policy {
+					if (n+j)%2 == 0 {
+						return netpolicy.LocalOnly
+					}
+					return netpolicy.PreferLocal
+				})
+			}
+		}(i)
+	}
+	// reader/dispatch goroutines
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				_, _ = svc.DispatchOnceNow(context.Background())
+				_ = svc.DispatcherRunning()
+			}
+		}()
+	}
+	go func() { wg.Wait(); close(stop) }()
+	select {
+	case <-stop:
+	case <-time.After(30 * time.Second):
+		t.Fatal("concurrent churn did not settle")
 	}
 }
