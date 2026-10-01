@@ -7,6 +7,13 @@ import sys
 
 def find_rev(obj):
     if isinstance(obj, dict):
+        # image-config labels (imagetools inspect --format '{{json .Image}}')
+        labels = obj.get("config", {})
+        labels = labels.get("Labels") if isinstance(labels, dict) else None
+        if isinstance(labels, dict):
+            v = labels.get("org.opencontainers.image.revision")
+            if v:
+                return v
         if obj.get("org.opencontainers.image.revision"):
             return obj["org.opencontainers.image.revision"]
         for v in obj.values():
