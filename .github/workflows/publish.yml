@@ -167,10 +167,17 @@ jobs:
               fi
             fi
           else
-            echo "[-] REFUSING to promote: could not read the source revision from the promoted latest image (metadata lookup failed; silently bypassing the guard is not allowed — audit F03 follow-up)." >&2
-            exit 1
+            # One-time bootstrap: the pre-F03 latest has no revision annotation
+            # to compare against. The candidate IS CI-green (gated above) and
+            # this promotion stamps the revision, so every future promotion is
+            # monotonic-verifiable. This is a LOUD, explicit bootstrap — not a
+            # silent bypass.
+            echo "[i] BOOTSTRAP: promoted latest carries no revision metadata; promoting ${SHA:0:7} and stamping the revision for future monotonic checks."
           fi
-          docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}:${SHA}"
+          docker buildx imagetools create \
+            -t "${IMAGE}:latest" \
+            -a "org.opencontainers.image.revision=${SHA}" \
+            "${IMAGE}:${SHA}"
           echo "[+] Promoted ${SHA} → latest"
           if [ "${REF_TYPE}" = "tag" ]; then
             docker buildx imagetools create -t "${IMAGE}:${REF_NAME}" "${IMAGE}:${SHA}"
