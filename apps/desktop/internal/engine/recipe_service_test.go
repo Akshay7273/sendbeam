@@ -637,7 +637,7 @@ func TestPreferLocalNeverOnlineUnderLocalOnlyPolicy(t *testing.T) {
 	// NEGATIVE TEST: the online sender is a counter that FAILS the test if
 	// called under LocalOnly.
 	onlineCalls := 0
-	svc.SetOnlineSender(func(ctx context.Context, req onlineSendRequest) (transfer.Outcome, error) {
+	svc.SetOnlineSender(func(_ context.Context, _ onlineSendRequest) (transfer.Outcome, error) {
 		onlineCalls++
 		t.Errorf("online sender invoked under LocalOnly policy — stop-ship violation")
 		return transfer.Outcome{}, fmt.Errorf("online sender must never run here")
@@ -716,7 +716,7 @@ func TestPreferLocalFallbackAllowedUnderPreferLocalPolicy(t *testing.T) {
 	}
 	svc.SetLocalPeerAddr(deviceID, "127.0.0.1:1") // unreachable local
 	svc.SetPolicyLookup(func() netpolicy.Policy { return netpolicy.PreferLocal })
-	svc.SetOnlineSender(func(ctx context.Context, req onlineSendRequest) (transfer.Outcome, error) {
+	svc.SetOnlineSender(func(_ context.Context, _ onlineSendRequest) (transfer.Outcome, error) {
 		// Online path would dial a real server — none exists in the test;
 		// return an honest failure to prove the fallback path was TAKEN.
 		return transfer.Outcome{}, fmt.Errorf("no signaling server in test")
@@ -732,8 +732,12 @@ func TestPreferLocalFallbackAllowedUnderPreferLocalPolicy(t *testing.T) {
 		t.Fatal("job missing")
 	}
 	for _, a := range job.Attempts {
-		if a.Status == jobs.AttemptFailed && strings.Contains(a.LastError, "online fallback") {
-			return // fallback visibly taken and honestly failed
+		// The fallback was visibly TAKEN (its error rides the attempt);
+		// the attempt may settle failed OR interrupted (retry pending) —
+		// both honest; neither is a fake success.
+		if (a.Status == jobs.AttemptFailed || a.Status == jobs.AttemptInterrupted) &&
+			strings.Contains(a.LastError, "online fallback") {
+			return
 		}
 	}
 	t.Fatalf("prefer-local fallback not visible in the attempt: %+v", job.Attempts)
@@ -773,6 +777,9 @@ func TestStrictPaddingEnforcedThroughProductionSender(t *testing.T) {
 	in.RequirePadding = true
 	r, err := svc.CreateRecipe(in)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApproveRecipe(r.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.RunRecipe(r.ID); err != nil {
