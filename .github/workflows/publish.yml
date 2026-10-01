@@ -176,7 +176,7 @@ jobs:
           fi
           docker buildx imagetools create \
             -t "${IMAGE}:latest" \
-            -a "org.opencontainers.image.revision=${SHA}" \
+            --annotation "org.opencontainers.image.revision=${SHA}" \
             "${IMAGE}:${SHA}"
           echo "[+] Promoted ${SHA} → latest"
           if [ "${REF_TYPE}" = "tag" ]; then
