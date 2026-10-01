@@ -42,7 +42,7 @@ func (e *crashEnqueuer) Enqueue(ctx context.Context, _ []string, _ []EnqueueReci
 	<-ctx.Done()
 	return jobs.Job{}, ctx.Err()
 }
-func (e *crashEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, requirePadding bool) (jobs.Job, error) {
+func (e *crashEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, _ bool) (jobs.Job, error) {
 	return e.Enqueue(ctx, paths, recipients, policy, np, provenance)
 }
 
@@ -94,7 +94,7 @@ func (e *burstEnqueuer) Enqueue(_ context.Context, paths []string, _ []EnqueueRe
 	return jobs.Job{JobID: "burst-job"}, nil
 }
 
-func (e *burstEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, requirePadding bool) (jobs.Job, error) {
+func (e *burstEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, _ bool) (jobs.Job, error) {
 	return e.Enqueue(ctx, paths, recipients, policy, np, provenance)
 }
 

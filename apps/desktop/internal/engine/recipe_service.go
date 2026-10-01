@@ -849,7 +849,7 @@ func (s *RecipeService) StopDispatcher() {
 // dispatcher loop (in-flight passes finish under the bounded lease; the
 // lease expires naturally on crash). Called on app quit — the dispatcher's
 // lifecycle IS the desktop process lifecycle (v2.3 correction C, gap 2).
-func (s *RecipeService) Shutdown(timeout time.Duration) error {
+func (s *RecipeService) Shutdown(_ time.Duration) error {
 	s.StopDispatcher()
 	return nil
 }
@@ -1096,10 +1096,3 @@ func (a recipeOutboxEnqueuer) Enqueue(ctx context.Context, paths []string, recip
 	return a.EnqueueWithPrivacy(ctx, paths, recipients, policy, np, provenance, false)
 }
 
-func enqueueRefs(recipients []recipes.EnqueueRecipient) []outbox.RecipientRef {
-	refs := make([]outbox.RecipientRef, len(recipients))
-	for i, r := range recipients {
-		refs[i] = outbox.RecipientRef{DeviceID: r.DeviceID, Label: r.Label}
-	}
-	return refs
-}

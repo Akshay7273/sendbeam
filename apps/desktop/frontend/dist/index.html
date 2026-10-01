@@ -2835,7 +2835,7 @@
       // and re-validated by the engine's route policy at dispatch.
       function openLocalEndpointModal(dev) {
         const existing = (state.localEndpoints && state.localEndpoints[dev.deviceId]) || "";
-        // Literal-DOM construction (safety invariant: no innerHTML anywhere —
+        // Literal-DOM construction (safety invariant: never parse HTML —
         // the device label is untrusted and rendered as textContent).
         const wrap = document.createElement("div");
         wrap.className = "modal-backdrop";

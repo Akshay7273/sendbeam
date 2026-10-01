@@ -12,13 +12,15 @@ import (
 // records whose schema they do not understand rather than truncating them.
 const jobSchemaVersion = 1
 
+// HasRequirePadding reports whether the job carries an explicit persisted
+// padding decision.
+func (j Job) HasRequirePadding() bool { return j.RequirePadding != nil }
+
 // EffectiveRequirePadding resolves the persisted padding policy with the
 // documented fail-closed migration (v2.3 correction C): provenance-carrying
 // (routine) jobs with a MISSING field are rejected — the recipe's privacy
 // decision must never be guessed; ordinary jobs with a missing field default
-// to false (padding was always opt-in). HasRequirePadding reports presence.
-func (j Job) HasRequirePadding() bool { return j.RequirePadding != nil }
-
+// to false (padding was always opt-in).
 func (j Job) EffectiveRequirePadding(provenanceCarrying bool) (bool, error) {
 	if j.RequirePadding != nil {
 		return *j.RequirePadding, nil

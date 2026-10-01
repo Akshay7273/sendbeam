@@ -37,7 +37,7 @@ func (f *watchEnqueuer) Enqueue(_ context.Context, paths []string, recipients []
 	return jobs.Job{JobID: "watch-job-1"}, nil
 }
 
-func (f *watchEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, requirePadding bool) (jobs.Job, error) {
+func (f *watchEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, _ bool) (jobs.Job, error) {
 	return f.Enqueue(ctx, paths, recipients, policy, np, provenance)
 }
 

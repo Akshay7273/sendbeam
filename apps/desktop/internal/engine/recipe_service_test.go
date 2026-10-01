@@ -1045,6 +1045,9 @@ func TestPaddingPolicyPersistsThroughDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := svc.ApproveRecipe(r.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := svc.RunRecipe(r.ID); err != nil {
 		t.Fatal(err)
 	}

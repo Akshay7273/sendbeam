@@ -392,6 +392,9 @@ func TestRunWithTriggerCarriesPaddingDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "padded.bin"), []byte("bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	r.Sources = []RecipeSource{{Path: root, Recursive: true}}
 	r.Recipients = []RecipeRecipient{{DeviceID: devs[0], Label: "peer"}}
 	r.NetworkPolicy = "local-only"
@@ -401,6 +404,29 @@ func TestRunWithTriggerCarriesPaddingDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Register the recipient as a live trusted device (ValidateRecipients
+	// enforces it) — the identity fixture's record lands in the trust store.
+	// Trust record: the DeviceID must be DERIVED from the public key (the
+	// store validates this binding) — use the identity's own device id and
+	// point the recipe's recipient at it.
+	id, err := wire.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := ts.AddOrUpdateDevice(ctx, &wire.TrustRecord{
+		DeviceID:          id.DeviceID,
+		PublicKey:         id.PublicKeyHex(),
+		LocalLabel:        "peer",
+		PairCredentialRef: "cred-pad",
+		FirstSeenAt:       now,
+		LastSeenAt:        now,
+		Policy:            wire.DefaultTrustPolicy(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.Recipients = []RecipeRecipient{{DeviceID: id.DeviceID, Label: "peer"}}
+	r.Grant.ScopeHash = r.ScopeHash()
 	// Manual dispatch still requires approval (the human at the keyboard IS
 	// the approval — but the recipe must be in manual status first).
 	r.Status = RecipeManual
