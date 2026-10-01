@@ -55,6 +55,11 @@ const KNOWN_SERVICES: Record<string, string[]> = {
     'EditRecipe',
     'DuplicateRecipe',
     'RecipeDeliveryStatus',
+    'DispatchOnceNow',
+    'SetLocalPeerAddr',
+    'StartDispatcher',
+    'StopDispatcher',
+    'DispatcherRunning',
   ],
 };
 

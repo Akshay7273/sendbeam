@@ -23,7 +23,7 @@ func TestRecipeServiceDisableEnable(t *testing.T) {
 	ts := trust.NewMemoryTrustStore()
 	devID := seedRecipeTrust(t, ts)
 
-	svc, err := NewRecipeService(dir, ts)
+	svc, err := NewRecipeService(dir, ts, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRecipeService: %v", err)
 	}

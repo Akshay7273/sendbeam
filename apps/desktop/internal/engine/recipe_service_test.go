@@ -12,7 +12,10 @@ import (
 	"time"
 
 	"github.com/sendbeam/engine/jobs"
+	"github.com/sendbeam/engine/localrendezvous"
+	"github.com/sendbeam/engine/localtransfer"
 	"github.com/sendbeam/engine/recipes"
+	"github.com/sendbeam/engine/transfer"
 	"github.com/sendbeam/engine/trust"
 	"github.com/sendbeam/wire"
 )
@@ -54,7 +57,7 @@ func newRecipeServiceFixture(t *testing.T) *recipeServiceFixture {
 	dir := t.TempDir()
 	ts := trust.NewMemoryTrustStore()
 	deviceID := seedRecipeTrust(t, ts)
-	svc, err := NewRecipeService(dir, ts)
+	svc, err := NewRecipeService(dir, ts, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRecipeService: %v", err)
 	}
@@ -246,6 +249,339 @@ func TestRecipeDeliveryStatusRefusedRunHasNoJob(t *testing.T) {
 	}
 }
 
+// TestRecipeDispatchToVerifiedDelivery is the end-to-end integration proof
+// (v2.3 correction C): a saved recipe action reaches REAL delivery through
+// the production outbox — recipe run -> ordinary job -> production sender
+// (same engine path as the CLI local dispatch) -> authenticated receiver
+// (trust + pair-secret ceremony) -> digest-verified output -> job and recipe
+// status agree. No separate CLI dispatch command is involved.
+func TestRecipeDispatchToVerifiedDelivery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	// Production-piece fixture: real identity manager + real file secret
+	// store over one shared config dir (exactly how main.go wires the
+	// service), real trust store, real outbox + job stores.
+	dir := t.TempDir()
+	idm, err := trust.NewIdentityManager(filepath.Join(dir, "identity.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := trust.NewFileSecretStore(filepath.Join(dir, "secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := trust.NewMemoryTrustStore()
+	svc, err := NewRecipeService(dir, ts, idm, secrets)
+	if err != nil {
+		t.Fatalf("NewRecipeService: %v", err)
+	}
+	defer svc.StopDispatcher()
+
+	// The RECEIVER must admit the actual SENDER identity: derive the trusted
+	// record from the service's own identity manager (the desktop device
+	// that will dial).
+	senderIdentity, err := idm.GetOrCreateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderID := senderIdentity.DeviceID
+	// The peer (receiver-side) identity.
+	peerIdentity, err := wire.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := ts.AddOrUpdateDevice(ctx, &wire.TrustRecord{
+		DeviceID:          senderID,
+		PublicKey:         senderIdentity.PublicKeyHex(),
+		LocalLabel:        "desktop",
+		PairCredentialRef: "cred-e2e",
+		FirstSeenAt:       now,
+		LastSeenAt:        now,
+		Policy:            wire.DefaultTrustPolicy(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// And the sender must hold the receiver's record + pair secret: the
+	// receiver identity is the PEER from the sender's view.
+	peerRec := &wire.TrustRecord{
+		DeviceID:          peerIdentity.DeviceID,
+		PublicKey:         peerIdentity.PublicKeyHex(),
+		LocalLabel:        "receiver",
+		PairCredentialRef: "cred-e2e",
+		FirstSeenAt:       now,
+		LastSeenAt:        now,
+		Policy:            wire.DefaultTrustPolicy(),
+	}
+	if err := ts.AddOrUpdateDevice(ctx, peerRec); err != nil {
+		t.Fatal(err)
+	}
+	kPair := []byte(strings.Repeat("k", 32))
+	if err := secrets.SetSecret(senderID, kPair); err != nil {
+		t.Fatal(err)
+	}
+	if err := secrets.SetSecret(peerIdentity.DeviceID, kPair); err != nil {
+		t.Fatal(err)
+	}
+
+	// Recipe: one explicit source dir, the trusted recipient, manual trigger.
+	root := dir + "/sources"
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("recipe dispatch end-to-end bytes")
+	srcPath := filepath.Join(root, "handoff.bin")
+	if err := os.WriteFile(srcPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := newEditorInput("nightly", root, peerIdentity.DeviceID)
+	in.NetworkPolicy = "local-only"
+	created, err := svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatalf("CreateRecipe: %v", err)
+	}
+	if created.Status != recipes.RecipeApprovalRequired {
+		t.Fatalf("status = %q, want approval-required", created.Status)
+	}
+	if _, err := svc.ApproveRecipe(created.ID); err != nil {
+		t.Fatalf("ApproveRecipe: %v", err)
+	}
+
+	// Receiver-side: run a REAL local-rendezvous receiver for the paired
+	// device (same engine path as the CLI local-only receive).
+	destDir := filepath.Join(dir, "out")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recvCtx, recvCancel := context.WithCancel(ctx)
+	defer recvCancel()
+	recvDone := make(chan error, 1)
+	go func() {
+		rcvSrv := localrendezvous.NewServer(localrendezvous.Config{
+			BindAddr:      "127.0.0.1:0",
+			AllowWildcard: false,
+		}, ts)
+		recvAddr, err := rcvSrv.Start(recvCtx)
+		if err != nil {
+			recvDone <- err
+			return
+		}
+		// The dispatcher dials the endpoint we register — the receiver's
+		// actual bound address.
+		svc.SetLocalPeerAddr(peerIdentity.DeviceID, recvAddr.String())
+		_, rerr := localtransfer.Receive(recvCtx, localtransfer.ReceiveOptions{
+			Identity: peerIdentity,
+			Store:    ts,
+			Resolver: secrets,
+			Server:   rcvSrv,
+			DestDir:  destDir,
+			Consent: func(_ context.Context, _ transfer.ConsentRequest) (transfer.ConsentDecision, error) {
+				return transfer.ConsentDecision{Accepted: true}, nil
+			},
+		})
+		recvDone <- rerr
+	}()
+
+	// Give the receiver a moment to arm, then run the recipe: enqueues the
+	// ordinary job (ledgered) and performs one dispatch pass.
+	time.Sleep(300 * time.Millisecond)
+	jobID, err := svc.RunRecipe(created.ID)
+	if err != nil {
+		t.Fatalf("RunRecipe: %v", err)
+	}
+	if _, err := svc.DispatchOnceNow(ctx); err != nil {
+		t.Fatalf("DispatchOnceNow: %v", err)
+	}
+
+	select {
+	case err := <-recvDone:
+		if err != nil {
+			t.Fatalf("receiver: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for the receiver")
+	}
+
+	// Digest-verified output on disk.
+	got, err := os.ReadFile(filepath.Join(destDir, "handoff.bin"))
+	if err != nil {
+		t.Fatalf("read received file: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatal("received bytes differ from the payload")
+	}
+
+	// The outbox job must show the attempt reaching a verified state.
+	job, ok, err := svc.jobs.Load(jobID)
+	if err != nil || !ok {
+		t.Fatalf("load job: %v %v", err, ok)
+	}
+	verified := false
+	for _, a := range job.Attempts {
+		if a.DeviceID == peerIdentity.DeviceID && (a.Status == jobs.AttemptVerified || a.Status == jobs.AttemptCompleted) {
+			if a.VerifiedDigest != "" {
+				verified = true
+			}
+		}
+	}
+	if !verified {
+		t.Fatalf("no verified attempt with a digest on the job: %+v", job.Attempts)
+	}
+
+	// Recipe ledger + delivery status must agree with the real outcome.
+	rec, err := svc.GetRecipe(created.ID)
+	if err != nil {
+		t.Fatalf("GetRecipe: %v", err)
+	}
+	if rec.LastRun == nil || rec.LastRun.JobID != jobID || rec.LastRun.Status != recipes.RunStatusDispatched {
+		t.Fatalf("ledger: %+v", rec.LastRun)
+	}
+	st, err := svc.RecipeDeliveryStatus(created.ID)
+	if err != nil {
+		t.Fatalf("RecipeDeliveryStatus: %v", err)
+	}
+	if st.Job == nil || st.Job.JobID != jobID {
+		t.Fatalf("status job view missing: %+v", st)
+	}
+}
+
+// TestRecipeDispatchRevokedRecipientFailsClosed proves the dispatcher
+// refuses revoked recipients at send time (trust recheck at dispatch, not
+// enqueue) and the pass fails honestly.
+func TestRecipeDispatchRevokedRecipientFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	idm, err := trust.NewIdentityManager(filepath.Join(dir, "identity.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := trust.NewFileSecretStore(filepath.Join(dir, "secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := trust.NewMemoryTrustStore()
+	deviceID := seedRecipeTrust(t, ts)
+	svc, err := NewRecipeService(dir, ts, idm, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := dir + "/sources"
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "f.bin"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := newEditorInput("nightly", root, deviceID)
+	in.NetworkPolicy = "local-only"
+	r, err := svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApproveRecipe(r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RunRecipe(r.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Revoke the recipient AFTER enqueue: dispatch must fail closed — the
+	// attempt records the honest failure (the pass itself may still report
+	// success as a pass; the attempt state is the truth).
+	if err := ts.RevokeDevice(context.Background(), deviceID); err != nil {
+		t.Fatal(err)
+	}
+	// The dispatcher needs a recorded local endpoint for the recipient, or
+	// the endpoint-hold fires before the trust recheck.
+	svc.SetLocalPeerAddr(deviceID, "127.0.0.1:1")
+	if _, err := svc.DispatchOnceNow(context.Background()); err != nil {
+		t.Fatalf("dispatch pass returned an unexpected error: %v", err)
+	}
+	jobID := func() string {
+		rec, _ := svc.GetRecipe(r.ID)
+		if rec.LastRun != nil {
+			return rec.LastRun.JobID
+		}
+		return ""
+	}()
+	job, ok, err := svc.jobs.Load(jobID)
+	if err != nil || !ok {
+		t.Fatalf("load job: %v %v", err, ok)
+	}
+	for _, a := range job.Attempts {
+		if a.DeviceID == deviceID {
+			if a.Status != jobs.AttemptFailed && a.Status != jobs.AttemptInterrupted {
+				t.Fatalf("revoked recipient attempt state = %q, want failed/interrupted; lastError=%q", a.Status, a.LastError)
+			}
+			if a.LastError == "" || !strings.Contains(strings.ToLower(a.LastError), "revok") {
+				t.Fatalf("attempt error should name the revocation, got %q", a.LastError)
+			}
+		}
+	}
+}
+
+// TestRecipeDispatchUnavailablePeerHeldHonest proves an unreachable peer
+// yields an honest failed/interrupted attempt state (no hang, no fake
+// success, no queue-forever).
+func TestRecipeDispatchUnavailablePeerHeldHonest(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	idm, err := trust.NewIdentityManager(filepath.Join(dir, "identity.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := trust.NewFileSecretStore(filepath.Join(dir, "secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := trust.NewMemoryTrustStore()
+	deviceID := seedRecipeTrust(t, ts)
+	svc, err := NewRecipeService(dir, ts, idm, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := dir + "/sources"
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "f.bin"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := newEditorInput("nightly", root, deviceID)
+	in.NetworkPolicy = "local-only"
+	r, err := svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApproveRecipe(r.ID); err != nil {
+		t.Fatal(err)
+	}
+	jobID, err := svc.RunRecipe(r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Point the dispatcher at an unreachable loopback port.
+	svc.SetLocalPeerAddr(deviceID, "127.0.0.1:1")
+	if _, err := svc.DispatchOnceNow(ctx); err != nil {
+		t.Fatalf("dispatch pass: %v", err)
+	}
+	job, ok, err := svc.jobs.Load(jobID)
+	if err != nil || !ok {
+		t.Fatalf("load job: %v %v", err, ok)
+	}
+	honest := false
+	for _, a := range job.Attempts {
+		if a.Status == jobs.AttemptFailed || a.Status == jobs.AttemptInterrupted {
+			honest = true
+		}
+	}
+	if !honest {
+		t.Fatalf("attempt state not honest: %+v", job.Attempts)
+	}
+}
+
 // storeRecipe composes and saves a manual-status recipe over root.
 func storeRecipe(t *testing.T, svc *RecipeService, root, name, deviceID string) string {
 	t.Helper()
@@ -270,7 +606,7 @@ func TestRecipeServiceRoundTrip(t *testing.T) {
 	ts := trust.NewMemoryTrustStore()
 	devID := seedRecipeTrust(t, ts)
 
-	svc, err := NewRecipeService(dir, ts)
+	svc, err := NewRecipeService(dir, ts, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRecipeService: %v", err)
 	}
@@ -352,7 +688,7 @@ func TestRecipeServiceRunGates(t *testing.T) {
 	ts := trust.NewMemoryTrustStore()
 	devID := seedRecipeTrust(t, ts)
 
-	svc, err := NewRecipeService(dir, ts)
+	svc, err := NewRecipeService(dir, ts, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRecipeService: %v", err)
 	}
@@ -406,7 +742,7 @@ func TestRecipeServiceRunGates(t *testing.T) {
 }
 
 func TestRecipeServiceNilTrust(t *testing.T) {
-	if _, err := NewRecipeService(t.TempDir(), nil); err == nil {
+	if _, err := NewRecipeService(t.TempDir(), nil, nil, nil); err == nil {
 		t.Fatalf("nil trust store accepted")
 	}
 }
@@ -417,7 +753,7 @@ func TestRecipeServiceUsesProductionOutbox(t *testing.T) {
 	dir := t.TempDir()
 	ts := trust.NewMemoryTrustStore()
 	devID := seedRecipeTrust(t, ts)
-	svc, err := NewRecipeService(dir, ts)
+	svc, err := NewRecipeService(dir, ts, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRecipeService: %v", err)
 	}
@@ -441,6 +777,29 @@ func TestRecipeServiceUsesProductionOutbox(t *testing.T) {
 	if len(job.Files) != 1 || job.TotalSize != 4 {
 		t.Fatalf("job files: %+v", job.Files)
 	}
+	// v2.3 correction B: manual run must be LEDGERED with the dispatched job
+	// id so RecipeDeliveryStatus can trace recipe -> job -> attempts.
+	rec, err := svc.GetRecipe(id)
+	if err != nil {
+		t.Fatalf("GetRecipe: %v", err)
+	}
+	if rec.LastRun == nil {
+		t.Fatal("manual run recorded no LastRun ledger entry")
+	}
+	if rec.LastRun.JobID != jobID {
+		t.Fatalf("LastRun.JobID = %q, want the enqueued job %q", rec.LastRun.JobID, jobID)
+	}
+	if rec.LastRun.Status != recipes.RunStatusDispatched {
+		t.Fatalf("LastRun.Status = %q, want dispatched", rec.LastRun.Status)
+	}
+	// RecipeDeliveryStatus must now surface the job view.
+	st, err := svc.RecipeDeliveryStatus(id)
+	if err != nil {
+		t.Fatalf("RecipeDeliveryStatus: %v", err)
+	}
+	if st.Job == nil || st.Job.JobID != jobID {
+		t.Fatalf("delivery status missing job view for %q: %+v", jobID, st)
+	}
 }
 
 // TestRecipeServiceWatch exercises the desktop-hosted watcher lifecycle:
@@ -451,7 +810,7 @@ func TestRecipeServiceWatch(t *testing.T) {
 	ts := trust.NewMemoryTrustStore()
 	devID := seedRecipeTrust(t, ts)
 
-	svc, err := NewRecipeService(dir, ts)
+	svc, err := NewRecipeService(dir, ts, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRecipeService: %v", err)
 	}
@@ -546,7 +905,7 @@ func TestRecipeServiceSchedulerLifecycle(t *testing.T) {
 	ts := trust.NewMemoryTrustStore()
 	devID := seedRecipeTrust(t, ts)
 
-	svc, err := NewRecipeService(dir, ts)
+	svc, err := NewRecipeService(dir, ts, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRecipeService: %v", err)
 	}
@@ -608,3 +967,4 @@ func TestRecipeServiceSchedulerLifecycle(t *testing.T) {
 		t.Fatalf("second StopScheduler: %v", err)
 	}
 }
+
