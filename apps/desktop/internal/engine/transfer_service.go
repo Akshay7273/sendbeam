@@ -637,6 +637,53 @@ func (s *TransferService) SendToDevice(paths []string, deviceID string, server s
 	return Handle{ID: id, Role: "send"}, nil
 }
 
+// SendTargetedOnline performs ONE blocking targeted transfer to a trusted
+// device over the real rendezvous path — the same engine machinery as
+// SendToDevice, but synchronous with a digest-verified outcome, for the
+// recipe dispatcher's production online sender (v2.3 correction C, gap 4).
+// peerOpaqueOpts carries the ceremony options resolved from the live trust
+// store; no silent route changes are performed here.
+func (s *TransferService) SendTargetedOnline(ctx context.Context, req onlineSendRequest) (transfer.Outcome, error) {
+	peer, err := s.resolveTargetedPeer(req.Attempt.DeviceID)
+	if err != nil {
+		return transfer.Outcome{}, err
+	}
+	server := s.resolveSendServer("")
+	iceServers, err := s.resolveICEServers()
+	if err != nil {
+		return transfer.Outcome{}, err
+	}
+	id := s.newID()
+	r := s.newRun(id, wire.RoleOfferer)
+	defer s.remove(r)
+
+	sig, err := s.dial(ctx, server, wire.RoleOfferer)
+	if err != nil {
+		return transfer.Outcome{}, fmt.Errorf("dial: %w", err)
+	}
+	defer sig.Close()
+
+	spec := transfer.Spec{
+		Opaque:         peer.opaqueOpts,
+		PeerDeviceID:   req.Peer.DeviceID,
+		PeerLabel:      req.Peer.LocalLabel,
+		Sources:        req.Sources,
+		ICEServers:     iceServers,
+		RequirePadding: req.RequirePadding,
+		Private:        req.RequirePadding,
+		OnProgress: func(n int64) {
+			if req.OnProgress != nil {
+				req.OnProgress(n)
+			}
+		},
+	}
+	out, err := transfer.Run(ctx, sig, spec)
+	if err != nil {
+		return transfer.Outcome{}, err
+	}
+	return *out, nil
+}
+
 // SendToDeviceLocal sends files to a trusted device over the LAN only — no
 // signaling server, STUN/TURN, or relay is contacted (V21-PR06). The peer
 // must be a non-revoked trusted device currently seen on the LAN

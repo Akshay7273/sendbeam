@@ -614,6 +614,17 @@
           btnRename.addEventListener("click", () => openRenameModal(dev));
           tdActions.appendChild(btnRename);
 
+          // v2.3 correction C (gap 3): validated local endpoint per device —
+          // the desktop dispatch-time equivalent of the CLI's --peer-addr.
+          // Missing/unreachable endpoints HOLD jobs visibly (no online
+          // fallback).
+          const btnEndpoint = document.createElement("button");
+          btnEndpoint.className = "ghost small";
+          btnEndpoint.textContent = "Local endpoint";
+          btnEndpoint.setAttribute("data-id", dev.deviceId);
+          btnEndpoint.addEventListener("click", () => openLocalEndpointModal(dev));
+          tdActions.appendChild(btnEndpoint);
+
           if (!dev.revoked) {
             const btnSend = document.createElement("button");
             btnSend.className = "ghost small";
@@ -1803,6 +1814,63 @@
         $("recipe-schedule-rows").style.display = kind === "schedule" ? "" : "none";
       }
 
+      // v2.3 correction C (gap 3): local-endpoint modal — sets a validated
+      // manual endpoint for a paired device (used by the desktop dispatcher
+      // for local-only delivery). Ip:port format is validated client-side
+      // and re-validated by the engine's route policy at dispatch.
+      function openLocalEndpointModal(dev) {
+        const existing = (state.localEndpoints && state.localEndpoints[dev.deviceId]) || "";
+        const html = `
+          <div class="modal-backdrop" id="endpoint-modal">
+            <div class="modal">
+              <h3>Local endpoint — ${dev.localLabel}</h3>
+              <p class="muted small">ip:port of the device's local-only receiver (its CLI: <code>sendbeam receive --network-policy=local-only --bind ip:port</code>).</p>
+              <input type="text" id="endpoint-input" placeholder="192.168.1.20:45620" value="${existing}" />
+              <div class="modal-actions">
+                <button class="ghost small" id="endpoint-clear">Clear</button>
+                <button class="primary small" id="endpoint-save">Save</button>
+                <button class="ghost small" id="endpoint-cancel">Cancel</button>
+              </div>
+              <div class="statusline" id="endpoint-status"></div>
+            </div>
+          </div>`;
+        const wrap = document.createElement("div");
+        wrap.innerHTML = html;  // static markup only; user input handled below
+        document.body.appendChild(wrap);
+
+        const input = document.getElementById("endpoint-input");
+        const status = document.getElementById("endpoint-status");
+        const show = (cls, txt) => {
+          status.replaceChildren();
+          const sp = document.createElement("span");
+          sp.className = cls;
+          sp.textContent = txt;
+          status.appendChild(sp);
+        };
+        document.getElementById("endpoint-cancel").onclick = () => wrap.remove();
+        document.getElementById("endpoint-clear").onclick = async () => {
+          try {
+            await call(RECIPES_SVC + ".SetLocalPeerAddr", dev.deviceId, "");
+            if (!state.localEndpoints) state.localEndpoints = {};
+            delete state.localEndpoints[dev.deviceId];
+            show("ok", "Endpoint cleared. Local-only jobs for this device will be HELD.");
+          } catch (e) { show("err", String(e)); }
+        };
+        document.getElementById("endpoint-save").onclick = async () => {
+          const v = input.value.trim();
+          if (!/^[0-9a-fA-F.:]+$/.test(v) || !v.includes(":")) {
+            show("err", "Enter a literal ip:port (hostnames are rejected by the route policy).");
+            return;
+          }
+          try {
+            await call(RECIPES_SVC + ".SetLocalPeerAddr", dev.deviceId, v);
+            if (!state.localEndpoints) state.localEndpoints = {};
+            state.localEndpoints[dev.deviceId] = v;
+            show("ok", "Endpoint saved — the dispatcher will dial it for local-only jobs.");
+          } catch (e) { show("err", String(e)); }
+        };
+      }
+
       function wireRecipeUI() {
         $("new-recipe-btn").addEventListener("click", newRecipeDraft);
         $("recipe-save").addEventListener("click", saveRecipeDraft);
@@ -1815,6 +1883,14 @@
         $("watch-stop").addEventListener("click", stopWatch);
         $("sched-start").addEventListener("click", startScheduler);
         $("sched-stop").addEventListener("click", stopScheduler);
+        $("dispatch-now").addEventListener("click", async () => {
+          try {
+            const rep = await call(RECIPES_SVC + ".DispatchOnceNow");
+            setLiteral($("recipes-status"), "ok", `Dispatch pass: ${rep.jobsDispatched || 0} dispatched, ${rep.skipped ? rep.skipped.length + " held" : "0 held"}.`);
+          } catch (e) {
+            setLiteral($("recipes-status"), "err", "Dispatch failed: " + e);
+          }
+        });
         $("add-source-btn").addEventListener("click", async () => {
           if (!state.recipeDraft) state.recipeDraft = { id: "", sources: [] };
           if (!state.recipeDraft.sources) state.recipeDraft.sources = [];
