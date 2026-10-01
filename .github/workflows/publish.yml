@@ -141,7 +141,8 @@ jobs:
 
       - name: Promote (monotonic; newest green commit wins)
         env:
-          IMAGE: ghcr.io/${{ github.repository }}
+          # GHCR requires lowercase repository names.
+          IMAGE: ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
           SHA: ${{ github.sha }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
