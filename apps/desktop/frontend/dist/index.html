@@ -2835,26 +2835,44 @@
       // and re-validated by the engine's route policy at dispatch.
       function openLocalEndpointModal(dev) {
         const existing = (state.localEndpoints && state.localEndpoints[dev.deviceId]) || "";
-        const html = `
-          <div class="modal-backdrop" id="endpoint-modal">
-            <div class="modal">
-              <h3>Local endpoint — ${dev.localLabel}</h3>
-              <p class="muted small">ip:port of the device's local-only receiver (its CLI: <code>sendbeam receive --network-policy=local-only --bind ip:port</code>).</p>
-              <input type="text" id="endpoint-input" placeholder="192.168.1.20:45620" value="${existing}" />
-              <div class="modal-actions">
-                <button class="ghost small" id="endpoint-clear">Clear</button>
-                <button class="primary small" id="endpoint-save">Save</button>
-                <button class="ghost small" id="endpoint-cancel">Cancel</button>
-              </div>
-              <div class="statusline" id="endpoint-status"></div>
-            </div>
-          </div>`;
+        // Literal-DOM construction (safety invariant: no innerHTML anywhere —
+        // the device label is untrusted and rendered as textContent).
         const wrap = document.createElement("div");
-        wrap.innerHTML = html;  // static markup only; user input handled below
+        wrap.className = "modal-backdrop";
+        wrap.id = "endpoint-modal";
+        const modal = document.createElement("div");
+        modal.className = "modal";
+        const h3 = document.createElement("h3");
+        h3.textContent = "Local endpoint — " + dev.localLabel;
+        modal.appendChild(h3);
+        const note = document.createElement("p");
+        note.className = "muted small";
+        note.textContent = "ip:port of the device's local-only receiver (its CLI: sendbeam receive --network-policy=local-only --bind ip:port).";
+        modal.appendChild(note);
+        const codeEl = document.createElement("code");
+        codeEl.textContent = "sendbeam receive --network-policy=local-only --bind ip:port";
+        note.appendChild(codeEl);
+        const input = document.createElement("input");
+        input.type = "text";
+        input.id = "endpoint-input";
+        input.placeholder = "192.168.1.20:45620";
+        input.value = existing;
+        modal.appendChild(input);
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+        const bClear = document.createElement("button");
+        bClear.className = "ghost small"; bClear.id = "endpoint-clear"; bClear.textContent = "Clear";
+        const bSave = document.createElement("button");
+        bSave.className = "primary small"; bSave.id = "endpoint-save"; bSave.textContent = "Save";
+        const bCancel = document.createElement("button");
+        bCancel.className = "ghost small"; bCancel.id = "endpoint-cancel"; bCancel.textContent = "Cancel";
+        actions.appendChild(bClear); actions.appendChild(bSave); actions.appendChild(bCancel);
+        modal.appendChild(actions);
+        const status = document.createElement("div");
+        status.className = "statusline"; status.id = "endpoint-status";
+        modal.appendChild(status);
+        wrap.appendChild(modal);
         document.body.appendChild(wrap);
-
-        const input = document.getElementById("endpoint-input");
-        const status = document.getElementById("endpoint-status");
         const show = (cls, txt) => {
           status.replaceChildren();
           const sp = document.createElement("span");

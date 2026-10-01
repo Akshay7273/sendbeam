@@ -401,6 +401,13 @@ func TestRunWithTriggerCarriesPaddingDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Manual dispatch still requires approval (the human at the keyboard IS
+	// the approval — but the recipe must be in manual status first).
+	r.Status = RecipeManual
+	r.Grant.ScopeHash = r.ScopeHash()
+	if err := store.Save(r); err != nil {
+		t.Fatal(err)
+	}
 	eq := &recordingEnqueuer{}
 	job, err := RunWithTrigger(ctx, RunDeps{Store: store, Trust: ts, Now: time.Now}, eq, r.ID, TriggerManual)
 	if err != nil {

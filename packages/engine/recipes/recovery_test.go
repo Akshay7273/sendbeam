@@ -72,6 +72,11 @@ func (e durableOutboxEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []s
 	for i, r := range recipients {
 		refs[i] = outbox.RecipientRef{DeviceID: r.DeviceID, Label: r.Label}
 	}
+	if provenance != nil && provenance.SenderLabel == "" {
+		cpy := *provenance
+		cpy.SenderLabel = "test-sender"
+		provenance = &cpy
+	}
 	return e.ob.EnqueueWithPrivacy(ctx, paths, refs, policy, np, provenance, requirePadding)
 }
 
