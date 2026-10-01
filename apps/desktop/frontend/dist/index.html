@@ -1629,6 +1629,17 @@
           btnRename.addEventListener("click", () => openRenameModal(dev));
           tdActions.appendChild(btnRename);
 
+          // v2.3 correction C (gap 3): validated local endpoint per device —
+          // the desktop dispatch-time equivalent of the CLI's --peer-addr.
+          // Missing/unreachable endpoints HOLD jobs visibly (no online
+          // fallback).
+          const btnEndpoint = document.createElement("button");
+          btnEndpoint.className = "ghost small";
+          btnEndpoint.textContent = "Local endpoint";
+          btnEndpoint.setAttribute("data-id", dev.deviceId);
+          btnEndpoint.addEventListener("click", () => openLocalEndpointModal(dev));
+          tdActions.appendChild(btnEndpoint);
+
           if (!dev.revoked) {
             const btnSend = document.createElement("button");
             btnSend.className = "ghost small";
@@ -2816,6 +2827,81 @@
       function toggleScheduleRows() {
         const kind = $("recipe-trigger").value;
         $("recipe-schedule-rows").style.display = kind === "schedule" ? "" : "none";
+      }
+
+      // v2.3 correction C (gap 3): local-endpoint modal — sets a validated
+      // manual endpoint for a paired device (used by the desktop dispatcher
+      // for local-only delivery). Ip:port format is validated client-side
+      // and re-validated by the engine's route policy at dispatch.
+      function openLocalEndpointModal(dev) {
+        const existing = (state.localEndpoints && state.localEndpoints[dev.deviceId]) || "";
+        // Literal-DOM construction (safety invariant: never parse HTML —
+        // the device label is untrusted and rendered as textContent).
+        const wrap = document.createElement("div");
+        wrap.className = "modal-backdrop";
+        wrap.id = "endpoint-modal";
+        const modal = document.createElement("div");
+        modal.className = "modal";
+        const h3 = document.createElement("h3");
+        h3.textContent = "Local endpoint — " + dev.localLabel;
+        modal.appendChild(h3);
+        const note = document.createElement("p");
+        note.className = "muted small";
+        note.textContent = "ip:port of the device's local-only receiver (its CLI: sendbeam receive --network-policy=local-only --bind ip:port).";
+        modal.appendChild(note);
+        const codeEl = document.createElement("code");
+        codeEl.textContent = "sendbeam receive --network-policy=local-only --bind ip:port";
+        note.appendChild(codeEl);
+        const input = document.createElement("input");
+        input.type = "text";
+        input.id = "endpoint-input";
+        input.placeholder = "192.168.1.20:45620";
+        input.value = existing;
+        modal.appendChild(input);
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+        const bClear = document.createElement("button");
+        bClear.className = "ghost small"; bClear.id = "endpoint-clear"; bClear.textContent = "Clear";
+        const bSave = document.createElement("button");
+        bSave.className = "primary small"; bSave.id = "endpoint-save"; bSave.textContent = "Save";
+        const bCancel = document.createElement("button");
+        bCancel.className = "ghost small"; bCancel.id = "endpoint-cancel"; bCancel.textContent = "Cancel";
+        actions.appendChild(bClear); actions.appendChild(bSave); actions.appendChild(bCancel);
+        modal.appendChild(actions);
+        const status = document.createElement("div");
+        status.className = "statusline"; status.id = "endpoint-status";
+        modal.appendChild(status);
+        wrap.appendChild(modal);
+        document.body.appendChild(wrap);
+        const show = (cls, txt) => {
+          status.replaceChildren();
+          const sp = document.createElement("span");
+          sp.className = cls;
+          sp.textContent = txt;
+          status.appendChild(sp);
+        };
+        document.getElementById("endpoint-cancel").onclick = () => wrap.remove();
+        document.getElementById("endpoint-clear").onclick = async () => {
+          try {
+            await call(RECIPES_SVC + ".SetLocalPeerAddr", dev.deviceId, "");
+            if (!state.localEndpoints) state.localEndpoints = {};
+            delete state.localEndpoints[dev.deviceId];
+            show("ok", "Endpoint cleared. Local-only jobs for this device will be HELD.");
+          } catch (e) { show("err", String(e)); }
+        };
+        document.getElementById("endpoint-save").onclick = async () => {
+          const v = input.value.trim();
+          if (!/^[0-9a-fA-F.:]+$/.test(v) || !v.includes(":")) {
+            show("err", "Enter a literal ip:port (hostnames are rejected by the route policy).");
+            return;
+          }
+          try {
+            await call(RECIPES_SVC + ".SetLocalPeerAddr", dev.deviceId, v);
+            if (!state.localEndpoints) state.localEndpoints = {};
+            state.localEndpoints[dev.deviceId] = v;
+            show("ok", "Endpoint saved — the dispatcher will dial it for local-only jobs.");
+          } catch (e) { show("err", String(e)); }
+        };
       }
 
       function wireRecipeUI() {

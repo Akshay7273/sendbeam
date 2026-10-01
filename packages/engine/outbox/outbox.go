@@ -143,6 +143,14 @@ func (o *Outbox) Enqueue(ctx context.Context, paths []string, recipients []Recip
 // anything is persisted) and stored on the job so dispatch can stamp it on
 // the wire manifest and consent surfaces can display it.
 func (o *Outbox) EnqueueWithProvenance(ctx context.Context, paths []string, recipients []RecipientRef, policy jobs.RetryPolicy, networkPolicy netpolicy.Policy, provenance *wire.Provenance) (jobs.Job, error) {
+	return o.EnqueueWithPrivacy(ctx, paths, recipients, policy, networkPolicy, provenance, false)
+}
+
+// EnqueueWithPrivacy is EnqueueWithProvenance plus the job's PERSISTED
+// traffic-padding decision (v2.3 correction C, gap 1): the sender must honor
+// it at dispatch; the recipe/editor's privacy choice can no longer be lost
+// between enqueue and send.
+func (o *Outbox) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []RecipientRef, policy jobs.RetryPolicy, networkPolicy netpolicy.Policy, provenance *wire.Provenance, requirePadding bool) (jobs.Job, error) {
 	_ = ctx
 	if err := wire.ValidateProvenance(provenance); err != nil {
 		return jobs.Job{}, wire.Errorf(wire.CodeStorage, "outbox: invalid provenance: %v", err)
@@ -197,6 +205,10 @@ func (o *Outbox) EnqueueWithProvenance(ctx context.Context, paths []string, reci
 	// ordinary one-off sends). It rides the wire manifest at dispatch and
 	// the checksum covers it, so it cannot be flipped after the fact.
 	job.Provenance = provenance
+	// v2.3 correction C (gap 1): persist the padding decision on the job —
+	// dispatch reads it from here, never from a caller flag.
+	pad := requirePadding
+	job.RequirePadding = &pad
 	if err := jobs.QueueJob(&job, now); err != nil {
 		return jobs.Job{}, err
 	}

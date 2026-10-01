@@ -193,7 +193,7 @@ type outboxEnqueuer struct {
 	senderLabel string
 }
 
-func (a outboxEnqueuer) Enqueue(ctx context.Context, paths []string, recipients []recipes.EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance) (jobs.Job, error) {
+func (a outboxEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []recipes.EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, requirePadding bool) (jobs.Job, error) {
 	refs := make([]outbox.RecipientRef, len(recipients))
 	for i, r := range recipients {
 		refs[i] = outbox.RecipientRef{DeviceID: r.DeviceID, Label: r.Label}
@@ -207,7 +207,11 @@ func (a outboxEnqueuer) Enqueue(ctx context.Context, paths []string, recipients 
 		cpy.SenderLabel = label
 		provenance = &cpy
 	}
-	return a.ob.EnqueueWithProvenance(ctx, paths, refs, policy, np, provenance)
+	return a.ob.EnqueueWithPrivacy(ctx, paths, refs, policy, np, provenance, requirePadding)
+}
+
+func (a outboxEnqueuer) Enqueue(ctx context.Context, paths []string, recipients []recipes.EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance) (jobs.Job, error) {
+	return a.EnqueueWithPrivacy(ctx, paths, recipients, policy, np, provenance, false)
 }
 
 func runRecipeList(args []string, stdout, stderr io.Writer) int {

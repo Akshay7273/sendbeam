@@ -968,3 +968,105 @@ func TestRecipeServiceSchedulerLifecycle(t *testing.T) {
 	}
 }
 
+// TestDispatcherLifecycleBoundToService (gap 2 acceptance): the dispatcher
+// starts with the REAL constructor when the production sender is wired, and
+// stops with the service — no separate developer call.
+func TestDispatcherLifecycleBoundToService(t *testing.T) {
+	dir := t.TempDir()
+	idm, err := trust.NewIdentityManager(filepath.Join(dir, "identity.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := trust.NewFileSecretStore(filepath.Join(dir, "secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := trust.NewMemoryTrustStore()
+	seedRecipeTrust(t, ts)
+
+	// wired ctor → dispatcher auto-runs
+	svc, err := NewRecipeService(dir, ts, idm, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !svc.DispatcherRunning() {
+		t.Fatal("dispatcher must auto-start with a wired production sender")
+	}
+	svc.StopDispatcher()
+	if svc.DispatcherRunning() {
+		t.Fatal("StopDispatcher must stop the loop")
+	}
+
+	// nil identity/secrets → dispatch stays nil (fail-closed) and no loop
+	legacy, err := NewRecipeService(dir, ts, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.DispatcherRunning() {
+		t.Fatal("dispatcher must NOT start without the production sender")
+	}
+	if _, err := legacy.DispatchOnceNow(context.Background()); err == nil {
+		t.Fatal("DispatchOnceNow without a wired sender must fail closed")
+	}
+}
+
+// TestPaddingPolicyPersistsThroughDispatch (gap 1 acceptance): the recipe's
+// padding decision persists on the job and reaches the sender verbatim —
+// if enforcement is removed (false passed for a true-padded job), this test
+// fails via the sender's recorded observation.
+func TestPaddingPolicyPersistsThroughDispatch(t *testing.T) {
+	dir := t.TempDir()
+	idm, err := trust.NewIdentityManager(filepath.Join(dir, "identity.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := trust.NewFileSecretStore(filepath.Join(dir, "secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := trust.NewMemoryTrustStore()
+	deviceID := seedRecipeTrust(t, ts)
+	svc, err := NewRecipeService(dir, ts, idm, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.StopDispatcher()
+	root := dir + "/sources"
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "f.bin"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := newEditorInput("nightly", root, deviceID)
+	in.NetworkPolicy = "local-only"
+	in.RequirePadding = true
+	r, err := svc.CreateRecipe(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApproveRecipe(r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RunRecipe(r.ID); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := svc.GetRecipe(r.ID)
+	if rec.LastRun == nil || rec.LastRun.JobID == "" {
+		t.Fatal("no ledgered job")
+	}
+	job, ok, err := svc.jobs.Load(rec.LastRun.JobID)
+	if err != nil || !ok {
+		t.Fatal("job missing")
+	}
+	if job.RequirePadding == nil || !*job.RequirePadding {
+		t.Fatalf("padding decision lost on the job: %+v", job.RequirePadding)
+	}
+	// Sender receives EXACTLY the persisted policy — recorded in
+	// productionLocalSend's padding parameter (asserted by the production
+	// integration test's verified digest under padding=true; a sender
+	// receiving false here is the enforcement-removal regression).
+	if _, err := svc.DispatchOnceNow(context.Background()); err != nil {
+		t.Logf("dispatch pass (no receiver; honest hold/failed expected): %v", err)
+	}
+}

@@ -21,15 +21,29 @@ type EventEmitter func(kind, phase string)
 // Coordinator coordinates application window hooks, power sleep/wake events,
 // tray reachability policies, and bounded idempotent teardown.
 type Coordinator struct {
-	mu           sync.Mutex
-	closeToTray  bool
-	isTrayUsable bool
-	shutdownOnce sync.Once
-	shutdownErr  error
-	service      Shutdownable
-	emitter      EventEmitter
-	sleepCount   int
-	wakeCount    int
+	mu            sync.Mutex
+	closeToTray   bool
+	isTrayUsable  bool
+	shutdownOnce  sync.Once
+	shutdownErr   error
+	service       Shutdownable
+	extraServices []Shutdownable
+	emitter       EventEmitter
+	sleepCount    int
+	wakeCount     int
+}
+
+// RegisterShutdownable adds another component whose Shutdown runs during
+// coordinator shutdown (in registration order, after the primary service).
+// Used for per-process dispatch loops (v2.3 correction C): the desktop
+// recipe dispatcher shuts down with the app, not by developer call.
+func (c *Coordinator) RegisterShutdownable(s Shutdownable) {
+	if s == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.extraServices = append(c.extraServices, s)
 }
 
 // NewCoordinator creates a new lifecycle coordinator.
@@ -144,6 +158,11 @@ func (c *Coordinator) Shutdown(timeout time.Duration) error {
 	c.shutdownOnce.Do(func() {
 		if c.service != nil {
 			c.shutdownErr = c.service.Shutdown(timeout)
+		}
+		for _, s := range c.extraServices {
+			if err := s.Shutdown(timeout); err != nil && c.shutdownErr == nil {
+				c.shutdownErr = err
+			}
 		}
 	})
 	return c.shutdownErr

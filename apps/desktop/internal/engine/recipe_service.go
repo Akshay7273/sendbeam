@@ -72,6 +72,14 @@ type RecipeService struct {
 	// dispatcher uses for local-only dispatch passes. Jobs whose recipient
 	// lacks an entry are held with a clear skip reason (no online fallback).
 	localPeerAddrs map[string]string
+	// policyLookup returns the CURRENT desktop network policy (wired from
+	// main.go's persisted-config accessor). Gap 4: recipe-bound policy +
+	// current policy together govern routing.
+	policyLookup func() netpolicy.Policy
+	// onlineSender is the desktop's real online targeted-send engine call
+	// (wired from the TransferService); nil keeps online dispatch
+	// fail-closed.
+	onlineSender func(ctx context.Context, req onlineSendRequest) (transfer.Outcome, error)
 	// scheduler hosts every enabled schedule-triggered recipe in this
 	// process between StartScheduler and StopScheduler; nil when not
 	// started. schedCancel stops the scheduler's context.
@@ -118,6 +126,15 @@ func NewRecipeService(customConfigDir string, trustStore trust.Store, identity *
 		nowFunc:  nowFunc,
 		identity: identity,
 		secrets:  secrets,
+	}
+	// v2.3 correction C (gap 2): the dispatcher starts WITH the service
+	// (bound to the desktop process lifecycle) whenever the production
+	// sender is wired — run/watch/schedule reach delivery without any
+	// separate developer/dispatcher call.
+	if identity != nil && secrets != nil {
+		if err := svc.StartDispatcher(2 * time.Second); err != nil {
+			return nil, fmt.Errorf("recipe service: start dispatcher: %w", err)
+		}
 	}
 	svc.runner = recipes.NewRunner(
 		recipes.RunDeps{Store: recipeStore, Trust: trustStore, Now: nowFunc, SenderLabel: desktopDeviceLabel()},
@@ -748,6 +765,21 @@ func (s *RecipeService) DeleteRecipe(id string) error {
 	return s.store.Delete(id)
 }
 
+// SetPolicyLookup wires the current-desktop-policy accessor (called once
+// from main.go after the config store exists).
+func (s *RecipeService) SetPolicyLookup(fn func() netpolicy.Policy) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.policyLookup = fn
+}
+
+// SetOnlineSender wires the desktop's real online targeted-send engine call.
+func (s *RecipeService) SetOnlineSender(fn func(ctx context.Context, req onlineSendRequest) (transfer.Outcome, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onlineSender = fn
+}
+
 // SetLocalPeerAddr records the manual local endpoint for a paired device
 // (the desktop equivalent of the CLI's --peer-addr at dispatch time).
 func (s *RecipeService) SetLocalPeerAddr(deviceID, addr string) {
@@ -813,6 +845,15 @@ func (s *RecipeService) StopDispatcher() {
 	}
 }
 
+// Shutdown implements the lifecycle coordinator's Shutdownable: stops the
+// dispatcher loop (in-flight passes finish under the bounded lease; the
+// lease expires naturally on crash). Called on app quit — the dispatcher's
+// lifecycle IS the desktop process lifecycle (v2.3 correction C, gap 2).
+func (s *RecipeService) Shutdown(_ time.Duration) error {
+	s.StopDispatcher()
+	return nil
+}
+
 // DispatchOnceNow performs ONE dispatch pass now (also the immediate kick
 // after RunRecipe/watch/schedule enqueue). Returns the dispatch report.
 func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchReport, error) {
@@ -822,8 +863,19 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 	if identity == nil || secrets == nil {
 		return outbox.DispatchReport{}, fmt.Errorf("production sender not wired: identity/secrets unavailable")
 	}
-	if _, err := identity.GetOrCreateIdentity(); err != nil {
+	localID, err := identity.GetOrCreateIdentity()
+	if err != nil {
 		return outbox.DispatchReport{}, err
+	}
+	// Gap 4 (routing): the CURRENT desktop policy gates the pass (the CLI's
+	// dispatch-time effective policy equivalent); each job's OWN recipe-bound
+	// policy is checked against it by the outbox's per-job gate below. An
+	// online-policy recipe under a local-only desktop (or vice versa where
+	// unsatisfiable) is HELD with a clear reason — never sent on a silent
+	// fallback route.
+	effective := netpolicy.LocalOnly
+	if s.policyLookup != nil {
+		effective = s.policyLookup()
 	}
 	// Production sender: one attempt per call. Local-only route via the
 	// recorded manual endpoint; the outbox's own policy gate holds
@@ -831,22 +883,54 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 	// fallback). A fresh Outbox over the SAME shared job store keeps lease
 	// and attempt state in one place; only the sender closure is per-call.
 	sender := func(ctx context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) outbox.SendOutcome {
-		addr := peerAddrs[attempt.DeviceID]
-		if addr == "" {
-			return outbox.SendOutcome{Status: transfer.StatusFailed,
-				Error: fmt.Sprintf("no local endpoint recorded for %q; refusing to send online (dispatch stays local-only)", attempt.DeviceID)}
+		// The job's PERSISTED padding policy governs (v2.3 correction C,
+		// gap 1): RequirePadding=true must never reach a sender as false.
+		// Routine (provenance-carrying) jobs with a missing field fail
+		// closed at resolution — the recipe's privacy decision is never
+		// guessed.
+		provCarrying := job.Provenance != nil
+		padding, perr := job.EffectiveRequirePadding(provCarrying)
+		if perr != nil {
+			return outbox.SendOutcome{Status: transfer.StatusFailed, Error: perr.Error()}
 		}
-		padding := false
-		for _, f := range job.Files {
-			_ = f
+		// Gap 4: route by the recipe-bound policy. Local-only / prefer-local
+		// (with a recorded endpoint) take the production local sender;
+		// online takes the production ONLINE sender (the TransferService
+		// targeted path); prefer-local without an endpoint falls back to
+		// online VISIBLY. Local-only without an endpoint is HELD (never
+		// online). Unsupported combinations are refused, not advertised.
+		switch job.EffectiveNetworkPolicy() {
+		case netpolicy.LocalOnly:
+			addr := peerAddrs[attempt.DeviceID]
+			if addr == "" {
+				return outbox.SendOutcome{Status: transfer.StatusFailed,
+					Error: fmt.Sprintf("no local endpoint recorded for %q; HELD — local-only never falls back online", attempt.DeviceID)}
+			}
+			return s.productionLocalSend(ctx, job, attempt, paths, addr, padding, false)
+		case netpolicy.PreferLocal:
+			if addr := peerAddrs[attempt.DeviceID]; addr != "" {
+				out := s.productionLocalSend(ctx, job, attempt, paths, addr, padding, false)
+				if out.Status == transfer.StatusOk {
+					return out
+				}
+				// visible online fallback for prefer-local
+				fb := s.productionOnlineSend(ctx, job, attempt, paths, localID, padding)
+				if fb.Status == transfer.StatusOk {
+					return outbox.SendOutcome{Status: transfer.StatusOk, Digest: fb.Digest, BytesTransferred: fb.BytesTransferred}
+				}
+				return outbox.SendOutcome{Status: transfer.StatusFailed,
+					Error: "local: " + out.Error + "; online fallback: " + fb.Error}
+			}
+			return s.productionOnlineSend(ctx, job, attempt, paths, localID, padding)
+		default:
+			return s.productionOnlineSend(ctx, job, attempt, paths, localID, padding)
 		}
-		return s.productionLocalSend(ctx, job, attempt, paths, addr, padding, false)
 	}
 	ob := outbox.New(s.jobs, sender)
 	return ob.DispatchOnce(ctx, outbox.DispatchOptions{
 		Concurrency:     2,
 		LeaseTTL:        jobs.DefaultLeaseTTL,
-		EffectivePolicy: netpolicy.LocalOnly,
+		EffectivePolicy: effective,
 	})
 }
 
@@ -918,6 +1002,58 @@ func (s *RecipeService) productionLocalSend(ctx context.Context, job jobs.Job, a
 	return outbox.SendOutcome{Status: transfer.StatusOk, Digest: digest, BytesTransferred: sentBytes}
 }
 
+// productionOnlineSend is the production ONLINE sender: one targeted
+// transfer through the desktop engine's real rendezvous path (the same
+// machinery TransferService.Send drives), honoring the persisted padding
+// decision. No silent policy change: called only for online-policy jobs or
+// the visible prefer-local fallback.
+func (s *RecipeService) productionOnlineSend(ctx context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string, localID *wire.DeviceIdentity, padding bool) outbox.SendOutcome {
+	fail := func(format string, args ...any) outbox.SendOutcome {
+		return outbox.SendOutcome{Status: transfer.StatusFailed, Error: fmt.Sprintf(format, args...)}
+	}
+	if s.onlineSender == nil {
+		return fail("online sender not wired; refusing to send")
+	}
+	resolved, err := s.resolveSendTarget(ctx, attempt.DeviceID)
+	if err != nil {
+		return fail("resolve recipient: %v", err)
+	}
+	sources, _, err := transfer.NewOSFileSources(paths)
+	if err != nil {
+		return fail("read sources: %v", err)
+	}
+	var sentBytes int64
+	out, err := s.onlineSender(ctx, onlineSendRequest{
+		Attempt:        attempt,
+		Paths:          paths,
+		Sources:        sources,
+		Peer:           resolved.record,
+		LocalID:        localID,
+		RequirePadding: padding,
+		Provenance:     job.Provenance,
+		OnProgress:     func(n int64) { sentBytes = n },
+	})
+	if err != nil {
+		return fail("online transfer: %v", err)
+	}
+	if out.Digest == "" {
+		return fail("online transfer reported success without a content digest; not marking delivered")
+	}
+	return outbox.SendOutcome{Status: transfer.StatusOk, Digest: out.Digest, BytesTransferred: sentBytes}
+}
+
+// onlineSendRequest carries one production online-send invocation.
+type onlineSendRequest struct {
+	Attempt        jobs.RecipientAttempt
+	Paths          []string
+	Sources        []wire.FileSource
+	Peer           *wire.TrustRecord
+	LocalID        *wire.DeviceIdentity
+	RequirePadding bool
+	Provenance     *wire.Provenance
+	OnProgress     func(int64)
+}
+
 // resolveSendTarget loads the trust record for a device and fails closed on
 // unknown/revoked devices.
 func (s *RecipeService) resolveSendTarget(ctx context.Context, deviceID string) (resolvedSendTarget, error) {
@@ -948,19 +1084,15 @@ type recipeOutboxEnqueuer struct {
 	senderLabel string
 }
 
-func (a recipeOutboxEnqueuer) Enqueue(ctx context.Context, paths []string, recipients []recipes.EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance) (jobs.Job, error) {
+func (a recipeOutboxEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []recipes.EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, requirePadding bool) (jobs.Job, error) {
 	refs := make([]outbox.RecipientRef, len(recipients))
 	for i, r := range recipients {
 		refs[i] = outbox.RecipientRef{DeviceID: r.DeviceID, Label: r.Label}
 	}
-	if provenance != nil && provenance.SenderLabel == "" {
-		label := a.senderLabel
-		if label == "" {
-			label = desktopDeviceLabel()
-		}
-		cpy := *provenance
-		cpy.SenderLabel = label
-		provenance = &cpy
-	}
-	return a.ob.EnqueueWithProvenance(ctx, paths, refs, policy, np, provenance)
+	return a.ob.EnqueueWithPrivacy(ctx, paths, refs, policy, np, provenance, requirePadding)
 }
+
+func (a recipeOutboxEnqueuer) Enqueue(ctx context.Context, paths []string, recipients []recipes.EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance) (jobs.Job, error) {
+	return a.EnqueueWithPrivacy(ctx, paths, recipients, policy, np, provenance, false)
+}
+

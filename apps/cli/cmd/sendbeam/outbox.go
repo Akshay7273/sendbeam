@@ -384,11 +384,27 @@ func runOutboxDispatch(args []string, stdout, stderr io.Writer) int {
 	}
 	perTarget := *timeout
 	sender := func(ctx context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) outbox.SendOutcome {
+		// v2.3 correction C (gap 1): the job's PERSISTED padding decision
+		// governs; the CLI flag is only the default for legacy ordinary
+		// jobs (nil field). Routine (provenance-carrying) jobs with a
+		// missing field fail closed — the recipe's privacy decision is
+		// never guessed.
+		provCarrying := job.Provenance != nil
+		jobPadding, perr := job.EffectiveRequirePadding(provCarrying)
+		if perr != nil {
+			return outbox.SendOutcome{Status: transfer.StatusFailed, Error: perr.Error()}
+		}
+		padding := jobPadding
+		if job.RequirePadding == nil {
+			padding = *requirePadding
+		}
+		_ = padding // used above
 		// V22-PR06: the job's routine origin label (nil for ordinary
 		// one-off sends) rides the wire manifest on both routes. Copied
 		// per invocation: DispatchOnce may run senders concurrently.
 		cfg := cfg
 		cfg.provenance = job.Provenance
+		cfg.requirePadding = padding
 		// V21-PR07 per-job route binding (second line of defense after
 		// the outbox dispatch gate):
 		// - a local-only job is dispatched through the offline sender
@@ -399,10 +415,10 @@ func runOutboxDispatch(args []string, stdout, stderr io.Writer) int {
 		//   attempt error/output, not silent).
 		switch job.EffectiveNetworkPolicy() {
 		case netpolicy.LocalOnly:
-			return outboxLocalSend(ctx, env, job, attempt, paths, netpolicy.LocalOnly, effective, *peerAddr, *requirePadding, *privateMode)
+			return outboxLocalSend(ctx, env, job, attempt, paths, netpolicy.LocalOnly, effective, *peerAddr, padding, *privateMode)
 		case netpolicy.PreferLocal:
 			if effective == netpolicy.PreferLocal && *peerAddr != "" {
-				out := outboxLocalSend(ctx, env, job, attempt, paths, netpolicy.PreferLocal, effective, *peerAddr, *requirePadding, *privateMode)
+				out := outboxLocalSend(ctx, env, job, attempt, paths, netpolicy.PreferLocal, effective, *peerAddr, padding, *privateMode)
 				if out.Status == transfer.StatusOk {
 					return out
 				}

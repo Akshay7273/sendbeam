@@ -206,6 +206,11 @@ func main() {
 		// the bindings are ready for a future frontend PR.
 		var err error
 		recipeSvc, err = engine.NewRecipeService("", deviceSvc.GetStore(), deviceSvc.GetIdentityManager(), deviceSvc.GetCredentialStore())
+		if err == nil {
+			// v2.3 correction C (gaps 3-4): live policy + online sender wiring.
+			recipeSvc.SetPolicyLookup(getPolicy)
+			recipeSvc.SetOnlineSender(transferSvc.SendTargetedOnline)
+		}
 		if err != nil {
 			log.Printf("SendBeam Desktop: recipe service failed to initialize: %v", err)
 			recipeSvc = nil
@@ -261,6 +266,9 @@ func main() {
 	}
 	if recipeSvc != nil {
 		services = append(services, application.NewService(recipeSvc))
+		// v2.3 correction C: the recipe dispatcher's lifecycle is the app's
+		// lifecycle — register it with the coordinator (bounded shutdown).
+		lifecycleCoord.RegisterShutdownable(recipeSvc)
 	}
 
 	app := application.New(application.Options{
