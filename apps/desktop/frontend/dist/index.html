@@ -1020,6 +1020,7 @@
         LocalPairing:
           "github.com/sendbeam/desktop/internal/engine.LocalPairingService",
         Local: "github.com/sendbeam/desktop/internal/engine.LocalService",
+        Recipes: "github.com/sendbeam/desktop/internal/engine.RecipeService",
       };
       const call = (fqn, ...args) => wails.Call.ByName(fqn, ...args);
       const $ = (id) => document.getElementById(id);
@@ -2463,7 +2464,7 @@
       // change drops the recipe back to approval-required (the backend
       // re-hashes scope on save and resets the grant).
       // ======================================================================
-      const RECIPES_SVC = SV.Service + ".RecipeService";
+      const RECIPES_SVC = SV.Recipes;
 
       async function refreshRecipes() {
         try {
