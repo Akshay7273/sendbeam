@@ -182,9 +182,10 @@ jobs:
             # silent bypass.
             echo "[i] BOOTSTRAP: promoted latest carries no revision metadata; promoting ${SHA:0:7} and stamping the revision for future monotonic checks."
           fi
+          # The promoted tag shares the candidate's config labels (revision
+          # was stamped at build time) — no extra flags needed here.
           docker buildx imagetools create \
             -t "${IMAGE}:latest" \
-            --annotation "org.opencontainers.image.revision=${SHA}" \
             "${IMAGE}:${SHA}"
           echo "[+] Promoted ${SHA} → latest"
           if [ "${REF_TYPE}" = "tag" ]; then
