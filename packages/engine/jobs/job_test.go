@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"github.com/sendbeam/wire"
 	"strings"
 	"testing"
 	"time"
@@ -228,5 +229,31 @@ func TestDeriveJobStatus(t *testing.T) {
 	j.Status = JobCancelled
 	if got := DeriveJobStatus(&j); got != JobCancelled {
 		t.Fatalf("got %q, want cancelled", got)
+	}
+}
+
+
+// v2.3 correction C (gap 1): persisted padding policy migration rules.
+func TestEffectiveRequirePaddingMigration(t *testing.T) {
+	pad := true
+	no := false
+	// explicit fields always honored
+	j := Job{RequirePadding: &pad}
+	if v, err := j.EffectiveRequirePadding(true); err != nil || v != true {
+		t.Fatalf("explicit true: %v %v", v, err)
+	}
+	j.RequirePadding = &no
+	if v, err := j.EffectiveRequirePadding(true); err != nil || v != false {
+		t.Fatalf("explicit false: %v %v", v, err)
+	}
+	// routine (provenance-carrying) job with MISSING field: fail closed
+	routine := Job{Provenance: &wire.Provenance{RoutineID: "r"}}
+	if _, err := routine.EffectiveRequirePadding(true); err == nil {
+		t.Fatal("routine job with missing padding field must fail closed")
+	}
+	// ordinary job with missing field: documented default (false)
+	ordinary := Job{}
+	if v, err := ordinary.EffectiveRequirePadding(false); err != nil || v {
+		t.Fatalf("ordinary missing-field default: %v %v", v, err)
 	}
 }

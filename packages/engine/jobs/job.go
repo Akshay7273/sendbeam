@@ -12,6 +12,24 @@ import (
 // records whose schema they do not understand rather than truncating them.
 const jobSchemaVersion = 1
 
+// EffectiveRequirePadding resolves the persisted padding policy with the
+// documented fail-closed migration (v2.3 correction C): provenance-carrying
+// (routine) jobs with a MISSING field are rejected — the recipe's privacy
+// decision must never be guessed; ordinary jobs with a missing field default
+// to false (padding was always opt-in). HasRequirePadding reports presence.
+func (j Job) HasRequirePadding() bool { return j.RequirePadding != nil }
+
+func (j Job) EffectiveRequirePadding(provenanceCarrying bool) (bool, error) {
+	if j.RequirePadding != nil {
+		return *j.RequirePadding, nil
+	}
+	if provenanceCarrying {
+		return false, wire.Errorf(wire.CodeStorage,
+			"jobs: routine job %s predates the padding-policy field; refusing to guess the recipe's privacy decision — re-enqueue", j.JobID)
+	}
+	return false, nil
+}
+
 // JobStatus is the lifecycle state of a Job.
 type JobStatus string
 
@@ -144,6 +162,15 @@ type Job struct {
 	// reinterpreted as online by an older reader. The checksum covers
 	// this field, so flipping it after the fact also fails closed.
 	NetworkPolicy string `json:"networkPolicy,omitempty"`
+	// RequirePadding is the job's PERSISTED traffic-padding policy
+	// (v2.3 correction C, gap 1): true = dispatch must send with strict
+	// padding; false = explicit no-padding. Nil = legacy job predating the
+	// field — loads fail-closed for provenance-carrying (routine) jobs and
+	// defaults to false (documented) for ordinary ones, so an unknown or
+	// missing policy can never silently reach a sender as unpadded when the
+	// recipe required padding. Pointer with omitempty keeps v1 files
+	// byte-compatible on read.
+	RequirePadding *bool `json:"requirePadding,omitempty"`
 	// Provenance is the routine origin label (V22-PR06): which saved
 	// recipe produced this job and what triggered it. Nil for ordinary
 	// one-off sends. It is informational only — no secrets — and travels
