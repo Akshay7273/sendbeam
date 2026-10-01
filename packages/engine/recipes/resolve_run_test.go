@@ -351,6 +351,9 @@ type recordingEnqueuer struct {
 	// provenance records the routine origin label the dispatch passed
 	// (V22-PR06); nil for one-off-style calls.
 	provenance *wire.Provenance
+	// padding records the persisted padding decision each privacy-enqueue
+	// carried (v2.3 correction C, gap 1).
+	padding []bool
 	job        jobs.Job
 	failIfCall bool
 }
@@ -367,6 +370,51 @@ func (f *recordingEnqueuer) Enqueue(_ context.Context, paths []string, recipient
 		f.job = jobs.Job{JobID: "test-job-1"}
 	}
 	return f.job, nil
+}
+
+func (f *recordingEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, requirePadding bool) (jobs.Job, error) {
+	f.padding = append(f.padding, requirePadding)
+	return f.Enqueue(ctx, paths, recipients, policy, np, provenance)
+}
+
+// Regression (v2.3 correction C, gap 1): Run must carry the recipe's
+// persisted padding decision all the way to the enqueuer — if the
+// enforcement is ever removed (false passed for a padded recipe), this test
+// fails.
+func TestRunWithTriggerCarriesPaddingDecision(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRecipeStore(t)
+	ts := trust.NewMemoryTrustStore()
+	devs := testDeviceIDs(t, 1)
+
+	r, err := NewRecipe("padded", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	r.Sources = []RecipeSource{{Path: root, Recursive: true}}
+	r.Recipients = []RecipeRecipient{{DeviceID: devs[0], Label: "peer"}}
+	r.NetworkPolicy = "local-only"
+	r.RequirePadding = true
+	r.Grant.ScopeHash = r.ScopeHash()
+	if err := store.Save(r); err != nil {
+		t.Fatal(err)
+	}
+
+	eq := &recordingEnqueuer{}
+	job, err := RunWithTrigger(ctx, RunDeps{Store: store, Trust: ts, Now: time.Now}, eq, r.ID, TriggerManual)
+	if err != nil {
+		t.Fatalf("RunWithTrigger: %v", err)
+	}
+	if job.JobID == "" {
+		t.Fatal("no job enqueued")
+	}
+	if len(eq.padding) == 0 {
+		t.Fatal("Run did not pass the padding decision to the enqueuer (enforcement removed?)")
+	}
+	if !eq.padding[0] {
+		t.Fatalf("padded recipe reached the enqueuer as requirePadding=false — FAIL-CLOSED REGRESSION")
+	}
 }
 
 func openTestRecipeStore(t *testing.T) *RecipeStore {
