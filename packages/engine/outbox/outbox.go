@@ -97,6 +97,12 @@ type Outbox struct {
 	// endpointGate (optional): recipients without a delivery endpoint are
 	// held before any attempt mutates (v2.3 correction C, gap 3).
 	endpointGate func(deviceID string, jobPolicy, effective netpolicy.Policy) bool
+	// mu guards activeCancels.
+	mu sync.Mutex
+	// activeCancels: jobID -> cancel for IN-FLIGHT dispatches. Cancel uses
+	// it to stop the running transfer, not just flip the stored status
+	// (v2.3 correction C, gap 5 — cancellation must actually stop bytes).
+	activeCancels map[string]context.CancelFunc
 	store *jobs.JobStore
 	send  SendFunc
 	now   func() time.Time
@@ -107,10 +113,11 @@ type Outbox struct {
 // fails closed — enqueue/list/cancel/retry still work.
 func New(store *jobs.JobStore, send SendFunc) *Outbox {
 	return &Outbox{
-		store: store,
-		send:  send,
-		now:   func() time.Time { return time.Now().UTC() },
-		newID: randomJobID,
+		store:         store,
+		send:          send,
+		now:           func() time.Time { return time.Now().UTC() },
+		newID:         randomJobID,
+		activeCancels: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -286,6 +293,15 @@ func (o *Outbox) Cancel(jobID string) error {
 	if err := jobs.CancelJob(&job, o.clock()); err != nil {
 		return err
 	}
+	// v2.3 correction C (gap 5): actually STOP the in-flight transfer —
+	// flipping the stored status alone lets the running send finish and
+	// record a false completion.
+	o.mu.Lock()
+	if c, ok := o.activeCancels[jobID]; ok {
+		c()
+		delete(o.activeCancels, jobID)
+	}
+	o.mu.Unlock()
 	return o.store.Save(job)
 }
 
@@ -559,7 +575,32 @@ func (o *Outbox) dispatchJob(ctx context.Context, job *jobs.Job, owner string, t
 			rep.Skipped = append(rep.Skipped, job.JobID+": lease lost mid-dispatch")
 			break
 		}
-		outcome := o.sendWithHeartbeat(ctx, job, a, paths, owner, ttl)
+		// v2.3 correction C (gap 5): register the in-flight cancel so
+
+		// Outbox.Cancel stops the RUNNING transfer (bytes stop moving);
+
+		// unregister on settle.
+
+		sendCtx, sendCancel := context.WithCancel(ctx)
+
+		o.mu.Lock()
+		if o.activeCancels == nil {
+			o.activeCancels = make(map[string]context.CancelFunc)
+		}
+		o.activeCancels[job.JobID] = sendCancel
+		o.mu.Unlock()
+
+		defer func() {
+
+			o.mu.Lock()
+
+			delete(o.activeCancels, job.JobID)
+
+			o.mu.Unlock()
+
+		}()
+
+		outcome := o.sendWithHeartbeat(sendCtx, job, a, paths, owner, ttl)
 
 		// Re-read the job: the send may have taken a while. An operator
 		// cancel, or a lease adopted after a crash, must not be
