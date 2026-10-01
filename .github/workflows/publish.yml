@@ -141,13 +141,15 @@ jobs:
 
       - name: Promote (monotonic; newest green commit wins)
         env:
-          # GHCR requires lowercase repository names.
-          IMAGE: ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
+          REPO_FULL: ${{ github.repository }}
           SHA: ${{ github.sha }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # GHCR requires lowercase repository names — compute at runtime.
+          IMAGE="ghcr.io/$(printf '%s' "${REPO_FULL}" | tr '[:upper:]' '[:lower:]')"
+          echo "[i] promoting image ${IMAGE}"
           # Monotonic guard by SOURCE COMMIT (audit F03): build timestamps
           # prove nothing about source ordering under reruns. The promoted
           # latest image carries an org.opencontainers.image.revision
