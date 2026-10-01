@@ -197,6 +197,17 @@ func RunWithTrigger(ctx context.Context, deps RunDeps, eq Enqueuer, recipeID str
 	if err != nil {
 		return jobs.Job{}, err
 	}
+	// Ledger the dispatched run (audit v2.3 correction B): RecordRun is how
+	// runner/schedule record attempts; Run must do the same so the
+	// dispatched JobID lands in the last-run ledger and delivery-status
+	// surfaces can trace recipe → job → per-recipient outcomes.
+	_ = deps.Store.RecordRun(recipeID, RecipeRunInfo{
+		At:        now().UTC(),
+		Trigger:   reason,
+		JobID:     job.JobID,
+		Status:    RunStatusDispatched,
+		BytesSent: plan.TotalBytes,
+	})
 	return job, nil
 }
 
