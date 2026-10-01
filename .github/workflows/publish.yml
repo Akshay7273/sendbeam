@@ -10,6 +10,7 @@ permissions:
   packages: write
   id-token: write
   attestations: write
+  actions: read
 
 # Concurrency configuration:
 # Keyed on workflow, ref, and commit SHA so image publications on main or version tags
@@ -81,24 +82,54 @@ jobs:
       - name: Wait for required CI on this exact commit
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          # Bounded wait: ~35 min (CI needs ~5; leaves headroom for queues).
+          MAX_ATTEMPTS: 70
+          INTERVAL: 30
         run: |
           set -euo pipefail
-          SHA="${{ github.sha }}"
-          echo "Waiting for CI on ${SHA}..."
-          for i in $(seq 1 60); do
-            RUNS="$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${SHA}" --jq '[.workflow_runs[] | select(.name == "CI")] | length')"
-            if [ "${RUNS}" -gt 0 ]; then
-              CONC="$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${SHA}" --jq '[.workflow_runs[] | select(.name == "CI") | .conclusion] | unique')"
-              echo "CI runs: ${CONC}"
-              case "${CONC}" in
-                *null*|*failure*|*cancelled*) echo "[-] CI not green on ${SHA}; refusing to promote." >&2; exit 1 ;;
+          echo "Waiting for a COMPLETED CI run on ${SHA} (max ~$((MAX_ATTEMPTS * INTERVAL / 60)) min)..."
+          attempt=1
+          while [ "$attempt" -le "${MAX_ATTEMPTS}" ]; do
+            # Pick the LATEST attempt for this SHA deterministically (reruns
+            # create multiple runs; highest id = newest attempt). Action runs
+            # need actions:read — declared in workflow permissions.
+            ROW="$(gh api "repos/${REPO}/actions/runs?head_sha=${SHA}&per_page=100" \
+              --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.id) | last | "\(.id) \(.status) \(.conclusion // "pending")"' 2>/dev/null)" \
+              || ROW=""
+            if [ -z "${ROW}" ]; then
+              # Distinguish permission errors from an honest not-yet state:
+              # a 403/401 from the API must fail loudly, never wait silently.
+              CODE="$(gh api "repos/${REPO}/actions/runs?head_sha=${SHA}&per_page=1" -i 2>/dev/null | head -1 | awk '{print $2}')"
+              case "${CODE}" in
+                403|401)
+                  echo "[-] Actions API permission error (HTTP ${CODE}); cannot verify CI — refusing to promote (fail closed)." >&2
+                  exit 1 ;;
+                *)
+                  echo "  attempt ${attempt}/${MAX_ATTEMPTS}: no CI run yet for ${SHA}" ;;
               esac
-              echo "[+] CI green on ${SHA}."
-              exit 0
+            else
+              RUN_ID="$(echo "${ROW}" | awk '{print $1}')"
+              STATUS="$(echo "${ROW}" | awk '{print $2}')"
+              CONC="$(echo "${ROW}" | awk '{print $3}')"
+              echo "  attempt ${attempt}/${MAX_ATTEMPTS}: run ${RUN_ID} ${STATUS}/${CONC}"
+              if [ "${STATUS}" = "completed" ]; then
+                # Explicit success check — pending/failure/cancelled/timed_out
+                # never pass through a permissive null comparison.
+                if [ "${CONC}" = "success" ]; then
+                  echo "[+] CI completed successfully on ${SHA} (run ${RUN_ID})."
+                  exit 0
+                fi
+                echo "[-] CI completed on ${SHA} with conclusion '${CONC}'; refusing to promote." >&2
+                exit 1
+              fi
+              # queued or in_progress: keep waiting (never treat as failure).
             fi
-            sleep 30
+            sleep "${INTERVAL}"
+            attempt=$((attempt + 1))
           done
-          echo "[-] No CI run appeared for ${SHA} within the deadline; refusing to promote." >&2
+          echo "[-] Timed out waiting for completed CI on ${SHA}; refusing to promote." >&2
           exit 1
 
       - name: Log in to GHCR
@@ -116,19 +147,28 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # Monotonic guard: compare commit timestamps. If the promoted image
-          # is already built from a NEWER commit, skip — an older completion
-          # must never overwrite a newer promotion.
-          CREATED="$(docker buildx imagetools inspect "${IMAGE}:latest" --format '{{json .Created}}' 2>/dev/null | tr -d '"' || true)"
-          THIS_CREATED="$(docker buildx imagetools inspect "${IMAGE}:${SHA}" --format '{{json .Created}}' 2>/dev/null | tr -d '"' || true)"
-          if [ -n "${CREATED}" ] && [ -n "${THIS_CREATED}" ]; then
-            # ISO-8601 timestamps compare lexicographically; the newer date
-            # sorts LAST. If latest is already newer (or same-commit), skip.
-            NEWER="$(printf '%s\n%s\n' "${CREATED}" "${THIS_CREATED}" | sort | tail -n1)"
-            if [ "${NEWER}" = "${CREATED}" ] && [ "${CREATED}" != "${THIS_CREATED}" ]; then
-              echo "[i] Skipping promotion: latest already points at a NEWER build (promoted ${CREATED} > this ${THIS_CREATED})."
-              exit 0
+          # Monotonic guard by SOURCE COMMIT (audit F03): build timestamps
+          # prove nothing about source ordering under reruns. The promoted
+          # latest image carries an org.opencontainers.image.revision
+          # annotation from its provenance attestations; that revision must
+          # be an ancestor of (or equal to) THIS commit. A failed metadata
+          # lookup fails closed — silently bypassing the guard is forbidden.
+          docker buildx imagetools inspect "${IMAGE}:latest" --format '{{json .Provenance}}' 2>/dev/null > /tmp/prov.json || true
+          CURRENT_REV="$(python3 scripts/read-prov-revision.py < /tmp/prov.json 2>/dev/null || echo "")"
+          if [ -n "${CURRENT_REV}" ]; then
+            if [ "${CURRENT_REV}" = "${SHA}" ]; then
+              echo "[i] latest already promotes this exact commit; re-stamping idempotently."
+            else
+              if git merge-base --is-ancestor "${CURRENT_REV}" "${SHA}" 2>/dev/null; then
+                echo "[+] monotonic check: promoted revision ${CURRENT_REV:0:7} is an ancestor of ${SHA:0:7}."
+              else
+                echo "[-] REFUSING to promote: latest's source revision ${CURRENT_REV:0:7} is not an ancestor of ${SHA:0:7} — an older/parallel build must never overwrite a newer promotion (fail closed)." >&2
+                exit 1
+              fi
             fi
+          else
+            echo "[-] REFUSING to promote: could not read the source revision from the promoted latest image (metadata lookup failed; silently bypassing the guard is not allowed — audit F03 follow-up)." >&2
+            exit 1
           fi
           docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}:${SHA}"
           echo "[+] Promoted ${SHA} → latest"
