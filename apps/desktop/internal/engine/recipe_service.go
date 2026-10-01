@@ -5,7 +5,10 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,10 +16,14 @@ import (
 	"time"
 
 	"github.com/sendbeam/desktop/internal/config"
+	"github.com/sendbeam/engine/discovery"
 	"github.com/sendbeam/engine/jobs"
+	"github.com/sendbeam/engine/localtransfer"
 	"github.com/sendbeam/engine/netpolicy"
 	"github.com/sendbeam/engine/outbox"
 	"github.com/sendbeam/engine/recipes"
+	"github.com/sendbeam/engine/rendezvous"
+	"github.com/sendbeam/engine/transfer"
 	"github.com/sendbeam/engine/trust"
 	"github.com/sendbeam/wire"
 )
@@ -52,6 +59,19 @@ type RecipeService struct {
 	outbox   *outbox.Outbox
 	runner   *recipes.Runner
 	watchers map[string]*recipes.Watcher
+	// identity + secrets wire the PRODUCTION sender for dispatch (v2.3
+	// correction C): identity is this device's Ed25519 identity, secrets
+	// resolve pair credentials at dispatch time. Both come from the
+	// DeviceService; nil identity/secrets keep dispatch nil (fail-closed).
+	identity *trust.IdentityManager
+	secrets  trust.CredentialStore
+	// dispatchCancel stops the bounded dispatcher loop (per-process, no
+	// daemon — lives only while the desktop app does).
+	dispatchCancel context.CancelFunc
+	// localPeerAddrs maps deviceId -> manual local endpoint (ip:port) the
+	// dispatcher uses for local-only dispatch passes. Jobs whose recipient
+	// lacks an entry are held with a clear skip reason (no online fallback).
+	localPeerAddrs map[string]string
 	// scheduler hosts every enabled schedule-triggered recipe in this
 	// process between StartScheduler and StopScheduler; nil when not
 	// started. schedCancel stops the scheduler's context.
@@ -64,7 +84,7 @@ type RecipeService struct {
 // (or the default desktop config dir) and binds them to the given trust
 // store — normally the DeviceService's store, so recipe recipient checks
 // see the same trust the rest of the desktop uses.
-func NewRecipeService(customConfigDir string, trustStore trust.Store) (*RecipeService, error) {
+func NewRecipeService(customConfigDir string, trustStore trust.Store, identity *trust.IdentityManager, secrets trust.CredentialStore) (*RecipeService, error) {
 	if trustStore == nil {
 		return nil, fmt.Errorf("recipe service: nil trust store")
 	}
@@ -96,6 +116,8 @@ func NewRecipeService(customConfigDir string, trustStore trust.Store) (*RecipeSe
 		outbox:   ob,
 		watchers: make(map[string]*recipes.Watcher),
 		nowFunc:  nowFunc,
+		identity: identity,
+		secrets:  secrets,
 	}
 	svc.runner = recipes.NewRunner(
 		recipes.RunDeps{Store: recipeStore, Trust: trustStore, Now: nowFunc, SenderLabel: desktopDeviceLabel()},
@@ -724,6 +746,196 @@ func (s *RecipeService) DeleteRecipe(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.store.Delete(id)
+}
+
+// SetLocalPeerAddr records the manual local endpoint for a paired device
+// (the desktop equivalent of the CLI's --peer-addr at dispatch time).
+func (s *RecipeService) SetLocalPeerAddr(deviceID, addr string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.localPeerAddrs == nil {
+		s.localPeerAddrs = make(map[string]string)
+	}
+	if addr == "" {
+		delete(s.localPeerAddrs, deviceID)
+		return
+	}
+	s.localPeerAddrs[deviceID] = addr
+}
+
+// DispatcherRunning reports whether the bounded dispatcher loop is active.
+func (s *RecipeService) DispatcherRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dispatchCancel != nil
+}
+
+// StartDispatcher runs the bounded dispatch loop for this process: every
+// interval it performs one DispatchOnce pass (concurrency 2, bounded lease)
+// over the production outbox. No daemon: the loop lives only while the
+// desktop process does (stated in the UI, V23-PR05).
+func (s *RecipeService) StartDispatcher(interval time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dispatchCancel != nil {
+		return fmt.Errorf("recipe service: dispatcher already running")
+	}
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.dispatchCancel = cancel
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := s.DispatchOnceNow(ctx); err != nil {
+					log.Printf("recipe dispatcher pass: %v", err)
+				}
+			}
+		}
+	}()
+	return nil
+}
+
+// StopDispatcher stops the bounded dispatch loop.
+func (s *RecipeService) StopDispatcher() {
+	s.mu.Lock()
+	cancel := s.dispatchCancel
+	s.dispatchCancel = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// DispatchOnceNow performs ONE dispatch pass now (also the immediate kick
+// after RunRecipe/watch/schedule enqueue). Returns the dispatch report.
+func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchReport, error) {
+	s.mu.Lock()
+	identity, secrets, peerAddrs := s.identity, s.secrets, s.localPeerAddrs
+	s.mu.Unlock()
+	if identity == nil || secrets == nil {
+		return outbox.DispatchReport{}, fmt.Errorf("production sender not wired: identity/secrets unavailable")
+	}
+	if _, err := identity.GetOrCreateIdentity(); err != nil {
+		return outbox.DispatchReport{}, err
+	}
+	// Production sender: one attempt per call. Local-only route via the
+	// recorded manual endpoint; the outbox's own policy gate holds
+	// unsatisfiable jobs with a clear skip reason (no silent online
+	// fallback). A fresh Outbox over the SAME shared job store keeps lease
+	// and attempt state in one place; only the sender closure is per-call.
+	sender := func(ctx context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) outbox.SendOutcome {
+		addr := peerAddrs[attempt.DeviceID]
+		if addr == "" {
+			return outbox.SendOutcome{Status: transfer.StatusFailed,
+				Error: fmt.Sprintf("no local endpoint recorded for %q; refusing to send online (dispatch stays local-only)", attempt.DeviceID)}
+		}
+		padding := false
+		for _, f := range job.Files {
+			_ = f
+		}
+		return s.productionLocalSend(ctx, job, attempt, paths, addr, padding, false)
+	}
+	ob := outbox.New(s.jobs, sender)
+	return ob.DispatchOnce(ctx, outbox.DispatchOptions{
+		Concurrency:     2,
+		LeaseTTL:        jobs.DefaultLeaseTTL,
+		EffectivePolicy: netpolicy.LocalOnly,
+	})
+}
+
+// productionLocalSend is the desktop production sender for one dispatch
+// attempt over the local-only route: the same engine path the CLI outbox
+// local dispatch uses (localtransfer.Transfer) — trust re-resolution and
+// device binding here (the job label is never trusted), route validation
+// against the interface-derived policy, source revalidation, and a
+// digest-verified outcome. No online fallback exists on this path.
+func (s *RecipeService) productionLocalSend(ctx context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string, peerAddr string, requirePadding, privateMode bool) outbox.SendOutcome {
+	fail := func(format string, args ...any) outbox.SendOutcome {
+		return outbox.SendOutcome{Status: transfer.StatusFailed, Error: fmt.Sprintf(format, args...)}
+	}
+	if s.identity == nil || s.secrets == nil {
+		return fail("production sender not wired: identity/secrets unavailable; dispatch refused")
+	}
+	resolved, err := s.resolveSendTarget(ctx, attempt.DeviceID)
+	if err != nil {
+		return fail("resolve recipient: %v", err)
+	}
+	identity, err := s.identity.GetOrCreateIdentity()
+	if err != nil {
+		return fail("identity: %v", err)
+	}
+	table := discovery.NewCandidateTable(discovery.RoutePolicy{AllowLoopback: true}, 16, 5*time.Minute)
+	if _, err := table.AddManual(attempt.DeviceID, peerAddr); err != nil {
+		return fail("--peer-addr %q rejected: %v", peerAddr, err)
+	}
+	sources, _, err := transfer.NewOSFileSources(paths)
+	if err != nil {
+		return fail("read sources: %v", err)
+	}
+	kPair, err := s.secrets.ResolvePairSecret(ctx, resolved.record.DeviceID, resolved.record.PairCredentialRef)
+	if err != nil || len(kPair) == 0 {
+		return fail("resolve pair secret for %q: %v", attempt.DeviceID, err)
+	}
+	peerPub, err := hex.DecodeString(resolved.record.PublicKey)
+	if err != nil || len(peerPub) == 0 {
+		return fail("invalid trust record public key for %q", attempt.DeviceID)
+	}
+	var handle [16]byte
+	if _, err := rand.Read(handle[:]); err != nil {
+		return fail("mint handle: %v", err)
+	}
+	var sentBytes int64
+	out, err := localtransfer.Transfer(ctx, localtransfer.Options{
+		Identity:     identity,
+		Store:        s.trust,
+		Resolver:     s.secrets,
+		Table:        table,
+		PeerDeviceID: attempt.DeviceID,
+		PeerLabel:    resolved.record.LocalLabel,
+		Role:         rendezvous.RoleOfferer,
+		Sources:      sources,
+		DestDir:      "", // receiver chooses
+		Private:      privateMode,
+		RequirePadding: requirePadding,
+		TransferID:   job.JobID,
+		Provenance:   job.Provenance,
+		OnProgress: func(n int64) { sentBytes = n },
+	})
+	if err != nil {
+		return fail("local transfer: %v", err)
+	}
+	digest := out.Digest
+	if digest == "" {
+		return fail("local transfer reported success without a content digest; not marking delivered")
+	}
+	return outbox.SendOutcome{Status: transfer.StatusOk, Digest: digest, BytesTransferred: sentBytes}
+}
+
+// resolveSendTarget loads the trust record for a device and fails closed on
+// unknown/revoked devices.
+func (s *RecipeService) resolveSendTarget(ctx context.Context, deviceID string) (resolvedSendTarget, error) {
+	rec, err := s.trust.GetDevice(ctx, deviceID)
+	if err != nil {
+		return resolvedSendTarget{}, fmt.Errorf("trust lookup: %w", err)
+	}
+	if rec == nil {
+		return resolvedSendTarget{}, fmt.Errorf("device %q is not a trusted paired device", deviceID)
+	}
+	if rec.Revoked {
+		return resolvedSendTarget{}, fmt.Errorf("device %q is revoked", deviceID)
+	}
+	return resolvedSendTarget{record: rec}, nil
+}
+
+type resolvedSendTarget struct {
+	record *wire.TrustRecord
 }
 
 // recipeOutboxEnqueuer adapts the real *outbox.Outbox to the

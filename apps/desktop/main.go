@@ -205,7 +205,7 @@ func main() {
 		// frontend UI markup is out of scope (no TS source in this repo);
 		// the bindings are ready for a future frontend PR.
 		var err error
-		recipeSvc, err = engine.NewRecipeService("", deviceSvc.GetStore())
+		recipeSvc, err = engine.NewRecipeService("", deviceSvc.GetStore(), deviceSvc.GetIdentityManager(), deviceSvc.GetCredentialStore())
 		if err != nil {
 			log.Printf("SendBeam Desktop: recipe service failed to initialize: %v", err)
 			recipeSvc = nil

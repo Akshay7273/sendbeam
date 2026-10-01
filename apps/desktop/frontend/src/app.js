@@ -1815,6 +1815,14 @@
         $("watch-stop").addEventListener("click", stopWatch);
         $("sched-start").addEventListener("click", startScheduler);
         $("sched-stop").addEventListener("click", stopScheduler);
+        $("dispatch-now").addEventListener("click", async () => {
+          try {
+            const rep = await call(RECIPES_SVC + ".DispatchOnceNow");
+            setLiteral($("recipes-status"), "ok", `Dispatch pass: ${rep.jobsDispatched || 0} dispatched, ${rep.skipped ? rep.skipped.length + " held" : "0 held"}.`);
+          } catch (e) {
+            setLiteral($("recipes-status"), "err", "Dispatch failed: " + e);
+          }
+        });
         $("add-source-btn").addEventListener("click", async () => {
           if (!state.recipeDraft) state.recipeDraft = { id: "", sources: [] };
           if (!state.recipeDraft.sources) state.recipeDraft.sources = [];
