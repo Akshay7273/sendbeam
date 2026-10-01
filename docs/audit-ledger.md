@@ -42,3 +42,12 @@ Updated live as fixes merge. Sources of truth: this ledger + `docs/platform-evid
 | V23-PR06   | [#260](https://github.com/Akshay7273/sendbeam/pull/260) | `dbc3a01` | Packaging rebuilds frontend from sources (8 desktop steps); v2.3 acceptance gate doc with explicit NOT RUN physical rows           |
 
 **Release-blocking:** packaged-UI physical acceptance rows + update/rollback smoke remain NOT RUN (see `docs/RELEASE-v2.3-acceptance.md`). They gate v2.3 publication, not further independent work. v2.4 (background services) and native mobile remain out of scope per the owner's direction.
+
+## v2.3 correction C — evidence reconciliation (2026-10-01)
+
+**Status: PARTIAL — production-path requirements not yet met.**
+
+- Merged + CI-verified (#272-#274 chain): production sender wiring, dispatcher auto-start, padding persistence + migration rules, basic lifecycle, service-contract test, run ledger.
+- **NOT merged / NOT CI-tested (recovered via reflog, verification pending):** route-aware admission (online-no-endpoint, prefer-local-conditional), synchronized snapshot/lookup hardening, bounded shutdown join, barrier-based cancellation (unreachable-port test removed as invalid evidence), real padding integration (compatible + incompatible receiver), concurrent race test.
+- The earlier claim of "correction C complete" is retracted: tests existed only in an unpushed local amend (`16a985f`, preserved as `recovery/v23c-reflog` branch + `~/v23c-recovery.patch` + `~/v23c-recovery-tree.tar`).
+- #272's delivery-path integration test proved **configured backend local delivery**, not desktop acceptance. Physical packaged-UI/device rows remain NOT RUN and gate any release.

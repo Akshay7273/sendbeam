@@ -80,6 +80,8 @@ type RecipeService struct {
 	// (wired from the TransferService); nil keeps online dispatch
 	// fail-closed.
 	onlineSender func(ctx context.Context, req onlineSendRequest) (transfer.Outcome, error)
+	// wg tracks the owned dispatcher goroutine for bounded-shutdown joins.
+	wg sync.WaitGroup
 	// scheduler hosts every enabled schedule-triggered recipe in this
 	// process between StartScheduler and StopScheduler; nil when not
 	// started. schedCancel stops the scheduler's context.
@@ -817,7 +819,9 @@ func (s *RecipeService) StartDispatcher(interval time.Duration) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.dispatchCancel = cancel
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -849,9 +853,24 @@ func (s *RecipeService) StopDispatcher() {
 // dispatcher loop (in-flight passes finish under the bounded lease; the
 // lease expires naturally on crash). Called on app quit — the dispatcher's
 // lifecycle IS the desktop process lifecycle (v2.3 correction C, gap 2).
-func (s *RecipeService) Shutdown(_ time.Duration) error {
+func (s *RecipeService) Shutdown(timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
 	s.StopDispatcher()
-	return nil
+	s.StopAllWatches()
+	_ = s.StopScheduler()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.wg.Wait()
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("recipe service: shutdown timed out after %s — owned worker(s) still settling", timeout)
+	}
 }
 
 // DispatchOnceNow performs ONE dispatch pass now (also the immediate kick
@@ -873,10 +892,17 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 	// online-policy recipe under a local-only desktop (or vice versa where
 	// unsatisfiable) is HELD with a clear reason — never sent on a silent
 	// fallback route.
+	// Synchronized reads (gap 2): policy/sender/endpoint maps are mutated
+	// concurrently — read them under the service lock (the closures
+	// themselves re-read live policy; the snapshot here is only for the
+	// pass-level gate).
+	s.mu.Lock()
 	effective := netpolicy.LocalOnly
 	if s.policyLookup != nil {
 		effective = s.policyLookup()
 	}
+	onlineSender := s.onlineSender
+	s.mu.Unlock()
 	// Production sender: one attempt per call. Local-only route via the
 	// recorded manual endpoint; the outbox's own policy gate holds
 	// unsatisfiable jobs with a clear skip reason (no silent online
@@ -935,7 +961,7 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 					return outbox.SendOutcome{Status: transfer.StatusFailed,
 						Error: "local: " + out.Error + "; policy changed — online fallback refused (no silent downgrade)"}
 				}
-				fb := s.productionOnlineSend(ctx, job, attempt, paths, localID, padding)
+				fb := s.productionOnlineSend(ctx, job, attempt, paths, localID, padding, onlineSender)
 				if fb.Status == transfer.StatusOk {
 					return outbox.SendOutcome{Status: transfer.StatusOk, Digest: fb.Digest, BytesTransferred: fb.BytesTransferred}
 				}
@@ -946,21 +972,37 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 				return outbox.SendOutcome{Status: transfer.StatusFailed,
 					Error: fmt.Sprintf("no local endpoint for %q and the current policy %q forbids online; HELD", attempt.DeviceID, curPolicy)}
 			}
-			return s.productionOnlineSend(ctx, job, attempt, paths, localID, padding)
+			return s.productionOnlineSend(ctx, job, attempt, paths, localID, padding, onlineSender)
 		default:
 			if !onlineAllowedNow() {
 				return outbox.SendOutcome{Status: transfer.StatusFailed,
 					Error: fmt.Sprintf("online job under current policy %q; HELD — no fallback", curPolicy)}
 			}
-			return s.productionOnlineSend(ctx, job, attempt, paths, localID, padding)
+			return s.productionOnlineSend(ctx, job, attempt, paths, localID, padding, onlineSender)
 		}
 	}
 	ob := outbox.New(s.jobs, sender)
 	// Gap 3 (real HELD): recipients without a configured endpoint are held
 	// BEFORE any attempt mutates — zero send attempts, retry budget
 	// untouched, honest skip reason.
-	ob.SetEndpointGate(func(deviceID string) bool {
-		return peerAddrs[deviceID] != ""
+	// Route-aware admission (gap 1): online recipes need NO LAN endpoint;
+	// prefer-local needs one only when the current policy forbids online
+	// fallback; local-only always needs one. Held = zero attempts, budget
+	// untouched.
+	ob.SetEndpointGate(func(deviceID string, jobPolicy, curPolicy netpolicy.Policy) bool {
+		if peerAddrs[deviceID] != "" {
+			return true
+		}
+		switch jobPolicy {
+		case netpolicy.LocalOnly:
+			return false // endpoint required, always
+		case netpolicy.PreferLocal:
+			// Endpoint missing: dispatchable only if online fallback is
+			// permitted by the CURRENT policy.
+			return curPolicy == netpolicy.Online || curPolicy == netpolicy.PreferLocal
+		default:
+			return true // online job: no endpoint needed
+		}
 	})
 	return ob.DispatchOnce(ctx, outbox.DispatchOptions{
 		Concurrency:     2,
@@ -1002,6 +1044,7 @@ func (s *RecipeService) productionLocalSend(ctx context.Context, job jobs.Job, a
 	if err != nil || len(kPair) == 0 {
 		return fail("resolve pair secret for %q: %v", attempt.DeviceID, err)
 	}
+	log.Printf("prodLocalSend: job=%s padding=%v peer=%s", job.JobID[:8], requirePadding, attempt.DeviceID[:12])
 	peerPub, err := hex.DecodeString(resolved.record.PublicKey)
 	if err != nil || len(peerPub) == 0 {
 		return fail("invalid trust record public key for %q", attempt.DeviceID)
@@ -1042,11 +1085,11 @@ func (s *RecipeService) productionLocalSend(ctx context.Context, job jobs.Job, a
 // machinery TransferService.Send drives), honoring the persisted padding
 // decision. No silent policy change: called only for online-policy jobs or
 // the visible prefer-local fallback.
-func (s *RecipeService) productionOnlineSend(ctx context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string, localID *wire.DeviceIdentity, padding bool) outbox.SendOutcome {
+func (s *RecipeService) productionOnlineSend(ctx context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string, localID *wire.DeviceIdentity, padding bool, onlineSender func(ctx context.Context, req onlineSendRequest) (transfer.Outcome, error)) outbox.SendOutcome {
 	fail := func(format string, args ...any) outbox.SendOutcome {
 		return outbox.SendOutcome{Status: transfer.StatusFailed, Error: fmt.Sprintf(format, args...)}
 	}
-	if s.onlineSender == nil {
+	if onlineSender == nil {
 		return fail("online sender not wired; refusing to send")
 	}
 	resolved, err := s.resolveSendTarget(ctx, attempt.DeviceID)
@@ -1058,7 +1101,7 @@ func (s *RecipeService) productionOnlineSend(ctx context.Context, job jobs.Job, 
 		return fail("read sources: %v", err)
 	}
 	var sentBytes int64
-	out, err := s.onlineSender(ctx, onlineSendRequest{
+	out, err := onlineSender(ctx, onlineSendRequest{
 		Attempt:        attempt,
 		Paths:          paths,
 		Sources:        sources,
