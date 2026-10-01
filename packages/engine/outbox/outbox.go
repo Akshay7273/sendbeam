@@ -61,6 +61,12 @@ type DispatchOptions struct {
 	// a clear skip reason and their attempts are left untouched. Zero
 	// value means Online (the v2.0 behavior).
 	EffectivePolicy netpolicy.Policy
+	// EndpointAvailable (v2.3 correction C, gap 3): when non-nil, reports
+	// whether a delivery endpoint for the device exists RIGHT NOW. A job
+	// whose recipient has no endpoint is HELD — rep.Skipped with a clear
+	// reason, attempts untouched, retry budget unconsumed — instead of
+	// consuming an attempt on a guaranteed failure.
+	EndpointAvailable func(deviceID string) bool
 }
 
 // AttemptReport describes what one dispatch pass did to one attempt.
@@ -85,6 +91,9 @@ type DispatchReport struct {
 // Outbox is the durable local outbox. The zero value is not usable; construct
 // with New.
 type Outbox struct {
+	// endpointGate (optional): recipients without a delivery endpoint are
+	// held before any attempt mutates (v2.3 correction C, gap 3).
+	endpointGate func(deviceID string) bool
 	store *jobs.JobStore
 	send  SendFunc
 	now   func() time.Time
@@ -100,6 +109,12 @@ func New(store *jobs.JobStore, send SendFunc) *Outbox {
 		now:   func() time.Time { return time.Now().UTC() },
 		newID: randomJobID,
 	}
+}
+
+// SetEndpointGate wires the endpoint-availability check used to HOLD jobs
+// whose recipients lack a delivery endpoint (v2.3 correction C, gap 3).
+func (o *Outbox) SetEndpointGate(fn func(deviceID string) bool) {
+	o.endpointGate = fn
 }
 
 // clock returns the injected clock or wall time when none is set.
@@ -437,6 +452,18 @@ func (o *Outbox) dispatchJob(ctx context.Context, job *jobs.Job, owner string, t
 		rep.Skipped = append(rep.Skipped, job.JobID+": "+
 			policyHoldReason(job.EffectiveNetworkPolicy(), effective))
 		return
+	}
+	// v2.3 correction C (gap 3): a local-route job whose endpoint is not
+	// configured is HELD before any attempt mutates — zero send attempts,
+	// retry budget untouched, honest skip reason.
+	if o.endpointGate != nil {
+		for _, a := range job.Attempts {
+			if a.Status == jobs.AttemptQueued && !o.endpointGate(a.DeviceID) {
+				rep.Skipped = append(rep.Skipped,
+					job.JobID+"/"+a.DeviceID+": no delivery endpoint configured — HELD (no attempt made)")
+				return
+			}
+		}
 	}
 	if err := jobs.AcquireLease(job, owner, ttl, now); err != nil {
 		rep.Skipped = append(rep.Skipped, job.JobID+": "+err.Error())

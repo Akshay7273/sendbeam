@@ -882,38 +882,59 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 	// unsatisfiable jobs with a clear skip reason (no silent online
 	// fallback). A fresh Outbox over the SAME shared job store keeps lease
 	// and attempt state in one place; only the sender closure is per-call.
+	// livePolicy re-reads the CURRENT desktop policy at every decision
+	// point (route selection AND immediately before each online call) —
+	// policy changes between enqueue/send/fallback govern immediately;
+	// the snapshot never does.
+	livePolicy := func() netpolicy.Policy {
+		if s.policyLookup != nil {
+			return s.policyLookup()
+		}
+		return netpolicy.LocalOnly
+	}
+	onlineAllowedNow := func() bool {
+		cur := livePolicy()
+		return cur == netpolicy.Online || cur == netpolicy.PreferLocal
+	}
 	sender := func(ctx context.Context, job jobs.Job, attempt jobs.RecipientAttempt, paths []string) outbox.SendOutcome {
-		// The job's PERSISTED padding policy governs (v2.3 correction C,
-		// gap 1): RequirePadding=true must never reach a sender as false.
-		// Routine (provenance-carrying) jobs with a missing field fail
-		// closed at resolution — the recipe's privacy decision is never
-		// guessed.
-		provCarrying := job.Provenance != nil
-		padding, perr := job.EffectiveRequirePadding(provCarrying)
+		// STOP-SHIP INVARIANT: the job-bound policy AND the CURRENT desktop
+		// policy are both checked here and again immediately before every
+		// online invocation — a prefer-local job under LocalOnly must NEVER
+		// reach the online sender (missing endpoint OR local failure).
+		jobPolicy := job.EffectiveNetworkPolicy()
+		curPolicy := livePolicy()
+		if !jobPolicy.DispatchableUnder(curPolicy) {
+			return outbox.SendOutcome{Status: transfer.StatusFailed,
+				Error: fmt.Sprintf("job policy %q is not dispatchable under the current desktop policy %q; HELD — no fallback", jobPolicy, curPolicy)}
+		}
+		// Gap 1: the job's PERSISTED padding policy governs; routine jobs
+		// missing the field fail closed (privacy never guessed).
+		padding, perr := job.EffectiveRequirePadding(job.Provenance != nil)
 		if perr != nil {
 			return outbox.SendOutcome{Status: transfer.StatusFailed, Error: perr.Error()}
 		}
-		// Gap 4: route by the recipe-bound policy. Local-only / prefer-local
-		// (with a recorded endpoint) take the production local sender;
-		// online takes the production ONLINE sender (the TransferService
-		// targeted path); prefer-local without an endpoint falls back to
-		// online VISIBLY. Local-only without an endpoint is HELD (never
-		// online). Unsupported combinations are refused, not advertised.
-		switch job.EffectiveNetworkPolicy() {
+		addr := peerAddrs[attempt.DeviceID]
+		switch jobPolicy {
 		case netpolicy.LocalOnly:
-			addr := peerAddrs[attempt.DeviceID]
 			if addr == "" {
+				// HELD (no attempt, budget untouched — the endpoint gate
+				// below already skips it; this backstop is for races).
 				return outbox.SendOutcome{Status: transfer.StatusFailed,
 					Error: fmt.Sprintf("no local endpoint recorded for %q; HELD — local-only never falls back online", attempt.DeviceID)}
 			}
 			return s.productionLocalSend(ctx, job, attempt, paths, addr, padding, false)
 		case netpolicy.PreferLocal:
-			if addr := peerAddrs[attempt.DeviceID]; addr != "" {
+			if addr != "" {
 				out := s.productionLocalSend(ctx, job, attempt, paths, addr, padding, false)
 				if out.Status == transfer.StatusOk {
 					return out
 				}
-				// visible online fallback for prefer-local
+				// Online fallback — only if the CURRENT policy (re-read
+				// NOW, after local failure) permits online sends.
+				if !onlineAllowedNow() {
+					return outbox.SendOutcome{Status: transfer.StatusFailed,
+						Error: "local: " + out.Error + "; policy changed — online fallback refused (no silent downgrade)"}
+				}
 				fb := s.productionOnlineSend(ctx, job, attempt, paths, localID, padding)
 				if fb.Status == transfer.StatusOk {
 					return outbox.SendOutcome{Status: transfer.StatusOk, Digest: fb.Digest, BytesTransferred: fb.BytesTransferred}
@@ -921,12 +942,26 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 				return outbox.SendOutcome{Status: transfer.StatusFailed,
 					Error: "local: " + out.Error + "; online fallback: " + fb.Error}
 			}
+			if !onlineAllowedNow() {
+				return outbox.SendOutcome{Status: transfer.StatusFailed,
+					Error: fmt.Sprintf("no local endpoint for %q and the current policy %q forbids online; HELD", attempt.DeviceID, curPolicy)}
+			}
 			return s.productionOnlineSend(ctx, job, attempt, paths, localID, padding)
 		default:
+			if !onlineAllowedNow() {
+				return outbox.SendOutcome{Status: transfer.StatusFailed,
+					Error: fmt.Sprintf("online job under current policy %q; HELD — no fallback", curPolicy)}
+			}
 			return s.productionOnlineSend(ctx, job, attempt, paths, localID, padding)
 		}
 	}
 	ob := outbox.New(s.jobs, sender)
+	// Gap 3 (real HELD): recipients without a configured endpoint are held
+	// BEFORE any attempt mutates — zero send attempts, retry budget
+	// untouched, honest skip reason.
+	ob.SetEndpointGate(func(deviceID string) bool {
+		return peerAddrs[deviceID] != ""
+	})
 	return ob.DispatchOnce(ctx, outbox.DispatchOptions{
 		Concurrency:     2,
 		LeaseTTL:        jobs.DefaultLeaseTTL,
