@@ -27,6 +27,12 @@ type EnqueueRecipient struct {
 // identity so the job and (at dispatch) the wire manifest can carry where
 // the transfer came from.
 type Enqueuer interface {
+	// EnqueueWithPrivacy enqueues one ordinary job carrying the recipe's
+	// PERSISTED padding decision (v2.3 correction C, gap 1) — dispatch must
+	// honor it; the privacy decision can no longer be lost between enqueue
+	// and send.
+	EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, requirePadding bool) (jobs.Job, error)
+
 	Enqueue(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, networkPolicy netpolicy.Policy, provenance *wire.Provenance) (jobs.Job, error)
 }
 
@@ -193,7 +199,7 @@ func RunWithTrigger(ctx context.Context, deps RunDeps, eq Enqueuer, recipeID str
 		Trigger:     reason,
 	}
 	wireProv := provenance.Wire()
-	job, err := eq.Enqueue(ctx, paths, recipients, jobs.DefaultRetryPolicy(), np, &wireProv)
+	job, err := eq.EnqueueWithPrivacy(ctx, paths, recipients, jobs.DefaultRetryPolicy(), np, &wireProv, r.RequirePadding)
 	if err != nil {
 		return jobs.Job{}, err
 	}

@@ -320,6 +320,10 @@ func (b *blockingEnqueuer) Enqueue(ctx context.Context, _ []string, _ []EnqueueR
 	}
 }
 
+func (b *blockingEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, _ bool) (jobs.Job, error) {
+	return b.Enqueue(ctx, paths, recipients, policy, np, provenance)
+}
+
 func (b *blockingEnqueuer) peakInFlight() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()

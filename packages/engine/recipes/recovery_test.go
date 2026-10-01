@@ -42,6 +42,9 @@ func (e *crashEnqueuer) Enqueue(ctx context.Context, _ []string, _ []EnqueueReci
 	<-ctx.Done()
 	return jobs.Job{}, ctx.Err()
 }
+func (e *crashEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, _ bool) (jobs.Job, error) {
+	return e.Enqueue(ctx, paths, recipients, policy, np, provenance)
+}
 
 // durableOutboxEnqueuer is the test-local equivalent of the CLI's
 // outboxEnqueuer: it adapts the REAL *outbox.Outbox to the
@@ -64,6 +67,19 @@ func (e durableOutboxEnqueuer) Enqueue(ctx context.Context, paths []string, reci
 	return e.ob.EnqueueWithProvenance(ctx, paths, refs, policy, np, provenance)
 }
 
+func (e durableOutboxEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, requirePadding bool) (jobs.Job, error) {
+	refs := make([]outbox.RecipientRef, len(recipients))
+	for i, r := range recipients {
+		refs[i] = outbox.RecipientRef{DeviceID: r.DeviceID, Label: r.Label}
+	}
+	if provenance != nil && provenance.SenderLabel == "" {
+		cpy := *provenance
+		cpy.SenderLabel = "test-sender"
+		provenance = &cpy
+	}
+	return e.ob.EnqueueWithPrivacy(ctx, paths, refs, policy, np, provenance, requirePadding)
+}
+
 // burstEnqueuer records every call's paths goroutine-safely (the
 // watcher's event loop dispatches from its own goroutine).
 type burstEnqueuer struct {
@@ -76,6 +92,10 @@ func (e *burstEnqueuer) Enqueue(_ context.Context, paths []string, _ []EnqueueRe
 	defer e.mu.Unlock()
 	e.calls = append(e.calls, append([]string{}, paths...))
 	return jobs.Job{JobID: "burst-job"}, nil
+}
+
+func (e *burstEnqueuer) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []EnqueueRecipient, policy jobs.RetryPolicy, np netpolicy.Policy, provenance *wire.Provenance, _ bool) (jobs.Job, error) {
+	return e.Enqueue(ctx, paths, recipients, policy, np, provenance)
 }
 
 func (e *burstEnqueuer) numCalls() int {

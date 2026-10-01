@@ -61,6 +61,12 @@ type DispatchOptions struct {
 	// a clear skip reason and their attempts are left untouched. Zero
 	// value means Online (the v2.0 behavior).
 	EffectivePolicy netpolicy.Policy
+	// EndpointAvailable (v2.3 correction C, gap 3): when non-nil, reports
+	// whether a delivery endpoint for the device exists RIGHT NOW. A job
+	// whose recipient has no endpoint is HELD — rep.Skipped with a clear
+	// reason, attempts untouched, retry budget unconsumed — instead of
+	// consuming an attempt on a guaranteed failure.
+	EndpointAvailable func(deviceID string) bool
 }
 
 // AttemptReport describes what one dispatch pass did to one attempt.
@@ -85,6 +91,9 @@ type DispatchReport struct {
 // Outbox is the durable local outbox. The zero value is not usable; construct
 // with New.
 type Outbox struct {
+	// endpointGate (optional): recipients without a delivery endpoint are
+	// held before any attempt mutates (v2.3 correction C, gap 3).
+	endpointGate func(deviceID string) bool
 	store *jobs.JobStore
 	send  SendFunc
 	now   func() time.Time
@@ -100,6 +109,12 @@ func New(store *jobs.JobStore, send SendFunc) *Outbox {
 		now:   func() time.Time { return time.Now().UTC() },
 		newID: randomJobID,
 	}
+}
+
+// SetEndpointGate wires the endpoint-availability check used to HOLD jobs
+// whose recipients lack a delivery endpoint (v2.3 correction C, gap 3).
+func (o *Outbox) SetEndpointGate(fn func(deviceID string) bool) {
+	o.endpointGate = fn
 }
 
 // clock returns the injected clock or wall time when none is set.
@@ -143,6 +158,14 @@ func (o *Outbox) Enqueue(ctx context.Context, paths []string, recipients []Recip
 // anything is persisted) and stored on the job so dispatch can stamp it on
 // the wire manifest and consent surfaces can display it.
 func (o *Outbox) EnqueueWithProvenance(ctx context.Context, paths []string, recipients []RecipientRef, policy jobs.RetryPolicy, networkPolicy netpolicy.Policy, provenance *wire.Provenance) (jobs.Job, error) {
+	return o.EnqueueWithPrivacy(ctx, paths, recipients, policy, networkPolicy, provenance, false)
+}
+
+// EnqueueWithPrivacy is EnqueueWithProvenance plus the job's PERSISTED
+// traffic-padding decision (v2.3 correction C, gap 1): the sender must honor
+// it at dispatch; the recipe/editor's privacy choice can no longer be lost
+// between enqueue and send.
+func (o *Outbox) EnqueueWithPrivacy(ctx context.Context, paths []string, recipients []RecipientRef, policy jobs.RetryPolicy, networkPolicy netpolicy.Policy, provenance *wire.Provenance, requirePadding bool) (jobs.Job, error) {
 	_ = ctx
 	if err := wire.ValidateProvenance(provenance); err != nil {
 		return jobs.Job{}, wire.Errorf(wire.CodeStorage, "outbox: invalid provenance: %v", err)
@@ -197,6 +220,10 @@ func (o *Outbox) EnqueueWithProvenance(ctx context.Context, paths []string, reci
 	// ordinary one-off sends). It rides the wire manifest at dispatch and
 	// the checksum covers it, so it cannot be flipped after the fact.
 	job.Provenance = provenance
+	// v2.3 correction C (gap 1): persist the padding decision on the job —
+	// dispatch reads it from here, never from a caller flag.
+	pad := requirePadding
+	job.RequirePadding = &pad
 	if err := jobs.QueueJob(&job, now); err != nil {
 		return jobs.Job{}, err
 	}
@@ -425,6 +452,18 @@ func (o *Outbox) dispatchJob(ctx context.Context, job *jobs.Job, owner string, t
 		rep.Skipped = append(rep.Skipped, job.JobID+": "+
 			policyHoldReason(job.EffectiveNetworkPolicy(), effective))
 		return
+	}
+	// v2.3 correction C (gap 3): a local-route job whose endpoint is not
+	// configured is HELD before any attempt mutates — zero send attempts,
+	// retry budget untouched, honest skip reason.
+	if o.endpointGate != nil {
+		for _, a := range job.Attempts {
+			if a.Status == jobs.AttemptQueued && !o.endpointGate(a.DeviceID) {
+				rep.Skipped = append(rep.Skipped,
+					job.JobID+"/"+a.DeviceID+": no delivery endpoint configured — HELD (no attempt made)")
+				return
+			}
+		}
 	}
 	if err := jobs.AcquireLease(job, owner, ttl, now); err != nil {
 		rep.Skipped = append(rep.Skipped, job.JobID+": "+err.Error())
