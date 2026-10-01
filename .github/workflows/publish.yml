@@ -66,6 +66,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.sha_tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
   # F03: promotion of mutable channels is gated on THIS commit's CI result and
   # serialized with a monotonic guard: the promotion only applies if the
