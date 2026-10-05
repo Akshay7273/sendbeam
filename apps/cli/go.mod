@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/pion/stun/v3 v3.1.7
-	github.com/pion/webrtc/v4 v4.2.21
+	github.com/pion/webrtc/v4 v4.2.22
 	github.com/sendbeam/engine v0.0.0
 	github.com/sendbeam/wire v0.0.0
 )
