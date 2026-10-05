@@ -4,11 +4,11 @@ go 1.25.0
 
 require (
 	github.com/coder/websocket v1.8.15
-	github.com/pion/webrtc/v4 v4.2.21
+	github.com/pion/webrtc/v4 v4.2.22
 	github.com/sendbeam/engine v0.0.0
 	github.com/sendbeam/wire v0.0.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
-	github.com/wailsapp/wails/v3 v3.0.0-beta.25
+	github.com/wailsapp/wails/v3 v3.0.0-beta.27
 )
 
 require (
