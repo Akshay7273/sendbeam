@@ -291,6 +291,12 @@ jobs:
       - name: Run documentation consistency checks
         run: bash ./scripts/docs-consistency.sh
 
+      # SB-R03: doctor.sh self-tests run here rather than in a new job because
+      # this job already needs zero toolchain setup, and adding a job name
+      # would require a ruleset change plus a supply-chain.md edit.
+      - name: Run environment preflight self-tests
+        run: bash ./scripts/doctor_test.sh
+
   offlinelab:
     name: offlinelab (real-network local-only evidence)
     runs-on: ubuntu-latest
