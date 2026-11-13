@@ -52,12 +52,19 @@ import (
 // cover headless use, and a real background service is future work
 // (V22-PR08 packaging).
 type RecipeService struct {
-	mu       sync.Mutex
-	store    *recipes.RecipeStore
-	trust    trust.Store
-	jobs     *jobs.JobStore
-	outbox   *outbox.Outbox
-	runner   *recipes.Runner
+	mu     sync.Mutex
+	store  *recipes.RecipeStore
+	trust  trust.Store
+	jobs   *jobs.JobStore
+	outbox *outbox.Outbox
+	runner *recipes.Runner
+	// cancels is the SHARED in-flight-cancel registry (outbox.InFlightCancels):
+	// the persistent outbox registers nothing (it never dispatches) but its
+	// Cancel must stop transfers that the per-pass outboxes registered. This
+	// closes the SB-R08 split-brain window: without it, Cancel flipped the
+	// stored status while the running transfer finished and the receiver
+	// committed the file (found by TestR08CancelAtConsentBoundary...).
+	cancels  *outbox.InFlightCancels
 	watchers map[string]*recipes.Watcher
 	// identity + secrets wire the PRODUCTION sender for dispatch (v2.3
 	// correction C): identity is this device's Ed25519 identity, secrets
@@ -118,12 +125,15 @@ func NewRecipeService(customConfigDir string, trustStore trust.Store, identity *
 		return nil, fmt.Errorf("recipe service: open job store: %w", err)
 	}
 	nowFunc := time.Now
+	cancels := outbox.NewInFlightCancels()
 	ob := outbox.New(jobStore, nil)
+	ob.SetInFlightCancels(cancels)
 	svc := &RecipeService{
 		store:    recipeStore,
 		trust:    trustStore,
 		jobs:     jobStore,
 		outbox:   ob,
+		cancels:  cancels,
 		watchers: make(map[string]*recipes.Watcher),
 		nowFunc:  nowFunc,
 		identity: identity,
@@ -465,25 +475,25 @@ func (s *RecipeService) RunRecipe(id string) (string, error) {
 // editor's explicit inputs; validation and consent live in the engine.
 type RecipeUpsert struct {
 	// ID non-empty = edit of an existing recipe; empty = create.
-	ID string `json:"id"`
-	Name string `json:"name"`
-	Sources []RecipeSourceInput `json:"sources"`
-	RecipientDeviceIDs []string `json:"recipientDeviceIDs"`
-	NetworkPolicy string `json:"networkPolicy,omitempty"`
-	RequirePadding bool `json:"requirePadding"`
-	Include []string `json:"include,omitempty"`
-	Exclude []string `json:"exclude,omitempty"`
-	TriggerKind string `json:"triggerKind"`
-	ScheduleParams map[string]any `json:"scheduleParams,omitempty"`
-	WatchParams map[string]any `json:"watchParams,omitempty"`
-	MaxBytesPerRun int64 `json:"maxBytesPerRun,omitempty"`
-	MaxFilesPerRun int64 `json:"maxFilesPerRun,omitempty"`
+	ID                 string              `json:"id"`
+	Name               string              `json:"name"`
+	Sources            []RecipeSourceInput `json:"sources"`
+	RecipientDeviceIDs []string            `json:"recipientDeviceIDs"`
+	NetworkPolicy      string              `json:"networkPolicy,omitempty"`
+	RequirePadding     bool                `json:"requirePadding"`
+	Include            []string            `json:"include,omitempty"`
+	Exclude            []string            `json:"exclude,omitempty"`
+	TriggerKind        string              `json:"triggerKind"`
+	ScheduleParams     map[string]any      `json:"scheduleParams,omitempty"`
+	WatchParams        map[string]any      `json:"watchParams,omitempty"`
+	MaxBytesPerRun     int64               `json:"maxBytesPerRun,omitempty"`
+	MaxFilesPerRun     int64               `json:"maxFilesPerRun,omitempty"`
 }
 
 // RecipeSourceInput is one explicit source root from the editor.
 type RecipeSourceInput struct {
-	Path string `json:"path"`
-	Recursive bool `json:"recursive"`
+	Path      string `json:"path"`
+	Recursive bool   `json:"recursive"`
 }
 
 // CreateRecipe saves a NEW recipe from editor input. New recipes are inert:
@@ -649,15 +659,15 @@ func (s *RecipeService) upsertLocked(in RecipeUpsert, existing *recipes.Recipe, 
 // duplicates start inert).
 func upsertFromRecipe(src recipes.Recipe, name string) RecipeUpsert {
 	in := RecipeUpsert{
-		ID: "", // new id
-		Name: name,
-		NetworkPolicy: src.NetworkPolicy,
+		ID:             "", // new id
+		Name:           name,
+		NetworkPolicy:  src.NetworkPolicy,
 		RequirePadding: src.RequirePadding,
-		Include: append([]string(nil), src.Include...),
-		Exclude: append([]string(nil), src.Exclude...),
-		TriggerKind: string(src.Trigger.Kind),
+		Include:        append([]string(nil), src.Include...),
+		Exclude:        append([]string(nil), src.Exclude...),
+		TriggerKind:    string(src.Trigger.Kind),
 		ScheduleParams: src.Trigger.Schedule,
-		WatchParams: src.Trigger.Watch,
+		WatchParams:    src.Trigger.Watch,
 		MaxBytesPerRun: src.Budgets.MaxBytesPerRun,
 		MaxFilesPerRun: src.Budgets.MaxFilesPerRun,
 	}
@@ -686,10 +696,10 @@ type RecipeDeliveryStatus struct {
 
 // DeliveryJobView is the outbox job as the status surface needs it.
 type DeliveryJobView struct {
-	JobID     string                  `json:"jobId"`
-	Status    string                  `json:"status"`
-	TotalSize int64                   `json:"totalSize"`
-	Attempts  []DeliveryAttemptView   `json:"attempts"`
+	JobID     string                `json:"jobId"`
+	Status    string                `json:"status"`
+	TotalSize int64                 `json:"totalSize"`
+	Attempts  []DeliveryAttemptView `json:"attempts"`
 }
 
 // DeliveryAttemptView is one recipient attempt: queue/active/verified/
@@ -987,7 +997,11 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 			return s.productionOnlineSend(ctx, job, attempt, paths, localID, padding, onlineSender)
 		}
 	}
+	// SB-R08: the per-pass outbox registers its in-flight cancels into the
+	// SAME shared registry the persistent outbox's Cancel consults — the
+	// cross-instance stop mechanism (recipe-service split-brain fix).
 	ob := outbox.New(s.jobs, sender)
+	ob.SetInFlightCancels(s.cancels)
 	// Gap 3 (real HELD): recipients without a configured endpoint are held
 	// BEFORE any attempt mutates — zero send attempts, retry budget
 	// untouched, honest skip reason.
@@ -1061,20 +1075,20 @@ func (s *RecipeService) productionLocalSend(ctx context.Context, job jobs.Job, a
 	}
 	var sentBytes int64
 	out, err := localtransfer.Transfer(ctx, localtransfer.Options{
-		Identity:     identity,
-		Store:        s.trust,
-		Resolver:     s.secrets,
-		Table:        table,
-		PeerDeviceID: attempt.DeviceID,
-		PeerLabel:    resolved.record.LocalLabel,
-		Role:         rendezvous.RoleOfferer,
-		Sources:      sources,
-		DestDir:      "", // receiver chooses
-		Private:      privateMode,
+		Identity:       identity,
+		Store:          s.trust,
+		Resolver:       s.secrets,
+		Table:          table,
+		PeerDeviceID:   attempt.DeviceID,
+		PeerLabel:      resolved.record.LocalLabel,
+		Role:           rendezvous.RoleOfferer,
+		Sources:        sources,
+		DestDir:        "", // receiver chooses
+		Private:        privateMode,
 		RequirePadding: requirePadding,
-		TransferID:   job.JobID,
-		Provenance:   job.Provenance,
-		OnProgress: func(n int64) { sentBytes = n },
+		TransferID:     job.JobID,
+		Provenance:     job.Provenance,
+		OnProgress:     func(n int64) { sentBytes = n },
 	})
 	if err != nil {
 		return fail("local transfer: %v", err)
