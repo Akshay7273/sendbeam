@@ -876,9 +876,11 @@ func (s *RecipeService) Shutdown(timeout time.Duration) error {
 // DispatchOnceNow performs ONE dispatch pass now (also the immediate kick
 // after RunRecipe/watch/schedule enqueue). Returns the dispatch report.
 func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchReport, error) {
-	s.mu.Lock()
-	identity, secrets, peerAddrs := s.identity, s.secrets, s.localPeerAddrs
-	s.mu.Unlock()
+	// SB-R04: coherent per-pass snapshot — identity/secrets are immutable
+	// references, but peerAddrs must be a COPY of the endpoint map: the
+	// previous version aliased the live map and read it unsynchronized
+	// mid-pass (data race with SetLocalPeerAddr).
+	identity, secrets, peerAddrs := s.snapshotDispatcherState()
 	if identity == nil || secrets == nil {
 		return outbox.DispatchReport{}, fmt.Errorf("production sender not wired: identity/secrets unavailable")
 	}
@@ -896,12 +898,16 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 	// concurrently — read them under the service lock (the closures
 	// themselves re-read live policy; the snapshot here is only for the
 	// pass-level gate).
-	s.mu.Lock()
-	effective := netpolicy.ResolveEffective(s.policyLookup, func(msg string) {
+	// SB-R04: the policy lookup may perform config I/O (Store.Load reads
+	// the config file from disk) and is user-replaceable in tests. It must
+	// never execute while s.mu is held — the previous version called it
+	// inside the locked region, serializing dispatch passes behind disk I/O
+	// and risking lock-order inversions. Read the wired fields under the
+	// lock; run the lookup outside it.
+	policyLookup, onlineSender := s.readPolicyLookupAndSender()
+	effective := netpolicy.ResolveEffective(policyLookup, func(msg string) {
 		log.Printf("SendBeam Desktop: recipe dispatcher %s", msg)
 	})
-	onlineSender := s.onlineSender
-	s.mu.Unlock()
 	// Production sender: one attempt per call. Local-only route via the
 	// recorded manual endpoint; the outbox's own policy gate holds
 	// unsatisfiable jobs with a clear skip reason (no silent online
@@ -912,7 +918,9 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 	// policy changes between enqueue/send/fallback govern immediately;
 	// the snapshot never does.
 	livePolicy := func() netpolicy.Policy {
-		return netpolicy.ResolveEffective(s.policyLookup, func(msg string) {
+		// SB-R04: read the wired lookup under the lock (it may be swapped
+		// concurrently), then invoke it OUTSIDE the lock.
+		return netpolicy.ResolveEffective(s.readPolicyLookup(), func(msg string) {
 			log.Printf("SendBeam Desktop: recipe dispatcher %s", msg)
 		})
 	}
@@ -1172,3 +1180,46 @@ func (a recipeOutboxEnqueuer) Enqueue(ctx context.Context, paths []string, recip
 	return a.EnqueueWithPrivacy(ctx, paths, recipients, policy, np, provenance, false)
 }
 
+// snapshotDispatcherState returns the immutable identity/secret references
+// and a COHERENT COPY of the mutable local-endpoint map for one dispatch
+// pass (SB-R04). Returning a copy — not the live map — is the point: the
+// pass runs concurrently with SetLocalPeerAddr, and reading the live map
+// mid-pass was an unsynchronized data race (the map could also grow during
+// iteration). Endpoint edits made after the snapshot govern the NEXT pass;
+// this is the documented per-pass snapshot semantics.
+func (s *RecipeService) snapshotDispatcherState() (*trust.IdentityManager, trust.CredentialStore, map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.identity, s.secrets, s.copyLocalPeerAddrsLocked()
+}
+
+// copyLocalPeerAddrsLocked copies the endpoint map; the caller must hold
+// s.mu (or be called from a method that does).
+func (s *RecipeService) copyLocalPeerAddrsLocked() map[string]string {
+	if s.localPeerAddrs == nil {
+		return nil
+	}
+	cp := make(map[string]string, len(s.localPeerAddrs))
+	for k, v := range s.localPeerAddrs {
+		cp[k] = v
+	}
+	return cp
+}
+
+// readPolicyLookup returns the wired policy lookup under the service lock
+// (SB-R04: never read this field directly — SetPolicyLookup mutates it
+// concurrently).
+func (s *RecipeService) readPolicyLookup() func() netpolicy.Policy {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.policyLookup
+}
+
+// readPolicyLookupAndSender returns the wired policy lookup and online
+// sender under the service lock (SB-R04: never read these fields directly —
+// SetPolicyLookup/SetOnlineSender mutate them concurrently).
+func (s *RecipeService) readPolicyLookupAndSender() (func() netpolicy.Policy, func(context.Context, onlineSendRequest) (transfer.Outcome, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.policyLookup, s.onlineSender
+}
