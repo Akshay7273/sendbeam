@@ -692,6 +692,10 @@ func (o *Outbox) dispatchJob(ctx context.Context, job *jobs.Job, owner string, t
 		}
 
 		defer func() {
+			// Leak-safe: after a normal settle or a Cancel-fired stop this
+			// is a no-op (the context is already done); on the early-return
+			// paths between registration and send it releases the context.
+			sendCancel()
 			if own {
 				o.mu.Lock()
 				delete(o.activeCancels, job.JobID)
