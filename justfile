@@ -56,6 +56,14 @@ lint:
 typecheck:
     pnpm -r typecheck
 
+# Verify this machine can run the required gates (read-only; never installs)
+doctor:
+    @bash ./scripts/doctor.sh
+
+# Self-test for the environment preflight (hermetic; sandboxes PATH)
+@doctor-test:
+    @bash ./scripts/doctor_test.sh
+
 # Run all tests
 @test:
     just js-test
