@@ -912,6 +912,12 @@ func TestStrictPaddingCompatibleReceiverVerifies(t *testing.T) {
 	}
 	defer func() { _ = svc.Shutdown(5 * time.Second) }()
 
+	// The service auto-starts a 2s dispatcher in NewRecipeService. Stop it and
+	// drive the single production pass explicitly below: otherwise a
+	// background pass may dispatch the job concurrently with the receiver
+	// registration, and the test's outcome depends on timing.
+	svc.StopDispatcher()
+
 	// Real identities: sender (desktop) + peer (receiver), cross-registered
 	// with the pair secret — the production admission/Opaque ceremony path.
 	senderIdentity, err := idm.GetOrCreateIdentity()
@@ -960,11 +966,16 @@ func TestStrictPaddingCompatibleReceiverVerifies(t *testing.T) {
 	if _, err := svc.ApproveRecipe(created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.RunRecipe(created.ID); err != nil {
+	// Run ONCE. NewRecipeService starts the dispatcher (2s interval), so an
+	// already-unattended job is picked up by the background pass; a second
+	// manual run enqueues a SECOND job for the same peer and races this
+	// receiver, which serves exactly one session. LastRun would then point
+	// at whichever job ran last and the loser reports a cancelled attempt.
+	jobID, err := svc.RunRecipe(created.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	rec, _ := svc.GetRecipe(created.ID)
-	job, ok, err := svc.jobs.Load(rec.LastRun.JobID)
+	job, ok, err := svc.jobs.Load(jobID)
 	if err != nil || !ok {
 		t.Fatal("job missing")
 	}
@@ -984,6 +995,10 @@ func TestStrictPaddingCompatibleReceiverVerifies(t *testing.T) {
 	defer recvCancel()
 	recvDone := make(chan error, 1)
 	var recvOutcome *transfer.Outcome
+	// recvReady closes once the receiver is bound AND has registered its
+	// session handler: Receive() installs the handler before it blocks on
+	// accept, so the send cannot race an unregistered receiver.
+	recvReady := make(chan struct{})
 	go func() {
 		rcvSrv := localrendezvous.NewServer(localrendezvous.Config{
 			BindAddr:      "127.0.0.1:0",
@@ -995,6 +1010,7 @@ func TestStrictPaddingCompatibleReceiverVerifies(t *testing.T) {
 			return
 		}
 		svc.SetLocalPeerAddr(peerIdentity.DeviceID, recvAddr.String())
+		close(recvReady)
 		out, rerr := localtransfer.Receive(recvCtx, localtransfer.ReceiveOptions{
 			Identity:       peerIdentity,
 			Store:          ts,
@@ -1012,24 +1028,34 @@ func TestStrictPaddingCompatibleReceiverVerifies(t *testing.T) {
 		recvDone <- rerr
 	}()
 
-	time.Sleep(300 * time.Millisecond)
-	_, err = svc.RunRecipe(created.ID)
-	if err != nil {
-		t.Fatal(err)
+	select {
+	case <-recvReady:
+	case rerr := <-recvDone:
+		t.Fatalf("receiver failed to start: %v", rerr)
+	case <-time.After(30 * time.Second):
+		t.Fatal("receiver did not become ready within 30s")
+	}
+
+	// One explicit production dispatch pass. The padding decision was
+	// already persisted by RunRecipe (asserted above); this pass is what
+	// actually moves the bytes through the production sender.
+	if _, err := svc.DispatchOnceNow(ctx); err != nil {
+		t.Fatalf("dispatch pass: %v", err)
 	}
 
 	// Eventually-verified: the dispatcher passes drive the transfer; CI
 	// loopback transfers can take ~30-60s. Poll for the verified outcome.
-	deadline := time.Now().Add(120 * time.Second)
+	// Poll the job recorded above, not r.LastRun: a later run must not
+	// redirect the assertion away from the job this test dispatched. Keep
+	// the poll inside the 90s ctx budget so a stall reports the real
+	// attempt state instead of a bare context-expired failure.
+	deadline := time.Now().Add(85 * time.Second)
 	verified := false
 	for time.Now().Before(deadline) {
-		r2, _ := svc.GetRecipe(created.ID)
-		if r2.LastRun != nil && r2.LastRun.JobID != "" {
-			if j, ok, _ := svc.jobs.Load(r2.LastRun.JobID); ok {
-				for _, a := range j.Attempts {
-					if a.VerifiedDigest != "" && (a.Status == jobs.AttemptVerified || a.Status == jobs.AttemptCompleted) {
-						verified = true
-					}
+		if j, ok, _ := svc.jobs.Load(jobID); ok {
+			for _, a := range j.Attempts {
+				if a.VerifiedDigest != "" && (a.Status == jobs.AttemptVerified || a.Status == jobs.AttemptCompleted) {
+					verified = true
 				}
 			}
 		}
@@ -1041,19 +1067,27 @@ func TestStrictPaddingCompatibleReceiverVerifies(t *testing.T) {
 			if rerr != nil {
 				t.Fatalf("receiver: %v", rerr)
 			}
-			// receiver finished; one more poll for the job record
+			// Receiver finished cleanly; one more poll picks up the job record.
 			time.Sleep(200 * time.Millisecond)
-		case <-time.After(2 * time.Second):
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 	if !verified {
-		r3, _ := svc.GetRecipe(created.ID)
-		if r3.LastRun != nil && r3.LastRun.JobID != "" {
-			if j3, ok3, _ := svc.jobs.Load(r3.LastRun.JobID); ok3 {
-				t.Fatalf("transfer never verified within deadline — attempts: %+v", j3.Attempts)
-			}
+		if j3, ok3, _ := svc.jobs.Load(jobID); ok3 {
+			t.Fatalf("transfer never verified within deadline — attempts: %+v", j3.Attempts)
 		}
 		t.Fatal("transfer never verified within deadline — production sender path stalled")
+	}
+
+	// Drain the receiver once the job is verified: recvOutcome is written by
+	// the receiver goroutine, so it must be read only after recvDone closes.
+	select {
+	case rerr := <-recvDone:
+		if rerr != nil {
+			t.Fatalf("receiver: %v", rerr)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("receiver did not finish after the job was verified")
 	}
 
 	// Bytes verified on disk.
