@@ -273,8 +273,22 @@ func (s *Store) Secrets() SecretStore {
 	return s.secretStore
 }
 
+// Errors returned by Load, classifying the failure mode. A missing file is
+// NOT a failure (first launch: defaults are returned). Callers that must
+// distinguish failure classes — e.g. runtime network-policy retrieval,
+// which degrades fail-closed (SB-R05) — use errors.Is with these sentinels.
+var (
+	// ErrUnreadable wraps every non-ErrNotExist read failure (permissions,
+	// I/O errors, path is a directory, ...).
+	ErrUnreadable = errors.New("desktop config unreadable")
+	// ErrCorrupt wraps decode and validation failures: the file exists but
+	// does not yield a valid configuration.
+	ErrCorrupt = errors.New("desktop config corrupt")
+)
+
 // Load reads and parses desktop preferences from disk. If the file does not
-// exist, it returns DefaultConfig() without creating the file.
+// exist, it returns DefaultConfig() without creating the file (first-launch
+// behavior is preserved; a missing file is not an error).
 func (s *Store) Load() (DesktopConfig, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -284,16 +298,16 @@ func (s *Store) Load() (DesktopConfig, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return DefaultConfig(), nil
 		}
-		return DefaultConfig(), fmt.Errorf("read desktop config: %w", err)
+		return DefaultConfig(), fmt.Errorf("%w: %v", ErrUnreadable, err)
 	}
 
 	cfg := DefaultConfig()
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return DefaultConfig(), fmt.Errorf("decode desktop config: %w", err)
+		return DefaultConfig(), fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
 
 	if err := cfg.Validate(); err != nil {
-		return DefaultConfig(), fmt.Errorf("invalid config on disk: %w", err)
+		return DefaultConfig(), fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
 
 	return cfg, nil
