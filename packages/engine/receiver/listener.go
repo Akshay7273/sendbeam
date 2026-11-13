@@ -452,3 +452,14 @@ func (l *Listener) Close() error {
 	}
 	return nil
 }
+
+// Config returns a copy of the listener's effective configuration. The
+// desktop's policy layer uses it to verify fail-closed receiver
+// configuration (SB-R05): under local-only policy the public signaling
+// server and dialer are stripped before start, and tests assert the
+// applied result through this accessor.
+func (l *Listener) Config() Config {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.cfg
+}

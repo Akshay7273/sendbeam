@@ -897,10 +897,9 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 	// themselves re-read live policy; the snapshot here is only for the
 	// pass-level gate).
 	s.mu.Lock()
-	effective := netpolicy.LocalOnly
-	if s.policyLookup != nil {
-		effective = s.policyLookup()
-	}
+	effective := netpolicy.ResolveEffective(s.policyLookup, func(msg string) {
+		log.Printf("SendBeam Desktop: recipe dispatcher %s", msg)
+	})
 	onlineSender := s.onlineSender
 	s.mu.Unlock()
 	// Production sender: one attempt per call. Local-only route via the
@@ -913,10 +912,9 @@ func (s *RecipeService) DispatchOnceNow(ctx context.Context) (outbox.DispatchRep
 	// policy changes between enqueue/send/fallback govern immediately;
 	// the snapshot never does.
 	livePolicy := func() netpolicy.Policy {
-		if s.policyLookup != nil {
-			return s.policyLookup()
-		}
-		return netpolicy.LocalOnly
+		return netpolicy.ResolveEffective(s.policyLookup, func(msg string) {
+			log.Printf("SendBeam Desktop: recipe dispatcher %s", msg)
+		})
 	}
 	onlineAllowedNow := func() bool {
 		cur := livePolicy()

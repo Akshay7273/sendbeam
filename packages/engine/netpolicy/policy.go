@@ -18,10 +18,7 @@
 // justifies disabling authentication, encryption, or integrity.
 package netpolicy
 
-import (
-	"errors"
-	"strings"
-)
+import "strings"
 
 // Policy is a network path selection policy.
 type Policy int
@@ -47,7 +44,31 @@ func (p Policy) String() string {
 	}
 }
 
+// PolicyParseError reports that a stored policy name is not one of the
+// values Parse accepts. Callers that cannot ask the user at the failure
+// point (runtime policy retrieval) treat it as LocalOnly — the
+// least-permissive policy — rather than falling back to Online.
+type PolicyParseError struct {
+	// Input is the unparseable policy name as it was stored.
+	Input string
+}
+
+func (e *PolicyParseError) Error() string {
+	in := "'" + sInput(e.Input) + "'"
+	if e.Input == "" {
+		in = "(empty)"
+	}
+	return "netpolicy: unknown policy " + in + " (want online, prefer-local, or local-only)"
+}
+
+func sInput(s string) string { return s }
+
 // Parse converts a user-supplied policy name to a Policy.
+//
+// The zero Policy is Online, but on error Parse returns LocalOnly together
+// with a *PolicyParseError so that callers which ignore the error fail
+// closed: an unrecognized stored policy must never silently broaden to the
+// most permissive behavior (SB-R05).
 func Parse(s string) (Policy, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "online", "automatic":
@@ -57,7 +78,7 @@ func Parse(s string) (Policy, error) {
 	case "local-only", "local_only", "local":
 		return LocalOnly, nil
 	default:
-		return Online, errors.New("netpolicy: unknown policy (want online, prefer-local, or local-only)")
+		return LocalOnly, &PolicyParseError{Input: s}
 	}
 }
 
@@ -97,4 +118,56 @@ func (p Policy) DispatchableUnder(effective Policy) bool {
 	default: // Online and any unrecognized value fail closed toward online semantics
 		return effective == Online || effective == PreferLocal
 	}
+}
+
+// ResolveEffective resolves the effective runtime network policy for an
+// engine component from a lookup callback, failing closed (SB-R05):
+//
+//   - A healthy lookup is authoritative: its value is returned verbatim
+//     and read exactly once.
+//   - A nil lookup (component constructed without wiring) selects
+//     LocalOnly — the least-permissive policy — and surfaces a notice.
+//     It must never assume the most permissive behavior by default.
+//   - A lookup that panics (a crashing config backend is indistinguishable
+//     from an unreadable one at this layer) is recovered and selects
+//     LocalOnly, with the reason surfaced through reporter. A nil reporter
+//     suppresses only the message, never the fail-closed selection.
+//
+// Selection rationale: LocalOnly preserves every local recovery path
+// (LAN discovery, the offline listener, local pairing) while denying the
+// public network (signaling, STUN/TURN, relay, update checks). It is the
+// only policy that is safe under uncertainty; Online is only correct when
+// the user chose it or first-launch defaults apply (the caller distinguishes
+// a MISSING config file — which Store.Load reports as defaults, not an
+// error — from an UNUSABLE one).
+func ResolveEffective(lookup func() Policy, reporter func(msg string)) Policy {
+	if lookup == nil {
+		if reporter != nil {
+			reporter("policy lookup unavailable; failing closed to local-only")
+		}
+		return LocalOnly
+	}
+	var p Policy
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				p = LocalOnly
+				if reporter != nil {
+					reporter("policy lookup failed (" + fmtPanic(r) + "); failing closed to local-only")
+				}
+			}
+		}()
+		p = lookup()
+	}()
+	return p
+}
+
+func fmtPanic(r any) string {
+	if err, ok := r.(error); ok {
+		return err.Error()
+	}
+	if s, ok := r.(string); ok {
+		return s
+	}
+	return "non-error panic value"
 }

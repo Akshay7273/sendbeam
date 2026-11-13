@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/url"
 	"os"
@@ -1519,12 +1520,7 @@ func (s *TransferService) StartNativeReceiverWithPolicy(base receiver.Config) er
 // behavior matches the persisted policy. Safe to call when the receiver was
 // never started (it just records the policy for the next start).
 func (s *TransferService) ApplyNetworkPolicy() error {
-	policy := netpolicy.Online
-	if cfg, err := s.GetConfig(); err == nil {
-		if p, perr := netpolicy.Parse(cfg.NetworkPolicy); perr == nil {
-			policy = p
-		}
-	}
+	policy := s.resolveReceiverPolicy()
 	s.mu.Lock()
 	base := s.nativeReceiverBase
 	s.mu.Unlock()
@@ -2531,4 +2527,26 @@ func formatETA(eta time.Duration) string {
 		return fmt.Sprintf("%ds remaining", seconds)
 	}
 	return fmt.Sprintf("%dm %ds remaining", seconds/60, seconds%60)
+}
+
+// resolveReceiverPolicy resolves the effective policy for the background
+// receiver (SB-R05). An unusable config (unreadable or corrupt) or an
+// unparseable stored policy must not silently select the most permissive
+// behavior: both degrade to LocalOnly — the receiver keeps LAN discovery
+// only and loses its public rendezvous/dialer — and the degradation is
+// logged. A missing config file is not a failure (Store.Load returns
+// first-launch defaults, policy "online"), so the verified default is
+// preserved.
+func (s *TransferService) resolveReceiverPolicy() netpolicy.Policy {
+	cfg, err := s.GetConfig()
+	if err != nil {
+		log.Printf("SendBeam Desktop: config unusable (%v); applying fail-closed local-only receiver policy", err)
+		return netpolicy.LocalOnly
+	}
+	p, err := netpolicy.Parse(cfg.NetworkPolicy)
+	if err != nil {
+		log.Printf("SendBeam Desktop: stored network policy unusable (%v); applying fail-closed local-only receiver policy", err)
+		return netpolicy.LocalOnly
+	}
+	return p
 }

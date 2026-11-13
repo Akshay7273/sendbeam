@@ -115,14 +115,22 @@ func main() {
 
 	// V21-PR06: network policy accessors, defined before the services that
 	// need them. The policy is persisted in the desktop config.
+	// SB-R05: runtime policy retrieval is fail-closed. An unusable config
+	// (unreadable or corrupt) degrades to LocalOnly — the least-permissive
+	// policy that still preserves local recovery paths — never Online, and
+	// the degradation is logged so it is visible. First launch is preserved:
+	// a missing config file is not a failure (Store.Load returns defaults,
+	// NetworkPolicy "online"), so the verified default policy still applies.
 	getPolicy := func() netpolicy.Policy {
 		cfg, err := transferSvc.GetConfig()
 		if err != nil {
-			return netpolicy.Online
+			log.Printf("SendBeam Desktop: config unusable (%v); failing closed to local-only network policy", err)
+			return netpolicy.LocalOnly
 		}
 		p, err := netpolicy.Parse(cfg.NetworkPolicy)
 		if err != nil {
-			return netpolicy.Online
+			log.Printf("SendBeam Desktop: stored network policy unusable (%v); failing closed to local-only", err)
+			return netpolicy.LocalOnly
 		}
 		return p
 	}
