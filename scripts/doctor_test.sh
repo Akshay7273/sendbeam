@@ -9,6 +9,15 @@
 #   sandbox/shim/bin/  — fake `go`, `node`, `pnpm`, `just`, `python3`, `cc`
 #                        executables whose versions this test controls.
 #
+# doctor.sh is copied into the sandbox, which also holds a minimal synthetic
+# checkout (go.work, package.json, node_modules/, desktop frontend sources) and
+# a real git repo, so doctor's ROOT_DIR resolves inside the sandbox. The test
+# therefore controls BOTH the toolchain (shim versions, absence) and the
+# workspace state (node_modules present), making every case — including the
+# exit-0 ones — independent of the machine's real checkout. (An earlier
+# revision ran against the real repo and only passed where node_modules
+# happened to exist; CI caught it.)
+#
 # doctor.sh is then run with PATH=sandbox/shim/bin:sandbox/base/bin, so every
 # probed tool is either the controlled fake or genuinely absent. That makes
 # "missing" (binary not shimmed) and "incompatible" (binary present, wrong
@@ -60,6 +69,22 @@ new_sandbox() {
     [ -n "${src}" ] && ln -s "${src}" "${d}/base/bin/${u}" 2>/dev/null
   done
 
+  # Synthetic checkout: doctor.sh resolves ROOT_DIR from its own location, so
+  # copying it into the sandbox makes every workspace-state row refer to a
+  # tree this test owns (node_modules present, frontend sources present).
+  # Nothing in the real repository is read or mutated by the cases any more.
+  cp "${DOCTOR}" "${d}/scripts/doctor.sh" 2>/dev/null || {
+    mkdir -p "${d}/scripts" && cp "${DOCTOR}" "${d}/scripts/doctor.sh"
+  }
+  : >"${d}/go.work"
+  : >"${d}/package.json"
+  mkdir -p "${d}/node_modules" "${d}/apps/desktop/frontend/src"
+
+  # Make the sandbox a real git repo so the read-only contract case can prove
+  # doctor.sh left the tree untouched (an untracked-file diff is visible).
+  ( cd "${d}" && git init -q && git config user.email t@t.invalid &&
+    git config user.name t && git add -A && git commit -qm init ) >/dev/null 2>&1
+
   printf '%s\n' "${d}"
 }
 
@@ -92,7 +117,7 @@ add_good_toolchain() {
 run_doctor() {
   local sb="$1"
   local isolated="${sb}/shim/bin:${sb}/base/bin"
-  DOCTOR_OUT="$(PATH="${isolated}" /bin/bash "${DOCTOR}" 2>&1)"
+  DOCTOR_OUT="$(PATH="${isolated}" /bin/bash "${sb}/scripts/doctor.sh" 2>&1)"
   return $?
 }
 
@@ -241,9 +266,9 @@ fi
 # Case 10: doctor.sh must not mutate the working tree (read-only contract)
 # ---------------------------------------------------------------------------
 sb="$(new_sandbox)"; add_good_toolchain "${sb}"
-before="$(cd "${ROOT_DIR}" && PATH="${sb}/base/bin" git status --porcelain 2>/dev/null | sort)"
+before="$(cd "${sb}" && PATH="${sb}/base/bin" git status --porcelain 2>/dev/null | sort)"
 run_doctor "${sb}" >/dev/null 2>&1
-after="$(cd "${ROOT_DIR}" && PATH="${sb}/base/bin" git status --porcelain 2>/dev/null | sort)"
+after="$(cd "${sb}" && PATH="${sb}/base/bin" git status --porcelain 2>/dev/null | sort)"
 if [ "${before}" = "${after}" ]; then
   case_pass "doctor.sh does not mutate the working tree"
 else
