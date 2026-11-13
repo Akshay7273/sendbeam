@@ -76,9 +76,16 @@ typecheck:
     ( cd apps/desktop && CGO_ENABLED=0 go test -tags server ./... ) || exit 1
 
 # CI-parity race-enabled Go tests (mirrors ci.yml)
+#
+# The desktop leg MUST NOT set CGO_ENABLED=0: -race requires cgo, so that
+# combination fails before compiling a single test ("-race requires cgo").
+# CI runs the desktop gates with cgo enabled (ci.yml: `go test -race
+# ./internal/...`), so keep the race detector here exactly as CI runs it.
+# The non-race desktop leg above keeps CGO_ENABLED=0 deliberately: it only
+# needs to prove the server-tagged build compiles headless.
 @go-test-race:
     for m in packages/wire packages/engine apps/server apps/cli; do ( cd "$m" && go test -race ./... ) || exit 1; done
-    ( cd apps/desktop && CGO_ENABLED=0 go test -race -tags server ./... ) || exit 1
+    ( cd apps/desktop && go test -race -tags server ./... ) || exit 1
 
 # Format
 fmt:
