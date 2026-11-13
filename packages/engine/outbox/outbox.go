@@ -91,6 +91,58 @@ type DispatchReport struct {
 	Skipped        []string // "jobID: reason" for jobs not dispatched this pass
 }
 
+// InFlightCancels tracks the cancel functions of IN-FLIGHT dispatch sends,
+// shared between outbox instances that register cancels and instances whose
+// Cancel must stop them.
+//
+// Why shared state: hosts may construct more than one Outbox over the same
+// job store — the desktop recipe service keeps a persistent instance for
+// enqueue/cancel and builds one instance per dispatch pass (the pass wires
+// its own sender closure). Without a shared registry, Cancel through one
+// instance cannot stop a transfer another instance is running: the stored
+// status flips to cancelled, the transfer finishes, the receiver commits
+// the file, and the ledger records "not delivered" — a split-brain outcome.
+// This is the correction-C gap-5 mechanism made instance-independent.
+type InFlightCancels struct {
+	mu sync.Mutex
+	m  map[string]context.CancelFunc
+}
+
+// NewInFlightCancels builds an empty shared registry.
+func NewInFlightCancels() *InFlightCancels {
+	return &InFlightCancels{m: make(map[string]context.CancelFunc)}
+}
+
+func (r *InFlightCancels) register(jobID string, cancel context.CancelFunc) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.m == nil {
+		r.m = make(map[string]context.CancelFunc)
+	}
+	r.m[jobID] = cancel
+}
+
+func (r *InFlightCancels) unregister(jobID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.m, jobID)
+}
+
+// cancelJob fires and drops the cancel for jobID; false when none was
+// registered.
+func (r *InFlightCancels) cancelJob(jobID string) bool {
+	r.mu.Lock()
+	c, ok := r.m[jobID]
+	if ok {
+		delete(r.m, jobID)
+	}
+	r.mu.Unlock()
+	if ok && c != nil {
+		c()
+	}
+	return ok
+}
+
 // Outbox is the durable local outbox. The zero value is not usable; construct
 // with New.
 type Outbox struct {
@@ -102,11 +154,30 @@ type Outbox struct {
 	// activeCancels: jobID -> cancel for IN-FLIGHT dispatches. Cancel uses
 	// it to stop the running transfer, not just flip the stored status
 	// (v2.3 correction C, gap 5 — cancellation must actually stop bytes).
+	// When SetInFlightCancels wired a shared registry, it takes precedence
+	// over this per-instance map.
 	activeCancels map[string]context.CancelFunc
-	store *jobs.JobStore
-	send  SendFunc
-	now   func() time.Time
-	newID func() string
+	// cancels is the OPTIONAL shared registry (SetInFlightCancels): when
+	// set, in-flight cancels register into it and Cancel fires from it, so
+	// cross-instance hosts (desktop recipe service: one persistent Outbox
+	// plus one per-dispatch-pass Outbox) stop transfers reliably.
+	cancels *InFlightCancels
+	store   *jobs.JobStore
+	send    SendFunc
+	now     func() time.Time
+	newID   func() string
+}
+
+// SetInFlightCancels wires a SHARED in-flight-cancel registry. Pass the
+// same registry to every Outbox instance over the same job store: the
+// instance whose dispatch registers the cancel and the instance whose
+// Cancel must stop the transfer are then the same mechanism regardless of
+// instance boundaries. Nothing else changes; instances without a shared
+// registry keep the per-instance map.
+func (o *Outbox) SetInFlightCancels(r *InFlightCancels) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.cancels = r
 }
 
 // New builds an Outbox over store. send may be nil, in which case DispatchOnce
@@ -296,13 +367,33 @@ func (o *Outbox) Cancel(jobID string) error {
 	// v2.3 correction C (gap 5): actually STOP the in-flight transfer —
 	// flipping the stored status alone lets the running send finish and
 	// record a false completion.
+	// SB-R08: the terminal state must be DURABLE before the in-flight
+	// cancel fires. The previous order (fire, then save) let the aborted
+	// dispatch record its outcome — including a retry schedule — after the
+	// cancel and overwrite it: the user's cancel was resurrected into
+	// queued+retry. With save-first, the aborted pass's ownership/terminal
+	// re-read always observes the cancel and drops its outcome.
+	//
+	// Success preservation: if the transfer completed and recorded its
+	// outcome while this cancel was in flight, the job is already terminal
+	// and cancellation is refused — history is never rewritten.
+	if current, ok2, err2 := o.store.Load(jobID); err2 == nil && ok2 && current.Status == jobs.JobCompleted {
+		return wire.Errorf(wire.CodeStorage, "outbox: job %s completed before cancellation could take effect", jobID)
+	}
+	if err := o.store.Save(job); err != nil {
+		return err
+	}
 	o.mu.Lock()
 	if c, ok := o.activeCancels[jobID]; ok {
 		c()
 		delete(o.activeCancels, jobID)
 	}
+	shared := o.cancels
 	o.mu.Unlock()
-	return o.store.Save(job)
+	if shared != nil {
+		shared.cancelJob(jobID)
+	}
+	return nil
 }
 
 // RetryFailed explicitly re-queues failed attempts, granting a fresh retry
@@ -583,21 +674,35 @@ func (o *Outbox) dispatchJob(ctx context.Context, job *jobs.Job, owner string, t
 
 		sendCtx, sendCancel := context.WithCancel(ctx)
 
+		// SB-R08: register the in-flight cancel into the SHARED registry
+		// when one is wired (cross-instance hosts), else the per-instance
+		// map (single-instance hosts). Cancel consults both.
 		o.mu.Lock()
-		if o.activeCancels == nil {
-			o.activeCancels = make(map[string]context.CancelFunc)
+		shared := o.cancels
+		own := shared == nil
+		if own {
+			if o.activeCancels == nil {
+				o.activeCancels = make(map[string]context.CancelFunc)
+			}
+			o.activeCancels[job.JobID] = sendCancel
 		}
-		o.activeCancels[job.JobID] = sendCancel
 		o.mu.Unlock()
+		if !own {
+			shared.register(job.JobID, sendCancel)
+		}
 
 		defer func() {
-
-			o.mu.Lock()
-
-			delete(o.activeCancels, job.JobID)
-
-			o.mu.Unlock()
-
+			// Leak-safe: after a normal settle or a Cancel-fired stop this
+			// is a no-op (the context is already done); on the early-return
+			// paths between registration and send it releases the context.
+			sendCancel()
+			if own {
+				o.mu.Lock()
+				delete(o.activeCancels, job.JobID)
+				o.mu.Unlock()
+			} else {
+				shared.unregister(job.JobID)
+			}
 		}()
 
 		outcome := o.sendWithHeartbeat(sendCtx, job, a, paths, owner, ttl)
@@ -627,6 +732,14 @@ func (o *Outbox) dispatchJob(ctx context.Context, job *jobs.Job, owner string, t
 			From: from, To: a.Status, Outcome: outcome.Status, Error: a.LastError,
 		}
 		rep.Results = append(rep.Results, ar)
+		// SB-R08: guarded persist — a cancel (or an adopting owner) that
+		// landed between the ownership re-read and this save must not be
+		// overwritten by the outcome. Reload and check terminality under
+		// the same discipline as the pre-send ownership check.
+		if latest, ok3, err3 := o.store.Load(job.JobID); err3 == nil && ok3 && isTerminalJobStatus(latest.Status) {
+			rep.Skipped = append(rep.Skipped, job.JobID+"/"+a.DeviceID+": outcome not persisted: job "+string(latest.Status)+" during send (cancel or adoption)")
+			break
+		}
 		if err := o.store.Save(*job); err != nil {
 			rep.Skipped = append(rep.Skipped, job.JobID+"/"+a.DeviceID+": cannot persist outcome: "+err.Error())
 			break
