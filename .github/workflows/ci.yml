@@ -308,6 +308,13 @@ jobs:
       - name: Guard production signing-key material out of the repo
         run: bash ./scripts/run_guard_tests.sh && bash ./scripts/guard-signing-material.sh
 
+      # SEC02: the rotation runbook's public-key verification step must work
+      # on a key the repository has never seen, without touching secret
+      # material. Runs in this job (rather than a new job) to keep the
+      # required-check list and ruleset unchanged.
+      - name: Verify signing-key fingerprint tool self-tests
+        run: bash ./scripts/keycheck_test.sh
+
   offlinelab:
     name: offlinelab (real-network local-only evidence)
     runs-on: ubuntu-latest
