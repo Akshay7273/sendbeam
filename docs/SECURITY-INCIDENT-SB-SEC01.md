@@ -181,13 +181,20 @@ same constant. Consequences:
 
 > **[DRAFT — requires owner approval before publication]**
 >
+> Status note for reviewers: at the time of writing the signing key has NOT
+> yet been replaced. The pinned public key in shipping clients is still the
+> exposed key. This draft must not be published in a form that states or
+> implies the rotation is complete; see `SIGNING-KEY-ROTATION.md` §7 for the
+> gates that must pass first.
+>
 > **Advisory: SendBeam update-signing key material was publicly exposed**
 >
-> Summary: Between 2026-08-27 and the release of v2.3, a file in the public
-> SendBeam repository contained a test signing credential that also
-> functioned as the production update-signing key. We have no evidence of
-> malicious use. Out of caution, we have replaced the signing key and are
-> re-verifying the release pipeline.
+> Summary: Since 2026-08-27, a file in the public SendBeam repository has
+> contained a test signing credential that also functions as the production
+> update-signing key. We have no evidence of malicious use. The exposed key
+> has been retired from the release pipeline and the signing key is being
+> replaced; until the replacement ships, do not accept updates delivered by
+> the built-in updater.
 >
 > Who is affected: users of SendBeam v1.6.0 through v2.2.x who use the
 > built-in updater. File-transfer functionality is NOT affected; pairing and
@@ -203,7 +210,10 @@ same constant. Consequences:
 --certificate-identity-regexp '^https://github\.com/Akshay7273/sendbeam/\.github/workflows/release\.yml@refs/tags/v[0-9]+$'
 --certificate-oidc-issuer https://token.actions.githubusercontent.com
 SHA256SUMS.txt` then `sha256sum -c SHA256SUMS.txt --ignore-missing`.
-> 4. Install the verified release over your existing installation.
+> 4. Install the verified release over your existing installation. Note
+>    that a manually installed release is the only supported migration path
+>    for versions below v2.3; there is no automatic upgrade path from a
+>    vulnerable version to the replacement key.
 > 5. Linux deb users: upgrade via your package repository when announced.
 >
 > If you cannot verify: wait for the signed installer announcement, or verify
