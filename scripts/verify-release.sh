@@ -4,25 +4,20 @@
 #
 # Cryptographically verifies SendBeam release artifacts against:
 #   1. SHA-256 checksum manifest (SHA256SUMS.txt)
-#   2. Minisign Ed25519 signature over that manifest (SHA256SUMS.txt.minisig)
-#   3. Sigstore cosign keyless OIDC bundle (SHA256SUMS.txt.sigstore.json)
+#   2. Sigstore cosign keyless OIDC bundle (SHA256SUMS.txt.sigstore.json)
 #
 # Modes
-#   (default)  official — full verification: minisign signature REQUIRED,
-#              cosign bundle REQUIRED (unless the bundle file is genuinely
-#              absent from the release, which is reported as reduced
-#              assurance and fails the run), at least one payload verified.
+#   (default)  official — full verification: the Sigstore cosign keyless OIDC
+#              bundle is REQUIRED, and at least one payload must verify.
 #   --skip-cosign
 #              Skip cosign verification only for releases that predate the
 #              sigstore bundle. The run is labelled REDUCED ASSURANCE and the
 #              final banner says exactly that — never the official-release
 #              success message.
 #   --checksum-only
-#              Development/partial-download helper: authenticate the manifest
-#              (minisign REQUIRED) and verify whichever payloads are present;
-#              at least one payload must verify. Reduces payload completeness
-#              guarantees only — the manifest is still authenticated. Labelled
-#              CHECKSUM-ONLY.
+#              Development/partial-download helper: verify whichever payloads
+#              are present without asserting provenance. Labelled
+#              CHECKSUM-ONLY. Reduced assurance, says so.
 #   --strict   Payload completeness: every file listed in SHA256SUMS.txt must
 #              be present and match. Orthogonal to signature policy: strict
 #              alone never means "verified".
@@ -37,7 +32,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 TARGET_DIR="."
-PUBKEY_FILE="${ROOT_DIR}/minisign.pub"
 STRICT_FILES="false"
 SKIP_COSIGN="false"
 CHECKSUM_ONLY="false"
@@ -49,7 +43,10 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --pubkey|-p)
-      PUBKEY_FILE="$2"
+      # Retained as a no-op so external automation that still passes a public
+      # key path keeps running. No signing key exists in this project any
+      # more; provenance comes from keyless Sigstore identity.
+      shift
       shift 2
       ;;
     --strict)
@@ -70,15 +67,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Error: Unknown option $1" >&2
-      echo "Usage: $0 [--dir <release-dir>] [--pubkey <minisign.pub>] [--strict] [--skip-cosign] [--checksum-only]" >&2
+      echo "Usage: $0 [--dir <release-dir>] [--strict] [--skip-cosign] [--checksum-only]" >&2
       exit 1
       ;;
   esac
 done
 
-if [[ "${PUBKEY_FILE}" != /* ]]; then
-  PUBKEY_FILE="$(pwd)/${PUBKEY_FILE}"
-fi
 if [[ "${TARGET_DIR}" != /* ]]; then
   TARGET_DIR="$(pwd)/${TARGET_DIR}"
 fi
@@ -92,7 +86,7 @@ fi
 
 # Mode label — printed in the final banner. The official-release banner is
 # reserved for a run with no reduced-assurance entitlements.
-MODE_LABEL="OFFICIAL RELEASE (full cryptographic verification)"
+MODE_LABEL="OFFICIAL RELEASE (keyless Sigstore provenance + checksums)"
 if [[ "${CHECKSUM_ONLY}" == "true" ]]; then
   MODE_LABEL="CHECKSUM-ONLY (authenticated manifest; payload completeness NOT asserted)"
 elif [[ "${SKIP_COSIGN}" == "true" ]]; then
@@ -104,43 +98,10 @@ echo "Working directory: $(pwd)"
 echo "Mode: ${MODE_LABEL}"
 
 # ------------------------------------------------------------------------------
-# 1. Minisign Signature Verification — REQUIRED in every mode
+# 1. Sigstore Cosign Keyless OIDC Verification — required in official mode
 # ------------------------------------------------------------------------------
 echo ""
-echo "--- [1/3] Minisign Ed25519 Signature Verification (required) ---"
-
-MINISIGN_VERIFIED="false"
-if [[ ! -f "SHA256SUMS.txt.minisig" ]]; then
-  echo "[-] ERROR: SHA256SUMS.txt.minisig signature file not found." >&2
-  echo "    A checksum manifest without its signature cannot be authenticated;" >&2
-  echo "    refusing to verify (fail closed)." >&2
-  exit 1
-fi
-
-if [[ ! -f "${PUBKEY_FILE}" ]]; then
-  echo "[-] ERROR: Minisign public key file not found at ${PUBKEY_FILE}" >&2
-  exit 1
-fi
-
-if command -v minisign >/dev/null 2>&1; then
-  echo "[+] Verifying with native minisign CLI..."
-  minisign -Vm SHA256SUMS.txt -p "${PUBKEY_FILE}"
-elif command -v go >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/scripts/minisign.go" ]]; then
-  echo "[+] Verifying with Go minisign tool..."
-  go run "${ROOT_DIR}/scripts/minisign.go" verify -m SHA256SUMS.txt -p "${PUBKEY_FILE}" -x SHA256SUMS.txt.minisig
-else
-  echo "[-] ERROR: Neither 'minisign' CLI nor Go toolchain available to verify the signature." >&2
-  echo "    Required verification could not be completed; failing closed." >&2
-  exit 1
-fi
-MINISIGN_VERIFIED="true"
-echo "[✓] Minisign signature over SHA256SUMS.txt verified successfully!"
-
-# ------------------------------------------------------------------------------
-# 2. Sigstore Cosign Keyless OIDC Verification — required in official mode
-# ------------------------------------------------------------------------------
-echo ""
-echo "--- [2/3] Sigstore Cosign OIDC Attestation Verification ---"
+echo "--- [1/2] Sigstore Cosign Keyless OIDC Verification (required) ---"
 
 BUNDLE_FILE=""
 if [[ -f "SHA256SUMS.txt.sigstore.json" ]]; then
@@ -196,7 +157,7 @@ fi
 # 3. SHA-256 Digest Validation
 # ------------------------------------------------------------------------------
 echo ""
-echo "--- [3/3] SHA-256 Digest Checksums ---"
+echo "--- [2/2] SHA-256 Digest Checksums ---"
 
 FAILED=0
 VERIFIED=0
@@ -260,17 +221,17 @@ echo ""
 echo "========================================================"
 if [[ "${CHECKSUM_ONLY}" == "true" ]]; then
   echo "[✓] CHECKSUM-ONLY VERIFICATION PASSED"
-  echo "    Manifest authenticated (minisign); ${VERIFIED} payload(s) verified."
+  echo "    ${VERIFIED} payload(s) verified against the manifest."
   echo "    This is NOT full authenticated release verification:"
   echo "    payload completeness and sigstore provenance were not asserted."
 elif [[ "${SKIP_COSIGN}" == "true" ]]; then
   echo "[✓] REDUCED-ASSURANCE VERIFICATION PASSED"
-  echo "    Minisign OK; ${VERIFIED} payload(s) verified."
+  echo "    ${VERIFIED} payload(s) verified."
   echo "    This is NOT full authenticated release verification:"
   echo "    sigstore provenance was skipped by request."
 else
   echo "[✓] ALL RELEASE ASSET VERIFICATIONS PASSED"
-  echo "    Official release authenticated: minisign OK, sigstore OK,"
+  echo "    Official release authenticated: keyless Sigstore OK,"
   echo "    ${VERIFIED} payload(s) verified against the signed manifest."
 fi
 echo "========================================================"
