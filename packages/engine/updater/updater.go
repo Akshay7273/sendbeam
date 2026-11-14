@@ -359,6 +359,22 @@ func (u *Updater) fetchSignedManifest(ctx context.Context) (*ChannelManifest, er
 		return nil, fmt.Errorf("%w: missing version in manifest", ErrManifestMalformed)
 	}
 
+	// SB-R11: an unknown future schema_version must fail closed — a newer
+	// manifest dialect may carry fields with different semantics that this
+	// binary would silently misread. Known-good schemas only.
+	if manifest.SchemaVersion != ManifestSchemaVersion {
+		return nil, fmt.Errorf("%w: unsupported manifest schema_version %d (supported: %d)",
+			ErrManifestMalformed, manifest.SchemaVersion, ManifestSchemaVersion)
+	}
+
+	// The channel of a manifest served from <channel>.json must match the
+	// requested channel: a mismatched manifest means the endpoint is
+	// inconsistent or hostile (e.g. a beta manifest on the stable URL).
+	if manifest.Channel != "" && manifest.Channel != channelName {
+		return nil, fmt.Errorf("%w: manifest channel %q does not match requested channel %q",
+			ErrManifestMalformed, manifest.Channel, channelName)
+	}
+
 	return &manifest, nil
 }
 

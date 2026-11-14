@@ -29,6 +29,11 @@ type ReleaseMetadata struct {
 	Checksums    map[string]string `json:"checksums,omitempty"` // filename -> lowercase hex sha256
 }
 
+// ManifestSchemaVersion is the only channel-manifest schema this binary
+// parses. A signed manifest claiming a newer schema_version fails closed
+// rather than being misread under old semantics (SB-R11).
+const ManifestSchemaVersion = 1
+
 // ChannelManifest represents the canonical, signed JSON update manifest published per release channel.
 type ChannelManifest struct {
 	SchemaVersion       int                     `json:"schema_version"`
