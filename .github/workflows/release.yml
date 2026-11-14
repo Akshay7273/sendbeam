@@ -56,6 +56,22 @@ jobs:
             v*) ;;
             *) echo "[-] ERROR: tag ${TAG} is not a version tag (v...)" >&2; exit 1 ;;
           esac
+          # SB-SEC02: refuse to sign or publish from an untrusted event. Only a
+          # tag push or an explicit workflow_dispatch may produce a signed
+          # release. fork PRs, pull_request_target, schedule, and other events
+          # must never reach the signing credential.
+          case "${GITHUB_EVENT_NAME}" in
+            push|workflow_dispatch) ;;
+            *)
+              echo "[-] ERROR: release signing is not permitted from event '${GITHUB_EVENT_NAME}'." >&2
+              echo "    Only 'push' (tag) and 'workflow_dispatch' may produce a signed release." >&2
+              exit 1
+              ;;
+          esac
+          if [ "${{ github.ref_type }}" = "tag" ] && [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "[-] ERROR: refusing to sign from a pull_request event." >&2
+            exit 1
+          fi
           # Resolve and VALIDATE the tag; a missing tag is a hard error.
           SHA="$(gh api "repos/${{ github.repository }}/git/ref/tags/${TAG}" --jq '.object.sha')"
           if [ -z "${SHA}" ]; then
@@ -743,6 +759,27 @@ jobs:
             SHA256SUMS.txt
           test -f SHA256SUMS.txt.sigstore.json
 
+      # SB-SEC02: prove the release is verifiable under the PINNED key before
+      # it is attested or published. The signer already refuses a credential
+      # that does not match minisign.pub; this is the independent end-to-end
+      # check (signature bytes vs pinned key), so a future signer regression
+      # cannot publish an unverifiable release.
+      - name: Verify signatures against the pinned trust anchor
+        working-directory: release-bundle
+        run: |
+          set -euo pipefail
+          go run ../scripts/minisign.go verify \
+            -m SHA256SUMS.txt \
+            -p ../minisign.pub \
+            -x SHA256SUMS.txt.minisig
+          echo "[+] Minisign signature verifies under the pinned public key."
+          for f in stable.json beta.json; do
+            if [ -f "$f" ] && [ -f "$f.minisig" ]; then
+              go run ../scripts/minisign.go verify -m "$f" -p ../minisign.pub -x "$f.minisig"
+              echo "[+] $f verifies under the pinned public key."
+            fi
+          done
+
       - name: Validate checksums against bundle
         working-directory: release-bundle
         run: |
@@ -850,6 +887,33 @@ jobs:
             echo "" >> release-notes.md
             head -n 30 "docs/RELEASE-v1.6.md" >> release-notes.md || true
           fi
+
+      # SB-SEC02: no release may be published without verifiable provenance.
+      # Attestations are created earlier in this job; verify that every
+      # subject resolves to a real Sigstore attestation for THIS repository
+      # before anything is uploaded. Fail closed: a missing attestation blocks
+      # publication rather than shipping unverifiable artifacts.
+      - name: Require provenance attestations before publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd release-bundle
+          missing=0
+          for f in *; do
+            case "$f" in
+              SHA256SUMS.txt|*.minisig|*.sigstore.json) continue ;;
+            esac
+            if ! gh attestation verify "$f" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+              echo "[-] ERROR: no verifiable attestation for ${f}" >&2
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "[-] Refusing to publish: at least one asset has no verifiable provenance." >&2
+            exit 1
+          fi
+          echo "[+] Provenance verified for every release subject."
 
       - name: Create or update draft GitHub Release
         env:
