@@ -1,4 +1,4 @@
-# Existing-Client Migration (SB-SEC02, Phase D)
+# Existing-Client Migration
 
 Status: **prepared, NOT published.** Owner approval required before this
 material is used in an advisory or release announcement.
@@ -6,8 +6,16 @@ material is used in an advisory or release announcement.
 Audience: users running SendBeam **v1.6.0 – v2.2.x** (every updater-capable
 release) whose shipped trust anchor is the retired key.
 
+> **Updated 2026-11-15 (SB-SIMPLIFY).** The originally planned key rotation was
+> replaced by removal: the automatic updater and its signing key no longer
+> exist in any current build, so there is no replacement trust anchor for old
+> clients to migrate _to_. That does not change any instruction in this
+> document — every step here was already a manual, out-of-band download — but
+> it does change the destination: migrate to a current release, which has no
+> updater at all, rather than to a re-pinned one.
+
 Related: [`SECURITY-INCIDENT-SB-SEC01.md`](SECURITY-INCIDENT-SB-SEC01.md),
-[`SIGNING-KEY-ROTATION.md`](SIGNING-KEY-ROTATION.md).
+[`updater.md`](updater.md).
 
 ---
 
@@ -18,11 +26,12 @@ key by an automatic update**. Any update channel the old client consults is
 authenticated by the very key that must be withdrawn, so an automatic
 migration is by construction forgeable. Therefore:
 
-- There is **no** automatic upgrade path from v1.6–v2.2 to the replacement
-  key, and none will be offered.
+- There is **no** automatic upgrade path from v1.6–v2.2, and none will be
+  offered. Current builds contain no updater and no update channel, so there is
+  nothing for an old client to be migrated onto automatically.
 - There is **no** compatibility mode in which retired-key signatures remain
-  sufficient for anything. New clients reject them outright
-  (`packages/engine/updater/sec02_trustanchor_test.go`).
+  sufficient for anything. The signer and verifier that would accept them no
+  longer exist in the project.
 - Migration is a **manual, out-of-band download** over an independently
   authenticated channel.
 
@@ -113,10 +122,11 @@ gh attestation verify '<artifact>' --repo Akshay7273/sendbeam
 ```
 
 Do **not** rely on `minisign -Vm SHA256SUMS.txt -P <retired fingerprint>` for
-this migration. After the re-pin, the replacement release's checksums verify
-under the **new** fingerprint published in `SECURITY.md`; checksums for
-pre-rotation releases verify only under the retired key and therefore prove
-nothing.
+this migration, and do not rely on a Minisign signature at all. The retired key
+is compromised, so any signature it produced proves nothing about who published
+those bytes. Current releases are not Minisign-signed — the signer and its
+public key were removed with the updater — so use the build-provenance
+attestation above.
 
 ### 4.2 Windows — installer (recommended) and portable
 

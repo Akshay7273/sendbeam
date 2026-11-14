@@ -141,7 +141,7 @@ on Wails v3, running the shared Go engine.
 - **Native system UX.** OS drag-and-drop file transfers, system native file pickers, and system tray integration.
 - **Unified protocol.** Interoperates seamlessly with browser and CLI peers.
 - **Cross-platform packaging.** Windows portable ZIP & NSIS installer, macOS Universal application (.app & .dmg), and Linux AppImage & Debian package (.deb).
-- **Built-in self-updater.** Automatic update notifications, release notes inspector, and atomic in-place replacement with automatic rollback on failure.
+- **Manual updates from GitHub Releases.** Download the latest release when you want it; there is no in-app updater and no background update check.
 
 Download the latest release for your platform from [GitHub Releases](https://github.com/Akshay7273/sendbeam/releases).
 
@@ -155,14 +155,14 @@ See [apps/desktop/README.md](apps/desktop/README.md) and [docs/distribution.md](
 
 ## Verify Your Download
 
-SendBeam release packages are hashed with SHA-256 and signed cryptographically with both **Minisign (Ed25519)** and **Sigstore Cosign (Keyless OIDC)**:
+SendBeam release packages are covered by **SHA-256 checksums** and **GitHub build-provenance attestations**, with the checksum manifest additionally signed **keyless via Sigstore Cosign**. No long-lived signing key exists for this project:
 
 ### 1. Automated Verification Script
 
 ```bash
 # Clone the repository and run the verification script against your downloaded artifacts.
-# Default mode = OFFICIAL: minisign + sigstore bundle + payload digests are all required;
-# it fails closed on missing signatures, missing tools, or zero verified payloads.
+# Default mode = OFFICIAL: the keyless sigstore bundle and payload digests are required;
+# it fails closed on a missing bundle, missing tools, or zero verified payloads.
 ./scripts/verify-release.sh --dir ./dist
 
 # Reduced modes (truthful labels, never the official-release banner):
@@ -176,8 +176,8 @@ Signature policy (what each mode asserts) is documented in the script header (`.
 ### 2. Manual Verification
 
 ```bash
-# Verify the SHA256SUMS.txt signature with Minisign:
-minisign -Vm SHA256SUMS.txt -P RWTcyDWHWbxnuo3LVM5mWoZrx0HDwSQzAZvXK1lPRcdtJxshUDxJh+rE
+# Verify the build provenance of a downloaded artifact (no keys involved):
+gh attestation verify SendBeam-linux-amd64.AppImage --repo Akshay7273/sendbeam
 
 # Verify SHA-256 checksums of the downloaded files:
 sha256sum -c SHA256SUMS.txt --ignore-missing
@@ -185,7 +185,7 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 # Verify with Sigstore Cosign (keyless):
 cosign verify-blob \
   --bundle SHA256SUMS.txt.sigstore.json \
-  --certificate-identity-regexp '^https://github\\.com/Akshay7273/sendbeam/\\.github/workflows/(release|scrub-release-assets)\\.yml@refs/(tags/v[0-9]+|heads/main)$' \
+  --certificate-identity-regexp '^https://github\.com/Akshay7273/sendbeam/\.github/workflows/release\.yml@refs/tags/v[0-9]+$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   SHA256SUMS.txt
 ```
@@ -277,7 +277,7 @@ commitments, see [SECURITY.md](SECURITY.md).
 - [Troubleshooting & Diagnostics](docs/troubleshooting.md) — network diagnostics, restrictive firewalls, lock resolution
 - [State Storage Locations](docs/state-storage.md) — persistent config, journals, sender records, and keychains
 - [Supply Chain Integrity](docs/supply-chain.md) — build provenance attestations, SPDX 2.3 SBOMs, checksum manifests
-- [Updater Architecture](docs/updater.md) — self-update channels, cryptographic verification, and rollback safety
+- [Updates](docs/updater.md) — how this project distributes releases and why there is no in-app updater
 - [Release Gate v2.2](docs/RELEASE-v2.2.md) — v2.2 milestone criteria, upgrade/rollback evidence, and release checklist
 - [Release Gate v2.2](docs/RELEASE-v2.2.md) — v2.2 milestone criteria, upgrade/rollback evidence, and release checklist
 - [v2.3 desktop acceptance gate](docs/RELEASE-v2.3-acceptance.md) — packaged-UI and real-device rows still NOT RUN (in-progress milestone) — release/install/update regression rows performed, clean, and explicitly BLOCKED (no publication)

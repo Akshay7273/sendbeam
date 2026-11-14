@@ -59,7 +59,13 @@ SendBeam's security architecture is formally documented in [Threat Model](docs/t
 - **Filesystem Traversal:** Escaping designated receive directories via crafted filenames or symlinks (`NormalizeTransferPath`).
 - **Mesh Trust & Revocation:** Forged revocation records, sequence number rollback attacks, or unauthorized device trust additions (`packages/engine/trust`).
 - **Relay / Signaling Attacks:** Server-side tampering, frame injection, or payload modification not detected by client AEAD.
-- **Self-Updater Integrity:** Downgrade attacks, Minisign signature verification bypasses, or malicious update manifest application (`packages/engine/updater`).
+- **Release Provenance:** Weaknesses in the release pipeline that let an artifact
+  be published without a valid build-provenance attestation, or that make a
+  published checksum manifest inconsistent with the artifacts it covers. There
+  is no in-app updater to attack: the updater and its signing key were removed
+  (see [docs/updater.md](docs/updater.md)). Vulnerabilities in retired clients
+  that still contain update code are handled under
+  [MIGRATION-existing-clients.md](docs/MIGRATION-existing-clients.md).
 
 ### Out of Scope
 

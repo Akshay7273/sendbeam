@@ -74,14 +74,15 @@ go build -tags server -o sendbeam-desktop-server .
 - **Debian package**: Native `.deb` package `sendbeam-desktop_<version>_amd64.deb` containing desktop launcher, icons, and binaries.
 
 > [!NOTE]
-> Release artifacts carry **cryptographic artifact signatures** (Minisign +
-> Sigstore, verifiable via `scripts/verify-release.sh` and the documented
-> Minisign public key) and build-provenance attestations. **OS-publisher
-> signing** (Apple notarization/Developer ID, Microsoft code-signing
-> certificates) is a separate trust layer and remains deferred — installers may
-> show Gatekeeper/SmartScreen warnings until then. Signed automated update
-> channels exist (`stable.json`/`beta.json` minisig-signed manifests; see
-> [docs/updater.md](../../docs/updater.md)).
+> Release artifacts carry **GitHub build-provenance attestations** and
+> **SHA-256 checksums** (with the checksum manifest keyless-signed via
+> Sigstore), verifiable via `gh attestation verify` or
+> `scripts/verify-release.sh`. No long-lived signing key is used.
+> **OS-publisher signing** (Apple notarization/Developer ID, Microsoft
+> code-signing certificates) is a separate trust layer and remains deferred —
+> installers may show Gatekeeper/SmartScreen warnings until then. There is no
+> automatic update channel: updates are manual downloads from GitHub Releases
+> (see [docs/updater.md](../../docs/updater.md)).
 
 ## Test
 

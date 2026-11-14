@@ -1,5 +1,14 @@
 # Signing-Key Rotation Runbook (SB-SEC02)
 
+> **SUPERSEDED — 2026-11-15 (SB-SIMPLIFY).** This runbook is retained as a
+> historical record and is **not** the response that was adopted. The owner
+> decided against rotating to a replacement production key; instead the
+> automatic updater and its signing key were removed entirely, and releases are
+> now distributed manually through GitHub Releases with build-provenance
+> attestations and keyless Sigstore signing. **Do not execute any step below.**
+> No replacement signing key exists or should be generated. See
+> [updater.md](updater.md) and [supply-chain.md](supply-chain.md).
+
 Status: **prepared, NOT executed.** Every step below is owner-gated.
 Owner: repository owner only. Agent workstations, CI runners, and any
 cloud VPS are explicitly excluded from key generation and key custody.

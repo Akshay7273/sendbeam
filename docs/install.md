@@ -178,24 +178,24 @@ sendbeam version
 
 ---
 
-## 5. Cryptographic Checksum & Signature Verification
+## 5. Cryptographic Checksum & Provenance Verification
 
-All release packages and archives are cryptographically signed and hashed in `SHA256SUMS.txt`:
+All release packages and archives are covered by build-provenance attestations and hashed in `SHA256SUMS.txt`. No long-lived signing key is used, so there is no Minisign public key to import.
 
-### Option 1: Minisign (Ed25519) Verification
+### Option 1: Build-Provenance Attestation (recommended)
 
 ```bash
-# Verify SHA256SUMS.txt against the official SendBeam public key:
-minisign -Vm SHA256SUMS.txt -P RWTcyDWHWbxnuo3LVM5mWoZrx0HDwSQzAZvXK1lPRcdtJxshUDxJh+rE
+# Verify that this artifact was built by this repository's release workflow:
+gh attestation verify <downloaded-artifact> --repo Akshay7273/sendbeam
 ```
 
 ### Option 2: Sigstore Cosign (Keyless OIDC) Verification
 
 ```bash
-# Verify the GitHub Actions OIDC build identity attestation:
+# Verify the GitHub Actions OIDC identity attestation over the checksum manifest:
 cosign verify-blob \
   --bundle SHA256SUMS.txt.sigstore.json \
-  --certificate-identity-regexp 'github.com/Akshay7273/sendbeam' \
+  --certificate-identity-regexp '^https://github\.com/Akshay7273/sendbeam/\.github/workflows/release\.yml@refs/tags/v[0-9]+$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS.txt
 ```
