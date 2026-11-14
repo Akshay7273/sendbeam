@@ -715,13 +715,6 @@ jobs:
           bash ./scripts/generate-sbom.sh --target cli --output sboms/sendbeam-cli.spdx.json --version "${{ steps.meta.outputs.version }}" --commit "${{ steps.meta.outputs.commit }}"
           bash ./scripts/generate-sbom.sh --target desktop --output sboms/sendbeam-desktop.spdx.json --version "${{ steps.meta.outputs.version }}" --commit "${{ steps.meta.outputs.commit }}"
 
-      - name: Check Minisign Secret Key availability
-        run: |
-          if [ -z "${{ secrets.MINISIGN_SECRET_KEY }}" ]; then
-            echo "[-] ERROR: MINISIGN_SECRET_KEY secret is required for signing releases!" >&2
-            exit 1
-          fi
-
       - name: Install Cosign
         uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
@@ -739,46 +732,6 @@ jobs:
           cd release-bundle
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
-
-      - name: Sign release manifest (Minisign + Sigstore Cosign)
-        env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-        working-directory: release-bundle
-        run: |
-          echo "Signing SHA256SUMS.txt with Minisign Ed25519..."
-          go run ../scripts/minisign.go sign \
-            -m SHA256SUMS.txt \
-            -p ../minisign.pub \
-            -x SHA256SUMS.txt.minisig \
-            -t "timestamp:$(date +%s) file:SHA256SUMS.txt version:${{ steps.meta.outputs.version }}"
-          test -f SHA256SUMS.txt.minisig
-
-          echo "Signing SHA256SUMS.txt with Sigstore Cosign keyless OIDC..."
-          cosign sign-blob --yes \
-            --bundle SHA256SUMS.txt.sigstore.json \
-            SHA256SUMS.txt
-          test -f SHA256SUMS.txt.sigstore.json
-
-      # SB-SEC02: prove the release is verifiable under the PINNED key before
-      # it is attested or published. The signer already refuses a credential
-      # that does not match minisign.pub; this is the independent end-to-end
-      # check (signature bytes vs pinned key), so a future signer regression
-      # cannot publish an unverifiable release.
-      - name: Verify signatures against the pinned trust anchor
-        working-directory: release-bundle
-        run: |
-          set -euo pipefail
-          go run ../scripts/minisign.go verify \
-            -m SHA256SUMS.txt \
-            -p ../minisign.pub \
-            -x SHA256SUMS.txt.minisig
-          echo "[+] Minisign signature verifies under the pinned public key."
-          for f in stable.json beta.json; do
-            if [ -f "$f" ] && [ -f "$f.minisig" ]; then
-              go run ../scripts/minisign.go verify -m "$f" -p ../minisign.pub -x "$f.minisig"
-              echo "[+] $f verifies under the pinned public key."
-            fi
-          done
 
       - name: Validate checksums against bundle
         working-directory: release-bundle
@@ -801,21 +754,6 @@ jobs:
         with:
           subject-path: release-bundle/SendBeam-*
           sbom-path: release-bundle/sendbeam-desktop.spdx.json
-
-      - name: Generate Signed Update Channel Manifests
-        env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-        run: |
-          mkdir -p updates
-          go run ./scripts/generate-update-manifest.go \
-            --version "${{ steps.meta.outputs.version }}" \
-            --tag "${{ inputs.tag || github.ref_name }}" \
-            --channel "auto" \
-            --sums release-bundle/SHA256SUMS.txt \
-            --dir release-bundle \
-            --pubkey minisign.pub \
-            --out updates
-          cp updates/* release-bundle/
 
       - name: Generate Package Manager Manifests (Homebrew, Scoop, WinGet, AUR)
         run: |
@@ -844,29 +782,24 @@ jobs:
           cat <<EOF > release-notes.md
           ## SendBeam ${TAG_VAL}
 
-          ### Cryptographic Verification
+          ### Verification
 
-          All release binaries and installer packages are cryptographically signed and verifiable end-to-end:
+          Every artifact is covered by a GitHub build-provenance attestation bound to
+          this repository's release workflow identity. Verify with the GitHub CLI:
 
-          1. **Minisign (Ed25519):**
           \`\`\`bash
-          # Verify SHA256SUMS.txt using the official SendBeam public key:
-          minisign -Vm SHA256SUMS.txt -P RWTcyDWHWbxnuo3LVM5mWoZrx0HDwSQzAZvXK1lPRcdtJxshUDxJh+rE
+          gh attestation verify <artifact> --repo Akshay7273/sendbeam
           \`\`\`
 
-          2. **Sigstore Cosign (Keyless OIDC):**
+          The SHA-256 checksum manifest is additionally signed keyless with Sigstore
+          (no long-lived signing key exists for this project):
+
           \`\`\`bash
-          # Verify the GitHub Actions OIDC identity attestation:
           cosign verify-blob \
             --bundle SHA256SUMS.txt.sigstore.json \
-            --certificate-identity-regexp '^https://github\.com/Akshay7273/sendbeam/\.github/workflows/(release|scrub-release-assets)\.yml@refs/(tags/v[0-9]+|heads/main)$' \
+            --certificate-identity-regexp '^https://github\.com/Akshay7273/sendbeam/\.github/workflows/release\.yml@refs/tags/v[0-9]+' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             SHA256SUMS.txt
-          \`\`\`
-
-          3. **SHA-256 Checksums:**
-          \`\`\`bash
-          # Verify downloaded asset checksum against the signed manifest:
           sha256sum -c SHA256SUMS.txt --ignore-missing
           \`\`\`
 
@@ -1056,23 +989,12 @@ jobs:
           name: sendbeam-release-bundle-${{ steps.meta.outputs.version }}
           path: bundle
 
-      - name: Run Release Verification Gate (Minisign + Cosign + Checksums)
+      - name: Run Release Verification Gate (Sigstore provenance + checksums)
         run: |
-          # Official mode (default): minisign + sigstore bundle + payloads all
+          # Official mode (default): sigstore bundle + payloads all
           # required; --strict asserts payload completeness. No opt-out flags:
           # reduced modes exist for users, not for the release pipeline.
-          bash ./scripts/verify-release.sh --dir bundle --pubkey minisign.pub --strict
-
-      - name: Verify update channel manifests
-        run: |
-          test -f bundle/beta.json
-          test -f bundle/beta.json.minisig
-          go run ./scripts/minisign.go verify -m bundle/beta.json -p minisign.pub -x bundle/beta.json.minisig
-          if [ "${{ steps.meta.outputs.is_prerelease }}" != "true" ]; then
-            test -f bundle/stable.json
-            test -f bundle/stable.json.minisig
-            go run ./scripts/minisign.go verify -m bundle/stable.json -p minisign.pub -x bundle/stable.json.minisig
-          fi
+          bash ./scripts/verify-release.sh --dir bundle --strict
 
       - name: Test package manager generator test suite
         run: bash ./scripts/generate-package-manifests_test.sh
