@@ -297,6 +297,9 @@ jobs:
       - name: Run environment preflight self-tests
         run: bash ./scripts/doctor_test.sh
 
+      - name: Run acceptance-evidence recorder self-tests
+        run: bash ./scripts/acceptance-record_test.sh
+
   offlinelab:
     name: offlinelab (real-network local-only evidence)
     runs-on: ubuntu-latest
