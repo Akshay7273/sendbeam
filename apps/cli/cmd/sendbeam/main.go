@@ -67,8 +67,6 @@ func main() {
 		os.Exit(runDiagnose(os.Args[2:]))
 	case "onboard":
 		os.Exit(runOnboard(os.Args[2:], os.Stdout, os.Stderr))
-	case "update":
-		os.Exit(runUpdate(os.Args[2:]))
 	case "version", "-v", "--version":
 		printVersion(os.Stdout)
 		os.Exit(0)
@@ -99,7 +97,6 @@ func usage(w *os.File) {
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam receive-policy")+" <show|set> [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam diagnose")+" [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam onboard")+" [--json]")
-	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam update")+" [flags]")
 	_, _ = fmt.Fprintln(w, "  "+s.cyan("sendbeam version"))
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, s.dim("Common flags:"))

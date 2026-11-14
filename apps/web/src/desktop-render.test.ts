@@ -195,7 +195,11 @@ describe('Desktop frontend literal-text rendering', () => {
     expect(settingsStatus?.textContent).toContain('<b id="xss-settings-err">Save failed</b>');
   });
 
-  it('renders update notifications as literal text', () => {
+  // The update banner and status panel were removed with the self-updater
+  // (SB-SIMPLIFY). This replaces the former literal-text rendering test: an
+  // update event now has no DOM surface to inject into, which is a stronger
+  // guarantee than escaping was.
+  it('has no surface for update notifications', () => {
     const { document, emit } = setupDesktopDOM();
 
     emit('sendbeam:update', {
@@ -204,15 +208,12 @@ describe('Desktop frontend literal-text rendering', () => {
       releaseNotes: 'Security fixes <script id="xss-notes">alert(1)</script>',
     });
 
-    const statusLabel = document.getElementById('update-status-label');
-    expect(statusLabel?.querySelector('img')).toBeNull();
+    expect(document.getElementById('update-status-label')).toBeNull();
+    expect(document.getElementById('update-banner')).toBeNull();
+    expect(document.getElementById('update-banner-text')).toBeNull();
+    expect(document.getElementById('cfg-update-channel')).toBeNull();
     expect(document.querySelector('img[src="x"]')).toBeNull();
     expect(document.querySelector('script#xss-notes')).toBeNull();
-    expect(statusLabel?.textContent).toContain('2.0.0<img src="x" onerror="1">');
-
-    const bannerText = document.getElementById('update-banner-text');
-    expect(bannerText?.querySelector('img')).toBeNull();
-    expect(bannerText?.textContent).toContain('2.0.0<img src="x" onerror="1">');
   });
 
   it('rejects unsafe protocol schemes on invite QR image', () => {

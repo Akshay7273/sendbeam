@@ -3,7 +3,6 @@ import type { TrustPolicy } from '@sendbeam/protocol';
 export const WAILS_SERVICES = {
   Service: 'github.com/sendbeam/desktop/internal/engine.Service',
   Transfer: 'github.com/sendbeam/desktop/internal/engine.TransferService',
-  Update: 'github.com/sendbeam/desktop/internal/engine.UpdateService',
   Device: 'github.com/sendbeam/desktop/internal/engine.DeviceService',
 } as const;
 
@@ -11,7 +10,6 @@ export const WAILS_EVENTS = {
   Transfer: 'sendbeam:transfer',
   Consent: 'sendbeam:consent',
   Devices: 'sendbeam:devices',
-  Update: 'sendbeam:update',
   PairingComplete: 'sendbeam:pairing_complete',
   PairingFailed: 'sendbeam:pairing_failed',
 } as const;
@@ -106,7 +104,6 @@ export interface DesktopConfig {
   serverUrl?: string;
   closeToTray?: boolean;
   startMinimized?: boolean;
-  updateChannel?: string;
   iceServers?: string[];
 }
 
@@ -124,15 +121,6 @@ export interface EngineCaps {
 export interface SelfCheckResult {
   ok: boolean;
   problems?: string[];
-}
-
-export interface UpdateStatus {
-  state: string;
-  currentVersion: string;
-  latestVersion?: string;
-  releaseNotes?: string;
-  channel: string;
-  error?: string;
 }
 
 export type WailsCaller = (name: string, ...args: unknown[]) => Promise<unknown>;
@@ -245,13 +233,6 @@ export interface TransferServiceAdapter {
   transferCenterForget(jobId: string): Promise<void>;
 }
 
-export interface UpdateServiceAdapter {
-  checkUpdate(channel: string): Promise<UpdateStatus>;
-  setChannel(channel: string): Promise<void>;
-  applyUpdate(): Promise<UpdateStatus>;
-  getStatus(): Promise<UpdateStatus>;
-}
-
 export interface EngineServiceAdapter {
   info(): Promise<EngineInfo>;
   caps(): Promise<EngineCaps>;
@@ -261,7 +242,6 @@ export interface EngineServiceAdapter {
 export interface WailsBridge {
   device: DeviceServiceAdapter;
   transfer: TransferServiceAdapter;
-  update: UpdateServiceAdapter;
   engine: EngineServiceAdapter;
   events: {
     on(name: string, cb: (data: unknown) => void): () => void;
@@ -379,16 +359,6 @@ export function createTransferServiceAdapter(call: WailsCaller): TransferService
   };
 }
 
-export function createUpdateServiceAdapter(call: WailsCaller): UpdateServiceAdapter {
-  return {
-    checkUpdate: (channel) =>
-      call(`${WAILS_SERVICES.Update}.CheckUpdate`, channel) as Promise<UpdateStatus>,
-    setChannel: (channel) => call(`${WAILS_SERVICES.Update}.SetChannel`, channel) as Promise<void>,
-    applyUpdate: () => call(`${WAILS_SERVICES.Update}.ApplyUpdate`) as Promise<UpdateStatus>,
-    getStatus: () => call(`${WAILS_SERVICES.Update}.GetStatus`) as Promise<UpdateStatus>,
-  };
-}
-
 export function createEngineServiceAdapter(call: WailsCaller): EngineServiceAdapter {
   return {
     info: () => call(`${WAILS_SERVICES.Service}.Info`) as Promise<EngineInfo>,
@@ -425,7 +395,6 @@ export function getWailsBridge(): WailsBridge | null {
   return {
     device: createDeviceServiceAdapter(caller),
     transfer: createTransferServiceAdapter(caller),
-    update: createUpdateServiceAdapter(caller),
     engine: createEngineServiceAdapter(caller),
     events: { on: subscriber },
   };

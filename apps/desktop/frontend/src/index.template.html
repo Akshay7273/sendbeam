@@ -12,17 +12,6 @@
       <span class="sub">End-to-end encrypted, peer-to-peer file transfer</span>
     </header>
 
-    <!-- UPDATE BANNER -->
-    <div class="update-banner hidden" id="update-banner">
-      <div class="update-banner-content">
-        <span class="update-banner-text" id="update-banner-text">SendBeam update available</span>
-        <div class="update-banner-actions">
-          <button class="primary small" id="update-banner-apply">Update now</button>
-          <button class="ghost small" id="update-banner-dismiss">Dismiss</button>
-        </div>
-      </div>
-    </div>
-
     <div class="tabs">
       <button class="tab active" id="tab-send">Send</button>
       <button class="tab" id="tab-receive">Receive</button>
@@ -336,7 +325,7 @@
           <option value="prefer-local">Prefer local — LAN first, online fallback</option>
           <option value="local-only">Local only — no internet (LAN transfers only)</option>
         </select>
-        <p style="font-size:0.8rem; color:var(--text-muted); margin:0.4rem 0 0;">Local only disables the signaling server, STUN/TURN, relay, invite codes, and update checks. Pairing and transfers stay on your local network.</p>
+        <p style="font-size:0.8rem; color:var(--text-muted); margin:0.4rem 0 0;">Local only disables the signaling server, STUN/TURN, relay, and invite codes. Pairing and transfers stay on your local network.</p>
         <div class="hidden" id="policy-degraded-banner" role="alert" style="margin-top:0.75rem; padding:0.75rem; border:1px solid var(--danger); border-radius:6px; font-size:0.85rem; background:var(--surface);"></div>
 
         <div style="display:flex; justify-content:space-between; align-items:center; margin-top:1rem;">
@@ -383,25 +372,6 @@
         <div class="statusline" id="offline-join-status"></div>
       </div>
 
-      <div class="card" id="card-updates" style="margin-top: 1.25rem;">
-        <h2>Software Updates &amp; Channel</h2>
-        <label for="cfg-update-channel">Release Channel</label>
-        <select id="cfg-update-channel" style="width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text-heading); padding:0.5rem; border-radius:6px; font-size:0.85rem; outline:none;">
-          <option value="stable">Stable (Official releases)</option>
-          <option value="beta">Beta (Release candidates &amp; betas)</option>
-        </select>
-
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:1rem;">
-          <div>
-            <span id="update-status-label" style="font-size:0.85rem; color:var(--text-muted);">SendBeam Desktop is up to date.</span>
-          </div>
-          <button id="check-update-btn">Check for updates</button>
-        </div>
-        <div id="update-details" class="hidden" style="margin-top:0.75rem; padding:0.75rem; background:var(--surface); border-radius:6px; font-size:0.8rem;">
-          <div id="update-notes" style="white-space:pre-wrap; margin-bottom:0.5rem; max-height:100px; overflow-y:auto; color:var(--text-muted);"></div>
-          <button class="primary small" id="update-install-btn">Install Update</button>
-        </div>
-      </div>
     </section>
 
     <!-- PAIR MODAL -->

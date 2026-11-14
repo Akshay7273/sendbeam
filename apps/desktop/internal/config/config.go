@@ -43,10 +43,6 @@ type DesktopConfig struct {
 	StartMinimized bool `json:"startMinimized"`
 	// Theme is the UI theme ("system", "dark", "light").
 	Theme string `json:"theme"`
-	// UpdateChannel is the preferred update distribution channel ("stable", "beta").
-	UpdateChannel string `json:"updateChannel"`
-	// AutoCheckUpdate controls whether the app automatically checks for updates on startup.
-	AutoCheckUpdate bool `json:"autoCheckUpdate"`
 	// RequirePadding mandates traffic padding; transfers with peers lacking padding are rejected fail-closed (V19-PR11).
 	RequirePadding bool `json:"requirePadding"`
 	// NetworkPolicy is the user-selected network path policy: "online",
@@ -117,18 +113,6 @@ func ApplyPatch(cfg *DesktopConfig, patch map[string]any) error {
 				return fmt.Errorf("config patch: %q must be a string", key)
 			}
 			next.Theme = s
-		case "updateChannel":
-			s, ok := val.(string)
-			if !ok {
-				return fmt.Errorf("config patch: %q must be a string", key)
-			}
-			next.UpdateChannel = s
-		case "autoCheckUpdate":
-			b, ok := val.(bool)
-			if !ok {
-				return fmt.Errorf("config patch: %q must be a boolean", key)
-			}
-			next.AutoCheckUpdate = b
 		case "requirePadding":
 			b, ok := val.(bool)
 			if !ok {
@@ -155,25 +139,20 @@ func ApplyPatch(cfg *DesktopConfig, patch map[string]any) error {
 // DefaultConfig returns the default safe configuration.
 func DefaultConfig() DesktopConfig {
 	return DesktopConfig{
-		ServerURL:       DefaultServerURL,
-		ICEServers:      []string{"stun:stun.l.google.com:19302"},
-		DownloadDir:     "",
-		AutoAccept:      false, // strictly false by default
-		RequirePadding:  false,
-		CloseToTray:     false,
-		StartMinimized:  false,
-		Theme:           "system",
-		UpdateChannel:   "stable",
-		AutoCheckUpdate: true,
-		NetworkPolicy:   "online",
+		ServerURL:      DefaultServerURL,
+		ICEServers:     []string{"stun:stun.l.google.com:19302"},
+		DownloadDir:    "",
+		AutoAccept:     false, // strictly false by default
+		RequirePadding: false,
+		CloseToTray:    false,
+		StartMinimized: false,
+		Theme:          "system",
+		NetworkPolicy:  "online",
 	}
 }
 
 // Validate validates the configuration values.
 func (c *DesktopConfig) Validate() error {
-	if c.UpdateChannel != "" && c.UpdateChannel != "stable" && c.UpdateChannel != "beta" && c.UpdateChannel != "dev" {
-		return fmt.Errorf("invalid update channel %q (must be stable, beta, or dev)", c.UpdateChannel)
-	}
 	if c.ServerURL != "" {
 		u, err := url.Parse(c.ServerURL)
 		if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" {

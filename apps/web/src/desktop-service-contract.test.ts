@@ -22,7 +22,6 @@ const KNOWN_SERVICES: Record<string, string[]> = {
     'PickFiles',
     'PickDestination',
   ],
-  'github.com/sendbeam/desktop/internal/engine.UpdateService': ['GetState', 'ApplyUpdate'],
   'github.com/sendbeam/desktop/internal/engine.DeviceService': ['ListDevices', 'UnpairDevice'],
   'github.com/sendbeam/desktop/internal/engine.NetworkPolicyService': [
     'GetPolicy',
@@ -88,6 +87,28 @@ function extractFQNs(): string[] {
   }
   return fqns;
 }
+
+// The automatic updater was removed at the root: no in-app update service,
+// no Wails binding, no update event, no CLI command. These assertions fail if
+// any part of it is reintroduced without an explicit product decision.
+describe('self-updater removal', () => {
+  it('exposes no update service FQN', () => {
+    expect(Object.keys(KNOWN_SERVICES)).not.toContain(
+      'github.com/sendbeam/desktop/internal/engine.UpdateService',
+    );
+  });
+
+  it('has no update binding in the frontend bundle', () => {
+    expect(htmlContent).not.toContain('UpdateService');
+    expect(htmlContent).not.toContain('sendbeam:update');
+  });
+
+  it('has no update command in the CLI surface', () => {
+    const mainGo = readFileSync(resolve(__dirname, '../../cli/cmd/sendbeam/main.go'), 'utf8');
+    expect(mainGo).not.toContain('"update"');
+    expect(mainGo).not.toContain('runUpdate');
+  });
+});
 
 describe('desktop frontend service-name contract', () => {
   it('only calls known methods on registered services (strict, unknown = fail)', () => {

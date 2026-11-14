@@ -78,12 +78,6 @@ jobs:
           - module: packages/engine
             pkg: ./trust
             target: FuzzFileTrustStoreLoad
-          - module: packages/engine
-            pkg: ./updater
-            target: FuzzParseChannelManifest
-          - module: packages/engine
-            pkg: ./updater
-            target: FuzzParseChecksums
 
           # apps/server targets
           - module: apps/server

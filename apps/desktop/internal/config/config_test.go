@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -390,10 +391,8 @@ func TestConfigFileContainsNoSecrets(t *testing.T) {
 func TestApplyPatchPreservesUnmanagedFields(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Theme = "dark"
-	cfg.UpdateChannel = "beta"
 	cfg.NetworkPolicy = "local-only"
 	cfg.CloseToTray = true
-	cfg.AutoCheckUpdate = false
 
 	patch := map[string]any{
 		"serverUrl":      "wss://relay.example.com",
@@ -412,11 +411,11 @@ func TestApplyPatchPreservesUnmanagedFields(t *testing.T) {
 		t.Fatalf("iceServers not applied: %v", cfg.ICEServers)
 	}
 	// Unmanaged fields must survive.
-	if cfg.Theme != "dark" || cfg.UpdateChannel != "beta" || cfg.NetworkPolicy != "local-only" {
-		t.Fatalf("unmanaged fields wiped: theme=%q channel=%q policy=%q", cfg.Theme, cfg.UpdateChannel, cfg.NetworkPolicy)
+	if cfg.Theme != "dark" || cfg.NetworkPolicy != "local-only" {
+		t.Fatalf("unmanaged fields wiped: theme=%q policy=%q", cfg.Theme, cfg.NetworkPolicy)
 	}
-	if !cfg.CloseToTray || cfg.AutoCheckUpdate {
-		t.Fatalf("unmanaged bools changed: closeToTray=%v autoCheckUpdate=%v", cfg.CloseToTray, cfg.AutoCheckUpdate)
+	if !cfg.CloseToTray {
+		t.Fatalf("unmanaged bools changed: closeToTray=%v", cfg.CloseToTray)
 	}
 }
 
@@ -436,9 +435,6 @@ func TestApplyPatchRejectsUnknownKeysAndMistypes(t *testing.T) {
 	if err := ApplyPatch(&cfg, map[string]any{"iceServers": []any{"stun:x", 42}}); err == nil {
 		t.Fatal("mistyped array element accepted")
 	}
-	if err := ApplyPatch(&cfg, map[string]any{"updateChannel": "canary"}); err == nil {
-		t.Fatal("invalid update channel accepted")
-	}
 	if cfg.Theme != "dark" {
 		t.Fatal("failed patch mutated the config")
 	}
@@ -446,5 +442,66 @@ func TestApplyPatchRejectsUnknownKeysAndMistypes(t *testing.T) {
 	// Empty patch is a no-op that still validates.
 	if err := ApplyPatch(&cfg, map[string]any{}); err != nil {
 		t.Fatalf("empty patch: %v", err)
+	}
+}
+
+// TestRemovedUpdaterFieldsDoNotBreakExistingConfig is the config-compatibility
+// contract for the self-updater removal (SB-SIMPLIFY). Users upgrading from a
+// release that had an updater still carry "updateChannel" and
+// "autoCheckUpdate" in their config file. Dropping those fields must not:
+//   - fail to load the file (unknown keys are ignored by encoding/json),
+//   - discard the fields we still manage,
+//   - accept them as patch keys (they are gone, so a patch must reject them).
+func TestRemovedUpdaterFieldsDoNotBreakExistingConfig(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir, NewMemorySecretStore())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	// A pre-removal config, written verbatim as an old client would have.
+	legacy := `{
+  "downloadDir": "/legacy/dl",
+  "theme": "dark",
+  "networkPolicy": "prefer-local",
+  "closeToTray": true,
+  "updateChannel": "beta",
+  "autoCheckUpdate": true
+}`
+	if err := os.WriteFile(store.ConfigPath(), []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	cfg, err := store.Load()
+	if err != nil {
+		t.Fatalf("legacy config with updater fields failed to load: %v", err)
+	}
+	if cfg.DownloadDir != "/legacy/dl" || cfg.Theme != "dark" {
+		t.Fatalf("managed fields lost on load: %+v", cfg)
+	}
+	if cfg.NetworkPolicy != "prefer-local" || !cfg.CloseToTray {
+		t.Fatalf("policy/tray fields lost on load: %+v", cfg)
+	}
+
+	// The removed keys are no longer patchable — patching them must fail
+	// closed rather than silently writing a field nothing reads.
+	if err := ApplyPatch(&cfg, map[string]any{"updateChannel": "beta"}); err == nil {
+		t.Fatal("removed key updateChannel accepted by ApplyPatch")
+	}
+	if err := ApplyPatch(&cfg, map[string]any{"autoCheckUpdate": true}); err == nil {
+		t.Fatal("removed key autoCheckUpdate accepted by ApplyPatch")
+	}
+}
+
+// TestConfigHasNoUpdaterFields pins the removal at the type level: if a future
+// change reintroduces an update field, this fails before it can reach a
+// release.
+func TestConfigHasNoUpdaterFields(t *testing.T) {
+	rt := reflect.TypeOf(DesktopConfig{})
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("json")
+		lower := strings.ToLower(tag)
+		if strings.Contains(lower, "update") {
+			t.Fatalf("DesktopConfig still exposes updater field %q (json %q)", rt.Field(i).Name, tag)
+		}
 	}
 }
