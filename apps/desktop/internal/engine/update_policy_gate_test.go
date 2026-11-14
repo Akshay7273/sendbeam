@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -157,5 +158,93 @@ func TestApplyUpdateAfterLocalOnlySwitchIsBlocked(t *testing.T) {
 	}
 	if got := probe.checkCount(); got != 1 {
 		t.Fatalf("PROHIBITED EGRESS: extra manifest fetch under LocalOnly (%d total)", got)
+	}
+}
+// TestApplyUpdateWithCorruptConfigConfigFailsClosed composes the REAL
+// fail-closed policy closure (main.go) with the SB-R11 apply-time gate: a
+// corrupt desktop config must degrade to LocalOnly and block the download
+// with zero egress — never inherit Online from the earlier check.
+func TestApplyUpdateWithCorruptConfigFailsClosed(t *testing.T) {
+	tempDir := t.TempDir()
+	targetAppImage := filepath.Join(tempDir, "SendBeam-linux-amd64.AppImage")
+	if err := os.WriteFile(targetAppImage, []byte("AppImage-v1.4.0"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("AppImage-v99.0.0-should-never-be-downloaded")
+	probe := newUpdateProbeServer(t, payload)
+
+	cfgDir := filepath.Join(tempDir, "config")
+	cfgStore, _ := config.NewStore(cfgDir, nil)
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Write a config through the real Save path first, then corrupt the
+	// policy value on disk by hand (raw file edit, no Patch — mirrors a
+	// user hand-edit or disk damage; Validate() would rightly reject this
+	// value through the API).
+	if err := cfgStore.Save(config.DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(cfgDir, config.ConfigFileName)
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := strings.Replace(string(raw), "online", "NOT-A-POLICY", 1)
+	if corrupt == string(raw) {
+		t.Fatal("could not corrupt the config: policy value not found")
+	}
+	if err := os.WriteFile(cfgPath, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The provider mirrors main.go's production closure: unreadable or
+	// unusable config fails closed to LocalOnly.
+	getPolicy := func() netpolicy.Policy {
+		cfg, err := cfgStore.Load()
+		if err != nil {
+			return netpolicy.LocalOnly
+		}
+		p, err := netpolicy.Parse(cfg.NetworkPolicy)
+		if err != nil {
+			return netpolicy.LocalOnly
+		}
+		return p
+	}
+
+	svc := NewUpdateService(
+		func(name string, data any) {},
+		cfgStore,
+		updater.WithBaseURL(probe.srv.URL),
+		updater.WithExecutablePath(targetAppImage),
+		updater.WithTargetPlatform("linux", "amd64"),
+		updater.WithDesktopFormat("appimage"),
+		updater.WithHTTPClient(probe.srv.Client()),
+	)
+	svc.SetNetworkPolicyProvider(getPolicy)
+
+	origVer := ProductVersion
+	ProductVersion = "1.4.0"
+	defer func() { ProductVersion = origVer }()
+
+	// CheckUpdate with the corrupt config: skipped (fail-closed), so no
+	// update becomes available and ApplyUpdate must refuse without egress.
+	st, err := svc.CheckUpdate("stable")
+	if err != nil {
+		t.Fatalf("CheckUpdate with corrupt config: %v", err)
+	}
+	if st.State != "skipped_local_only" {
+		t.Fatalf("state = %q, want skipped_local_only under corrupt config", st.State)
+	}
+	if got := probe.checkCount(); got != 0 {
+		t.Fatalf("PROHIBITED EGRESS: manifest fetched %d time(s) with corrupt config", got)
+	}
+
+	st, err = svc.ApplyUpdate()
+	if err == nil {
+		t.Fatalf("ApplyUpdate succeeded with corrupt config: %+v", st)
+	}
+	if got := probe.downloadCount(); got != 0 {
+		t.Fatalf("PROHIBITED EGRESS: artifact downloaded under corrupt config")
 	}
 }
