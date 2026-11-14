@@ -54,7 +54,7 @@ func newSchemaProbeServer(t *testing.T, version string, schema int, channel stri
 			},
 		}
 		data, _ := json.Marshal(manifest)
-		sig, _ := SignMinisign(data, testSeed, testPub, channel + ".json")
+		sig, _ := SignMinisign(data, testSeed, testPub, channel+".json")
 		switch r.URL.Path {
 		case "/stable.json":
 			_, _ = w.Write(data)
