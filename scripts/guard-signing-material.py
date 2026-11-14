@@ -124,6 +124,52 @@ def main() -> int:
         except OSError:
             pass
 
+    # (6) legacy update-channel resurrection (SEC02 Phase C).
+    # v1.6-v2.2 clients embed <legacy base>/<channel>.json. GitHub Pages
+    # serves a project site from the repo root, so a tracked top-level
+    # "updates/" directory would make the legacy route resolvable again as
+    # soon as Pages is enabled. That is precisely the window in which forged
+    # manifests signed with the retired key would reach vulnerable clients.
+    # Enforce: no tracked updates/ directory, and no published channel
+    # manifest files anywhere in the tree.
+    if tracked_mode:
+        for f in files:
+            norm = f.replace(os.sep, "/")
+            if norm.startswith("updates/"):
+                violations.append(
+                    f"{f}: tracked legacy update-channel directory "
+                    "(re-enabling Pages would resurrect the retired-key route)"
+                )
+                continue
+            base = os.path.basename(norm)
+            if base in ("stable.json", "beta.json") or base in (
+                "stable.json.minisig",
+                "beta.json.minisig",
+            ):
+                violations.append(
+                    f"{f}: published update-channel manifest in the repo "
+                    "(legacy route isolation, SEC02 Phase C)"
+                )
+
+    # (7) retired signing credential usage outside the sanctioned signer.
+    # The signer must never be wired to a variable literally named for the
+    # retired secret; after retirement that name must not be referenced by
+    # the release workflow at all.
+    if tracked_mode:
+        for f in files:
+            norm = f.replace(os.sep, "/")
+            if not norm.startswith(".github/workflows/"):
+                continue
+            try:
+                wf = open(f, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            if "MINISIGN_SECRET_KEY_LEGACY" in wf or "MINISIGN_SECRET_KEY_RETIRED" in wf:
+                violations.append(
+                    f"{f}: references a retired signing-credential name "
+                    "(retired keys must not remain wired into any workflow)"
+                )
+
     hex64 = re.compile(rb"[0-9a-fA-F]{64}")
     for f in files:
         rel = os.path.relpath(f) if tracked_mode else f

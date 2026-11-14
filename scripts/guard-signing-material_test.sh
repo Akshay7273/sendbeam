@@ -2,6 +2,7 @@
 # SEC01 guard self-tests (fail-closed assertions, self-scan safe).
 set -euo pipefail
 GUARD_DIR=$(cd "$(dirname "$0")" && pwd)
+ROOT_FOR_GUARD=$(cd "$GUARD_DIR/.." && pwd)
 GUARD="$GUARD_DIR/guard-signing-material.sh"
 RETIRED="${RETIRED_P1}""${RETIRED_P2}"
 PIN_B64="RWTcyDWHWbxnuo3LVM5mWoZrx0HDwSQzAZvXK1lPRcdtJxshUDxJh+rE"
@@ -93,6 +94,56 @@ printf 'package updater\n\nconst DefaultMinisignPublicKey = "%s"\n' "${PIN_B64%?
 CONS=$( (cd "$TMP/t10" && PIN_B64="$PIN_B64" SANCTIONED_PIN_FILES="packages/engine/updater/verify.go" \
   python3 "$GUARD_DIR/guard-signing-material.py" 2>/dev/null) )
 if echo "$CONS" | grep -q "trust-root mismatch"; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "FAIL(t10): mismatched trust root not detected"; fi
+
+# --- SEC02 Phase C: legacy update-channel resurrection ----------------
+# These run against the REAL worktree (tracked mode), because rule 6 only
+# applies to tracked files. Each case stages a file, asserts rejection, and
+# removes it again -- no state survives the test.
+
+# The guard's rules 6/7 apply to TRACKED files, so the probe must be staged
+# for the rejection to be meaningful. The file is removed and the index entry
+# dropped again in all paths (including on failure).
+stage_and_check_reject() {
+  local name="$1" path="$2" content="$3"
+  mkdir -p "$(dirname "$path")"
+  printf '%s' "$content" > "$path"
+  git add -f "$path" >/dev/null 2>&1
+  if bash "$GUARD" >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); echo "FAIL(expected reject): $name"
+  else
+    PASS=$((PASS+1))
+  fi
+  git rm -q --cached "$path" >/dev/null 2>&1 || true
+  rm -f "$path"
+}
+
+stage_and_check_reject   "T11 tracked legacy updates/ manifest"   "updates/stable.json"   '{"schema_version":1,"version":"9.9.9","channel":"stable"}'
+
+stage_and_check_reject   "T12 published channel manifest outside updates/"   "docs/stable.json"   '{"schema_version":1,"version":"9.9.9","channel":"stable"}'
+
+stage_and_check_reject   "T13 retired credential wired into a workflow"   ".github/workflows/__sec02_probe.yml"   'env:
+  MINISIGN_SECRET_KEY_LEGACY: ${{ secrets.OLD }}
+'
+
+# Cleanup safety: the probe files must not survive any path above.
+rm -rf updates docs/stable.json .github/workflows/__sec02_probe.yml
+
+cd "$ROOT_FOR_GUARD" 2>/dev/null || true
+
+# T15: a non-manifest file inside updates/ must still be rejected.
+# T11 uses updates/stable.json, which the manifest-name rule also catches, so
+# it cannot isolate the directory rule. This probe (an innocuous README inside
+# the channel directory) is the discriminator for "tracked updates/ directory".
+stage_and_check_reject \
+  "T15 any tracked file under updates/" \
+  "updates/README.md" \
+  'placeholder content, not a manifest'
+
+# T14: an ordinary docs file is still clean (rule 6 must not reject broadly).
+mkdir -p "$TMP/t14"
+printf 'not a manifest
+' > "$TMP/t14/notes.md"
+check_clean "$TMP/t14"
 
 echo "guard-signing-material self-tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
