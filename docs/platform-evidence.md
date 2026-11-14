@@ -55,7 +55,21 @@ rows carry build-plus-smoke evidence, not test evidence.
 | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------- | --------------- |
 | Send / receive / pairing / targeted delivery / resume / verified completion | ✓                                                                                                                                                                                                                                                                                                                                                                                                           | ✓ (NSIS installer + portable ZIP, Universal .app + .dmg, AppImage + .deb; amd64; macOS universal covers arm64) | partial — "desktop (server gates + window build)" CI job + engine suites; **no packaged-UI e2e** | **NOT RUN** | **NOT RUN**     |
 | Recipe UI (create/preview/approve/status)                                   | backend `RecipeService` exists and is service-bound (List/Get/Preview/Plan/Approve/Grant/Revoke/Disable/Enable/Watch/Scheduler controls/Run/Delete); the embedded frontend contains **text/link handoff controls only — zero recipe/schedule/watch elements** (verified against the built `dist/`: no recipe/schedule/watch ids or bindings); **no maintainable frontend source exists in-repo** (V23-PR01) | ✓ (same installers)                                                                                            | service-level tests only                                                                         | **NOT RUN** | **NOT RUN**     |
-| Self-updater (notify → atomic apply → rollback)                             | ✓ (`update_service.go` + local-only skip tests)                                                                                                                                                                                                                                                                                                                                                             | ✓                                                                                                              | ✓ (unit, incl. offline-skip behavior)                                                            | **NOT RUN** | **NOT RUN**     |
+
+> **Dated correction (2026-11-14, SB-R01/SB-R10 reconciliation):** the two
+> claims in the row above — "zero recipe/schedule/watch elements" and "no
+> maintainable frontend source exists in-repo" — were **true for the commit
+> they were written against (main `726360d`) but are stale for current
+> main**. Since V23-PR01 the desktop frontend HAS maintainable sources
+> (`apps/desktop/frontend/src/`, deterministic assembler enforced by
+> `build.py --check`), and as of #297 the shipped UI includes the full
+> recipe lifecycle: editor, list, grants, cancel, delivery status (the
+> SB-R09 markers — `recipe-lifecycle-line`, `recipe-cancel-job-btn`,
+> `CancelRecipeJobResult` symbols — are embedded in the produced binaries,
+> verified by artifact inspection, distribution run 43573458273). The
+> historical row is preserved above; the Packaged UI / Physical device
+> columns remain NOT RUN (see RELEASE-v2.3-acceptance.md SB-R10 rows).
+> | Self-updater (notify → atomic apply → rollback) | ✓ (`update_service.go` + local-only skip tests) | ✓ | ✓ (unit, incl. offline-skip behavior) | **NOT RUN** | **NOT RUN** |
 
 ## Web app (browser / PWA)
 

@@ -51,3 +51,18 @@ Updated live as fixes merge. Sources of truth: this ledger + `docs/platform-evid
 - **NOT merged / NOT CI-tested (recovered via reflog, verification pending):** route-aware admission (online-no-endpoint, prefer-local-conditional), synchronized snapshot/lookup hardening, bounded shutdown join, barrier-based cancellation (unreachable-port test removed as invalid evidence), real padding integration (compatible + incompatible receiver), concurrent race test.
 - The earlier claim of "correction C complete" is retracted: tests existed only in an unpushed local amend (`16a985f`, preserved as `recovery/v23c-reflog` branch + `~/v23c-recovery.patch` + `~/v23c-recovery-tree.tar`).
 - #272's delivery-path integration test proved **configured backend local delivery**, not desktop acceptance. Physical packaged-UI/device rows remain NOT RUN and gate any release.
+
+**Dated correction (2026-11-14, SB-R01..R08 reconciliation — see
+`docs/v2.3-evidence-index.md`):** every item in the "NOT merged / NOT
+CI-tested" list above is now MERGED with production-path race-enabled
+evidence: route-aware admission (`TestOnlineRecipeNeedsNoEndpoint`,
+`TestPreferLocalNeverOnlineUnderLocalOnlyPolicy`), synchronized snapshots
+
+- lock scope (#293), bounded shutdown join + barrier cancellation
+  (`TestRecipeCancellationInFlight`, #296 real-transfer cancel proofs), real
+  padding integration — compatible AND incompatible receiver (#294, real
+  receiver, mutation-proven), concurrent race test (#288, #293). Correction C
+  is COMPLETE at the automated-evidence level; the **physical packaged-UI /
+  two-device rows remain NOT RUN** (SB-R10, BLOCKED on hardware) and still
+  gate any release publication. This correction does not rewrite the
+  historical reconciliation above — it supersedes its status only.
