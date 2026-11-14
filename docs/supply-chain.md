@@ -128,6 +128,13 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 
 ## 6. Key Rotation & Security Policy
 
+> [!WARNING]
+> SEC01 (2026-11-14): the historical Minisign fixture seed committed in test
+> code derived the production public key; the production signing key must be
+> treated as compromised until the owner completes rotation. See
+> docs/SECURITY-INCIDENT-SB-SEC01.md. Test code must bind to independent
+> disposable keys (CI-enforced by scripts/guard-signing-material.sh).
+
 1. **Minisign Key Rotation:**
    - In the event of secret key compromise or scheduled key rotation, a new Ed25519 keypair is generated via `go run ./scripts/minisign.go keygen`.
    - The updated public key is committed to `minisign.pub` and documented in release notes.
