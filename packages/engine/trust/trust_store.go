@@ -23,6 +23,11 @@ var (
 
 	// ErrCorruptTrustStore is returned when the trust database file exists but is empty or unparseable.
 	ErrCorruptTrustStore = errors.New("corrupt trust database file; refusing to overwrite")
+
+	// ErrFutureTrustStore wraps refusal of a trust.json envelope written by
+	// a NEWER generation of SendBeam (SB-R11): the state is quarantined —
+	// never read, never rewritten, never deleted.
+	ErrFutureTrustStore = errors.New("trust database written by a newer SendBeam generation")
 )
 
 // Store defines the interface for local trust management, peer policy, and revocation.
@@ -264,6 +269,16 @@ func (f *FileTrustStore) load() (bool, error) {
 		return false, fmt.Errorf("%w: parse trust db JSON: %v", ErrCorruptTrustStore, err)
 	}
 
+	// SB-R11: state from a FUTURE schema generation is quarantined — the
+	// desktop opens trust stores without the migration runner, so the
+	// store itself must refuse to read (and therefore never rewrite) an
+	// envelope this binary does not understand. Same contract as
+	// migrate.ErrNewerState: older binaries never truncate or reinterpret
+	// newer state.
+	if payload.Version > currentTrustFileVersion {
+		return false, fmt.Errorf("%w: trust.json version %d > supported %d (quarantined)",
+			ErrFutureTrustStore, payload.Version, currentTrustFileVersion)
+	}
 	needsMigration := payload.Version < currentTrustFileVersion
 	f.devices = make(map[string]*wire.TrustRecord)
 	for _, rec := range payload.Devices {
