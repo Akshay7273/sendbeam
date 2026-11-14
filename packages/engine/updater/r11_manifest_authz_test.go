@@ -46,12 +46,11 @@ func newArchProbeServer(t *testing.T, version string, assets map[string]ReleaseA
 	var srv *httptest.Server
 	signWith := testSeed
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		data, _ := json.Marshal(p.manifest)
 		for _, a := range p.manifest.Assets {
 			a.DownloadURL = srv.URL + "/download/" + a.Name
 			p.manifest.Assets[a.Name] = a
 		}
-		data, _ = json.Marshal(p.manifest)
+		data, _ := json.Marshal(p.manifest)
 		sig, _ := SignMinisign(data, signWith, testPub, "stable.json")
 		switch r.URL.Path {
 		case "/stable.json":
@@ -199,8 +198,8 @@ func TestUpdater_ManifestFromWrongKeyRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux.HandleFunc("/stable.json", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(data) })
-	mux.HandleFunc("/stable.json.minisig", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(sig)) })
+	mux.HandleFunc("/stable.json", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(data) })
+	mux.HandleFunc("/stable.json.minisig", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(sig)) })
 	probe.srv.Config.Handler = mux
 
 	u, err := New("1.4.0", "Akshay7273/sendbeam",

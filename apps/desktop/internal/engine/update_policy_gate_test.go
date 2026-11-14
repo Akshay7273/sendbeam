@@ -114,7 +114,7 @@ func TestApplyUpdateAfterLocalOnlySwitchIsBlocked(t *testing.T) {
 
 	cfgStore, _ := config.NewStore(filepath.Join(tempDir, "config"), nil)
 
-	emitter := func(name string, data any) {}
+	emitter := func(_ string, _ any) {}
 
 	svc := NewUpdateService(
 		emitter,
@@ -213,7 +213,7 @@ func TestApplyUpdateWithCorruptConfigFailsClosed(t *testing.T) {
 	}
 
 	svc := NewUpdateService(
-		func(name string, data any) {},
+		func(_ string, _ any) {},
 		cfgStore,
 		updater.WithBaseURL(probe.srv.URL),
 		updater.WithExecutablePath(targetAppImage),
