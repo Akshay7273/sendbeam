@@ -1237,3 +1237,64 @@ func (s *RecipeService) readPolicyLookupAndSender() (func() netpolicy.Policy, fu
 	defer s.mu.Unlock()
 	return s.policyLookup, s.onlineSender
 }
+
+// CancelRecipeJobResult is the user-facing job cancellation view.
+type CancelRecipeJobResult struct {
+	// Cancelled is true when the stored job moved to cancelled in this call.
+	Cancelled bool `json:"cancelled"`
+	// AlreadyCompleted is true when the job had reached verified/completed
+	// before the cancel arrived: the success stands and is NOT rewritten.
+	AlreadyCompleted bool `json:"alreadyCompleted"`
+	// Status is the job's status as observed by this call.
+	Status string `json:"status"`
+}
+
+// CancelRecipeJob cancels the last dispatched job of a recipe through the
+// production outbox cancel (SB-R08: it stops the RUNNING transfer via the
+// shared in-flight registry, persists the terminal state first, and refuses
+// terminal jobs). The UI uses this for the recipe cancel button; a pending
+// result that reports the already-completed outcome must be rendered as a
+// preserved success, never as a successful cancellation.
+func (s *RecipeService) CancelRecipeJob(id string) (*CancelRecipeJobResult, error) {
+	s.mu.Lock()
+	r, ok, err := s.store.Load(id)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("recipe service: no recipe %q", id)
+	}
+	if r.LastRun == nil || r.LastRun.JobID == "" {
+		s.mu.Unlock()
+		// Nothing was ever dispatched: there is nothing to cancel. Honest
+		// no-op, not an error the user must decode.
+		return &CancelRecipeJobResult{Cancelled: false, Status: "none"}, nil
+	}
+	jobID := r.LastRun.JobID
+	ob := s.outbox
+	s.mu.Unlock()
+
+	if err := ob.Cancel(jobID); err != nil {
+		// Terminal jobs (completed/failed/cancelled) refuse cancellation —
+		// that includes the verified-success case.
+		if strings.Contains(err.Error(), "cannot cancel job in terminal status") {
+			job, found, jerr := s.jobs.Load(jobID)
+			if jerr == nil && found {
+				return &CancelRecipeJobResult{
+					Cancelled:        false,
+					AlreadyCompleted: job.Status == jobs.JobCompleted,
+					Status:           string(job.Status),
+				}, nil
+			}
+			return &CancelRecipeJobResult{Cancelled: false, Status: "unknown"}, nil
+		}
+		return nil, err
+	}
+	job, found, jerr := s.jobs.Load(jobID)
+	if jerr != nil || !found {
+		return &CancelRecipeJobResult{Cancelled: true, Status: "cancelled"}, nil
+	}
+	return &CancelRecipeJobResult{Cancelled: true, Status: string(job.Status)}, nil
+}

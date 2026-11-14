@@ -413,6 +413,18 @@
 .attempt-verified, .attempt-completed { color: var(--accent); }
 .attempt-failed { color: var(--danger); }
 .attempt-active { color: var(--primary); }
+.attempt-queued { color: var(--text-muted); }
+.attempt-interrupted { color: var(--warn, #d29922); }
+.attempt-cancelled { color: var(--text-muted); font-style: italic; }
+
+/* SB-R09: policy degradation banner (fail-closed fallback visibility) */
+#policy-degraded-banner strong { color: var(--danger); }
+
+/* SB-R09: lifecycle stage line under the editor actions */
+#recipe-lifecycle-line { margin: 0.5rem 0 0; color: var(--text-muted); }
+
+/* SB-R09: cancel pending state */
+button.cancelling { opacity: 0.7; cursor: progress; }
 #recipe-delivery { background: var(--bg); border: 1px solid var(--border); padding: 10px; border-radius: 8px; margin-top: 8px; }
 
 #watch-state-line, #sched-state-line { font-size: 12px; margin: 6px 0; color: var(--text-heading); }

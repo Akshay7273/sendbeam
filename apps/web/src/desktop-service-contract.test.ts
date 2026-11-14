@@ -24,7 +24,11 @@ const KNOWN_SERVICES: Record<string, string[]> = {
   ],
   'github.com/sendbeam/desktop/internal/engine.UpdateService': ['GetState', 'ApplyUpdate'],
   'github.com/sendbeam/desktop/internal/engine.DeviceService': ['ListDevices', 'UnpairDevice'],
-  'github.com/sendbeam/desktop/internal/engine.NetworkPolicyService': ['GetPolicy', 'SetPolicy'],
+  'github.com/sendbeam/desktop/internal/engine.NetworkPolicyService': [
+    'GetPolicy',
+    'SetPolicy',
+    'GetPolicyState',
+  ],
   'github.com/sendbeam/desktop/internal/engine.LocalPairingService': [
     'CreateInvitation',
     'JoinPairing',
@@ -60,6 +64,7 @@ const KNOWN_SERVICES: Record<string, string[]> = {
     'StartDispatcher',
     'StopDispatcher',
     'DispatcherRunning',
+    'CancelRecipeJob',
   ],
 };
 

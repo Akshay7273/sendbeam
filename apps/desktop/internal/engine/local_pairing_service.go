@@ -207,6 +207,11 @@ func (s *LocalPairingService) closeLocked() {
 type NetworkPolicyService struct {
 	get func() netpolicy.Policy
 	set func(netpolicy.Policy) error
+	// SB-R09: degradation visibility state (see PolicyState).
+	mu            sync.Mutex
+	degraded      bool
+	degradeReason string
+	notifyDegrade func(reason string)
 }
 
 // NewNetworkPolicyService creates the service with get/set hooks.
@@ -217,6 +222,76 @@ func NewNetworkPolicyService(get func() netpolicy.Policy, set func(netpolicy.Pol
 // GetPolicy returns the current network policy name.
 func (s *NetworkPolicyService) GetPolicy() string {
 	return s.get().String()
+}
+
+// PolicyState is the UI-facing network-policy view (SB-R09, requirement 6):
+// it distinguishes a policy the user SELECTED from one the engine DEGRADED
+// to after an unusable configuration (SB-R05 fail-closed), so the UI never
+// silently implies online access is available when it is blocked. The
+// degraded reason text is engine-generated, secret-free, and rendered as
+// literal text by the frontend.
+type PolicyState struct {
+	// Policy is the effective policy name ("online", "prefer-local",
+	// "local-only").
+	Policy string `json:"policy"`
+	// Degraded is true when the effective policy is the SB-R05 fail-closed
+	// fallback (LocalOnly) because the configuration was unusable — not
+	// because the user selected local-only.
+	Degraded bool `json:"degraded"`
+	// Reason is the human-readable degradation reason (empty when not
+	// degraded). It never contains configuration contents or secrets.
+	Reason string `json:"reason,omitempty"`
+}
+
+// GetPolicyState returns the effective policy with its degradation state.
+// The get hook may itself be the SB-R05 fail-closed closure; to classify the
+// degradation WITHOUT asking the closure twice, the state is derived from
+// the injected get/set hooks plus an optional degrade notifier wired by
+// main.go (SetDegradeNotifier): the first closure that fails closed reports
+// through it. When no notifier fired, the effective policy is the user's
+// selected one.
+func (s *NetworkPolicyService) GetPolicyState() PolicyState {
+	s.mu.Lock()
+	degraded := s.degraded
+	reason := s.degradeReason
+	s.mu.Unlock()
+	p := s.get().String()
+	if degraded {
+		return PolicyState{Policy: p, Degraded: true, Reason: reason}
+	}
+	return PolicyState{Policy: p}
+}
+
+// SetDegradeNotifier wires the SB-R05 degradation signal: main.go's
+// fail-closed policy closure calls this with a secret-free reason whenever
+// config retrieval fails (each failure re-arms the signal; a later healthy
+// read clears it).
+func (s *NetworkPolicyService) SetDegradeNotifier(fn func(reason string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notifyDegrade = fn
+}
+
+// NoteDegrade records a degradation and notifies the wired notifier (nil
+// safe). Called by main.go's fail-closed policy closure (SB-R09: the UI
+// must be able to distinguish a selected local-only from the fallback).
+func (s *NetworkPolicyService) NoteDegrade(reason string) {
+	s.mu.Lock()
+	s.degraded = true
+	s.degradeReason = reason
+	notify := s.notifyDegrade
+	s.mu.Unlock()
+	if notify != nil {
+		notify(reason)
+	}
+}
+
+// ClearDegrade records a healthy policy read (the fallback was not used).
+func (s *NetworkPolicyService) ClearDegrade() {
+	s.mu.Lock()
+	s.degraded = false
+	s.degradeReason = ""
+	s.mu.Unlock()
 }
 
 // SetPolicy persists the network policy.

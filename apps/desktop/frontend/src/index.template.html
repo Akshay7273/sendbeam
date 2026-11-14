@@ -274,9 +274,16 @@
         <button id="recipe-dup">Duplicate</button>
         <button id="recipe-preview-btn">Preview (dry-run)</button>
         <button id="recipe-approve-btn">Approve</button>
+        <button id="recipe-grant-btn">Grant auto-send</button>
+        <button id="recipe-revoke-btn">Revoke auto-send</button>
+        <button id="recipe-disable-btn">Disable</button>
+        <button id="recipe-enable-btn">Enable</button>
         <button id="recipe-run-btn">Run now</button>
+        <button id="recipe-cancel-job-btn">Cancel current job</button>
         <button id="recipe-status-btn">Delivery status</button>
+        <button id="recipe-delete-btn" class="danger">Delete handoff</button>
       </div>
+      <p class="muted small" id="recipe-lifecycle-line"></p>
       <pre id="recipe-preview" style="display:none"></pre>
       <div id="recipe-delivery" style="display:none"></div>
 
@@ -330,6 +337,7 @@
           <option value="local-only">Local only — no internet (LAN transfers only)</option>
         </select>
         <p style="font-size:0.8rem; color:var(--text-muted); margin:0.4rem 0 0;">Local only disables the signaling server, STUN/TURN, relay, invite codes, and update checks. Pairing and transfers stay on your local network.</p>
+        <div class="hidden" id="policy-degraded-banner" role="alert" style="margin-top:0.75rem; padding:0.75rem; border:1px solid var(--danger); border-radius:6px; font-size:0.85rem; background:var(--surface);"></div>
 
         <div style="display:flex; justify-content:space-between; align-items:center; margin-top:1rem;">
           <div style="font-size:0.85rem; color:var(--text-muted);">Offline listener: <span id="local-listener-state" style="color:var(--text-heading);">—</span></div>

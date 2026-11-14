@@ -420,6 +420,18 @@
 .attempt-verified, .attempt-completed { color: var(--accent); }
 .attempt-failed { color: var(--danger); }
 .attempt-active { color: var(--primary); }
+.attempt-queued { color: var(--text-muted); }
+.attempt-interrupted { color: var(--warn, #d29922); }
+.attempt-cancelled { color: var(--text-muted); font-style: italic; }
+
+/* SB-R09: policy degradation banner (fail-closed fallback visibility) */
+#policy-degraded-banner strong { color: var(--danger); }
+
+/* SB-R09: lifecycle stage line under the editor actions */
+#recipe-lifecycle-line { margin: 0.5rem 0 0; color: var(--text-muted); }
+
+/* SB-R09: cancel pending state */
+button.cancelling { opacity: 0.7; cursor: progress; }
 #recipe-delivery { background: var(--bg); border: 1px solid var(--border); padding: 10px; border-radius: 8px; margin-top: 8px; }
 
 #watch-state-line, #sched-state-line { font-size: 12px; margin: 6px 0; color: var(--text-heading); }
@@ -694,9 +706,16 @@
         <button id="recipe-dup">Duplicate</button>
         <button id="recipe-preview-btn">Preview (dry-run)</button>
         <button id="recipe-approve-btn">Approve</button>
+        <button id="recipe-grant-btn">Grant auto-send</button>
+        <button id="recipe-revoke-btn">Revoke auto-send</button>
+        <button id="recipe-disable-btn">Disable</button>
+        <button id="recipe-enable-btn">Enable</button>
         <button id="recipe-run-btn">Run now</button>
+        <button id="recipe-cancel-job-btn">Cancel current job</button>
         <button id="recipe-status-btn">Delivery status</button>
+        <button id="recipe-delete-btn" class="danger">Delete handoff</button>
       </div>
+      <p class="muted small" id="recipe-lifecycle-line"></p>
       <pre id="recipe-preview" style="display:none"></pre>
       <div id="recipe-delivery" style="display:none"></div>
 
@@ -750,6 +769,7 @@
           <option value="local-only">Local only — no internet (LAN transfers only)</option>
         </select>
         <p style="font-size:0.8rem; color:var(--text-muted); margin:0.4rem 0 0;">Local only disables the signaling server, STUN/TURN, relay, invite codes, and update checks. Pairing and transfers stay on your local network.</p>
+        <div class="hidden" id="policy-degraded-banner" role="alert" style="margin-top:0.75rem; padding:0.75rem; border:1px solid var(--danger); border-radius:6px; font-size:0.85rem; background:var(--surface);"></div>
 
         <div style="display:flex; justify-content:space-between; align-items:center; margin-top:1rem;">
           <div style="font-size:0.85rem; color:var(--text-muted);">Offline listener: <span id="local-listener-state" style="color:var(--text-heading);">—</span></div>
@@ -2107,6 +2127,43 @@
       // V21-PR06: apply the network policy across the UI. Local only means
       // the signaling server, STUN/TURN, relay, invite codes, and update
       // checks are off; pairing and transfers stay on the LAN.
+      // SB-R09 requirement 6: the policy banner must distinguish an
+      // INTENTIONAL local-only from the SB-R05 fail-closed FALLBACK (the
+      // engine reports degradation via PolicyState). Never silently imply
+      // online access is available when it is blocked. Reason text is
+      // engine-generated, secret-free, and rendered literally.
+      async function renderPolicyState() {
+        try {
+          const ps = await call(SV.NetworkPolicy + ".GetPolicyState");
+          state.policyDegraded = !!(ps && ps.degraded);
+          state.policyReason = (ps && ps.reason) || "";
+          state.policy = (ps && ps.policy) || state.policy || "online";
+        } catch (e) {
+          state.policyDegraded = false;
+          state.policyReason = "";
+        }
+        const banner = $("policy-degraded-banner");
+        if (banner) {
+          if (state.policyDegraded) {
+            banner.classList.remove("hidden");
+            banner.replaceChildren();
+            const strong = document.createElement("strong");
+            strong.textContent = "Safety fallback active: ";
+            banner.appendChild(strong);
+            banner.appendChild(
+              document.createTextNode(
+                state.policyReason +
+                  " Your selected policy is not in effect — settings could not be trusted, so all public-network access is blocked. Fix the settings and save to restore them."
+              )
+            );
+          } else {
+            banner.classList.add("hidden");
+            banner.replaceChildren();
+          }
+        }
+        applyPolicyUI(state.policy);
+      }
+
       function applyPolicyUI(policy) {
         state.policy = policy || "online";
         const localOnly = state.policy === "local-only";
@@ -2187,9 +2244,8 @@
           $("settings-status").textContent = "Load error: " + err;
         }
         try {
-          const policy = await call(SV.NetworkPolicy + ".GetPolicy");
-          $("cfg-network-policy").value = policy || "online";
-          applyPolicyUI(policy || "online");
+          await renderPolicyState();
+          $("cfg-network-policy").value = state.policy || "online";
         } catch (err) {
           $("settings-status").textContent = "Policy load error: " + err;
         }
@@ -2224,7 +2280,7 @@
           await call(SV.NetworkPolicy + ".SetPolicy", policy);
           await call(SV.Transfer + ".ApplyNetworkPolicy");
           await syncLocalListener(policy);
-          applyPolicyUI(policy);
+          await renderPolicyState();
           setStatusMessage($("settings-status"), "ok", "✓ Settings saved successfully.");
         } catch (err) {
           setStatusMessage($("settings-status"), "err", "✗ " + err);
@@ -2454,10 +2510,9 @@
         } catch (err) {}
 
         try {
-          // V21-PR06: apply the persisted network policy at startup so the
-          // send/receive/update UI matches it before Settings is ever opened.
-          const policy = await call(SV.NetworkPolicy + ".GetPolicy");
-          applyPolicyUI(policy || "online");
+          // V21-PR06 + SB-R09: apply the persisted network policy at startup
+          // (degradation-aware: the banner shows the fail-closed fallback).
+          await renderPolicyState();
         } catch (err) {}
 
         try {
@@ -2504,7 +2559,11 @@
         for (const entry of state.recipes) {
           const row = document.createElement("button");
           row.className = "recipe-row" + (state.recipeDraft && state.recipeDraft.id === entry.id ? " selected" : "");
-          row.textContent = `${entry.name} · ${entry.trigger} · ${entry.status}`;
+          // SB-R09: the list row distinguishes the persisted CONFIGURATION
+          // status from the automation GRANT (auto-send), which is a
+          // separate permission (requirement 3).
+          const grant = entry.autoSend ? " · auto-send GRANTED" : "";
+          row.textContent = `${entry.name} · ${entry.trigger} · ${entry.status}${grant}`;
           row.addEventListener("click", () => openRecipeEditor(entry.id));
           list.appendChild(row);
         }
@@ -2523,6 +2582,11 @@
             triggerKind: (r.trigger && r.trigger.kind) || "manual",
             scheduleParams: (r.trigger && r.trigger.schedule) || null,
             watchParams: (r.trigger && r.trigger.watch) || null,
+            // SB-R09: persisted authorization state, shown honestly and
+            // never inferred from status alone.
+            status: r.status || "approval-required",
+            autoSend: !!(r.grant && r.grant.autoSend),
+            grantedAt: (r.grant && r.grant.grantedAt) || "",
           };
           renderRecipeEditor();
           await loadRuntimeState();
@@ -2722,14 +2786,29 @@
             for (const a of st.job.attempts || []) {
               const line = document.createElement("div");
               line.className = "attempt-line attempt-" + a.status;
-              const bits = [`${a.label || a.deviceId.slice(0, 14)}…: ${a.status}`];
+              // SB-R09 requirement 4: HONEST per-recipient outcomes.
+              // verified ✓ appears ONLY with a persisted verified digest
+              // (queued/active/partial bytes never render as delivered).
+              // HELD is not an engine attempt state — holds live in the
+              // dispatch report (shown after "Dispatch queued jobs now");
+              // an interrupted attempt with a retry time IS "retrying".
+              const bits = [`${a.label || a.deviceId.slice(0, 14)}…: ${describeAttempt(a)}`];
               if (a.verifiedDigest) bits.push(`verified ✓ ${a.verifiedDigest.slice(0, 12)}…`);
-              else if (a.bytesTransferred) bits.push(`${a.bytesTransferred} bytes (not verified)`);
-              if (a.nextRetryAt) bits.push(`retry at ${a.nextRetryAt}`);
+              else if (a.bytesTransferred) bits.push(`${a.bytesTransferred} bytes transferred — NOT verified, not delivered`);
+              if (a.nextRetryAt) bits.push(`retrying (next attempt at ${a.nextRetryAt})`);
               if (a.lastError) bits.push(a.lastError);
               line.textContent = bits.join(" · ");
               pane.appendChild(line);
             }
+            const cancelBtn = $("recipe-cancel-job-btn");
+            if (cancelBtn) {
+              const terminal = st.job.status === "completed" || st.job.status === "failed" || st.job.status === "cancelled";
+              cancelBtn.disabled = terminal;
+              cancelBtn.title = terminal ? "Job is in a terminal state." : "Stop the running/queued transfer (the engine confirms the result).";
+            }
+          } else {
+            const cancelBtn = $("recipe-cancel-job-btn");
+            if (cancelBtn) cancelBtn.disabled = true;
           }
           pane.style.display = "";
         } catch (e) {
@@ -2758,11 +2837,59 @@
           setLiteral($("recipes-status"), "err", "Save first, then run.");
           return;
         }
+        const btn = $("recipe-run-btn");
         try {
+          btn.disabled = true;
           const jobId = await call(RECIPES_SVC + ".RunRecipe", target);
-          setLiteral($("recipes-status"), "ok", `Run enqueued: job ${jobId}. Delivery status appears in Interrupted/Transfer center.`);
+          setLiteral($("recipes-status"), "ok", `Run enqueued: job ${jobId}. Delivery status appears in Delivery status.`);
         } catch (e) {
           setLiteral($("recipes-status"), "err", "Run refused: " + e);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      // SB-R09 requirement 5: cancellation wired to the REAL production
+      // cancel (SB-R08 fix: it stops the running transfer). The result is
+      // rendered honestly:
+      //   - cancelled=true  → "cancelling… then cancelled" (the engine
+      //     confirmed; the UI never claims success before this),
+      //   - alreadyCompleted → the VERIFIED SUCCESS IS PRESERVED and the
+      //     UI says so (a late cancel never rewrites history),
+      //   - no job → nothing to cancel.
+      // The button stays disabled until the engine answers, so a canceled
+      // job cannot visually resurrect from a late async response.
+      let cancelInFlight = false;
+      async function cancelRecipeJob() {
+        if (cancelInFlight) return; // double-submit guard
+        const target = state.recipeDraft && state.recipeDraft.id;
+        if (!target) {
+          setLiteral($("recipes-status"), "err", "Save first.");
+          return;
+        }
+        const btn = $("recipe-cancel-job-btn");
+        cancelInFlight = true;
+        const prevLabel = btn.textContent;
+        try {
+          btn.disabled = true;
+          btn.textContent = "Cancelling…";
+          const res = await call(RECIPES_SVC + ".CancelRecipeJob", target);
+          if (res && res.cancelled) {
+            setLiteral($("recipes-status"), "ok", `Job cancelled (status: ${res.status}). The transfer was stopped; partial data stays resumable.`);
+          } else if (res && res.alreadyCompleted) {
+            setLiteral($("recipes-status"), "ok", `The job already VERIFIED and completed — the success is preserved, nothing was cancelled (status: ${res.status}).`);
+          } else if (res && res.status === "none") {
+            setLiteral($("recipes-status"), "err", "Nothing to cancel: this handoff has no dispatched job.");
+          } else {
+            setLiteral($("recipes-status"), "err", `Cancel did not take effect (status: ${res && res.status}).`);
+          }
+          await loadDeliveryStatus();
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Cancel failed: " + e);
+        } finally {
+          cancelInFlight = false;
+          btn.textContent = prevLabel;
+          btn.disabled = false;
         }
       }
 
@@ -2786,6 +2913,22 @@
         span.className = cls;
         span.textContent = text;
         el.appendChild(span);
+      }
+
+      // SB-R09 requirement 4: state vocabulary mapping — engine attempt
+      // states to honest UI words. The engine states are the source of
+      // truth; this never upgrades them (queued stays queued, active is
+      // "connecting/transferring", verified/completed is the ONLY delivery).
+      function describeAttempt(a) {
+        switch (a.status) {
+          case "queued": return "queued (waiting for dispatch)";
+          case "active": return "transferring (connected — not yet verified)";
+          case "interrupted": return a.nextRetryAt ? "retrying" : "interrupted (will requeue on restart)";
+          case "verified": return "verified ✓";
+          case "completed": return "delivered (verified)";
+          case "failed": return "failed";
+          default: return a.status;
+        }
       }
 
       function renderRecipeEditor() {
@@ -2822,6 +2965,135 @@
           rec.appendChild(chip);
         }
         $("recipe-status-line").textContent = d.id ? `Editing ${d.id.slice(0, 10)}…` : "New handoff (starts approval-required)";
+        renderRecipeLifecycle();
+      }
+
+      // SB-R09 requirement 2: the lifecycle contract, rendered from
+      // PERSISTED state (never invented): Draft (unsaved) → Saved/
+      // approval-required → Approved (manual: one-shot runs allowed) →
+      // Granted (auto-send, a separate permission) / Disabled; plus the
+      // effective policy and padding requirements of this recipe.
+      function renderRecipeLifecycle() {
+        const line = $("recipe-lifecycle-line");
+        if (!line) return;
+        const d = state.recipeDraft || {};
+        if (!d.id) {
+          line.textContent = "Stages: Draft → Saved (approval-required) → Approved → auto-send optional. This is an UNSAVED draft: save it before preview, approve, or run.";
+          return;
+        }
+        const stages = [];
+        const st = d.status || "approval-required";
+        if (st === "approval-required") {
+          stages.push("Saved — APPROVAL REQUIRED (inert: nothing runs until you preview and approve)");
+        } else if (st === "manual") {
+          stages.push("Approved — one-shot runs allowed");
+        } else if (st === "disabled") {
+          stages.push("Disabled — nothing runs, manually or automatically");
+        }
+        if (d.autoSend) {
+          stages.push("auto-send GRANTED (automatic dispatch; receiver auto-accept is a SEPARATE permission on the receiving device)");
+        } else {
+          stages.push("auto-send not granted (automation requires its own grant)");
+        }
+        stages.push(`network policy: ${d.policy || "online"}${d.padding ? " · strict padding required" : ""}`);
+        line.textContent = "Stages: " + stages.join(" · ");
+      }
+
+      // SB-R09 requirement 3: grant controls wired to the real service;
+      // they are separate from approval and from receiver auto-accept.
+      async function grantAutomation() {
+        const target = state.recipeDraft && state.recipeDraft.id;
+        if (!target) {
+          setLiteral($("recipes-status"), "err", "Save first, then grant auto-send.");
+          return;
+        }
+        const btn = $("recipe-grant-btn");
+        try {
+          btn.disabled = true;
+          const r = await call(RECIPES_SVC + ".GrantAutomation", target);
+          setLiteral($("recipes-status"), "ok", `Auto-send granted for "${r.name}" — material scope changes will revoke it.`);
+          await refreshRecipes();
+          await openRecipeEditor(target);
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Grant refused: " + e);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function revokeAutomation() {
+        const target = state.recipeDraft && state.recipeDraft.id;
+        if (!target) return;
+        const btn = $("recipe-revoke-btn");
+        try {
+          btn.disabled = true;
+          const r = await call(RECIPES_SVC + ".RevokeAutomation", target);
+          setLiteral($("recipes-status"), "ok", `Auto-send revoked for "${r.name}".`);
+          await refreshRecipes();
+          await openRecipeEditor(target);
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Revoke failed: " + e);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function disableRecipe() {
+        const target = state.recipeDraft && state.recipeDraft.id;
+        if (!target) return;
+        // Destructive-ish: confirm before disabling (stops all automation).
+        if (!window.confirm(`Disable "${state.recipeDraft.name}"? Watches and schedules stop and auto-send is revoked.`)) {
+          return;
+        }
+        const btn = $("recipe-disable-btn");
+        try {
+          btn.disabled = true;
+          const r = await call(RECIPES_SVC + ".DisableRecipe", target);
+          setLiteral($("recipes-status"), "ok", `Disabled "${r.name}".`);
+          await refreshRecipes();
+          await openRecipeEditor(target);
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Disable failed: " + e);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function enableRecipe() {
+        const target = state.recipeDraft && state.recipeDraft.id;
+        if (!target) return;
+        const btn = $("recipe-enable-btn");
+        try {
+          btn.disabled = true;
+          const r = await call(RECIPES_SVC + ".EnableRecipe", target);
+          setLiteral($("recipes-status"), "ok", `Enabled "${r.name}" — status ${r.status}. Auto-send was NOT restored by enabling.`);
+          await refreshRecipes();
+          await openRecipeEditor(target);
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Enable failed: " + e);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function deleteRecipe() {
+        const target = state.recipeDraft && state.recipeDraft.id;
+        if (!target) return;
+        if (!window.confirm(`Delete "${state.recipeDraft.name}"? This cannot be undone.`)) {
+          return;
+        }
+        const btn = $("recipe-delete-btn");
+        try {
+          btn.disabled = true;
+          await call(RECIPES_SVC + ".DeleteRecipe", target);
+          setLiteral($("recipes-status"), "ok", "Handoff deleted.");
+          newRecipeDraft();
+          await refreshRecipes();
+        } catch (e) {
+          setLiteral($("recipes-status"), "err", "Delete failed: " + e);
+        } finally {
+          btn.disabled = false;
+        }
       }
 
       function toggleScheduleRows() {
@@ -2910,7 +3182,13 @@
         $("recipe-dup").addEventListener("click", duplicateRecipeDraft);
         $("recipe-preview-btn").addEventListener("click", previewRecipeDraft);
         $("recipe-approve-btn").addEventListener("click", approveRecipeDraft);
+        $("recipe-grant-btn").addEventListener("click", grantAutomation);
+        $("recipe-revoke-btn").addEventListener("click", revokeAutomation);
+        $("recipe-disable-btn").addEventListener("click", disableRecipe);
+        $("recipe-enable-btn").addEventListener("click", enableRecipe);
+        $("recipe-delete-btn").addEventListener("click", deleteRecipe);
         $("recipe-run-btn").addEventListener("click", runRecipeDraft);
+        $("recipe-cancel-job-btn").addEventListener("click", cancelRecipeJob);
         $("recipe-status-btn").addEventListener("click", loadDeliveryStatus);
         $("watch-start").addEventListener("click", startWatch);
         $("watch-stop").addEventListener("click", stopWatch);
