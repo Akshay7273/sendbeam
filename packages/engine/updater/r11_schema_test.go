@@ -28,8 +28,8 @@ type schemaProbeServer struct {
 func newSchemaProbeServer(t *testing.T, version string, schema int, channel string) *schemaProbeServer {
 	t.Helper()
 	p := &schemaProbeServer{version: version, schema: schema, channel: channel}
-	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
-	testPub := DefaultMinisignPublicKey
+	testSeed := sec01TestSeed
+	testPub := sec01TestPub
 
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -82,6 +82,7 @@ func newSchemaUpdater(t *testing.T, probe *schemaProbeServer, target string, ch 
 		WithExecutablePath(target),
 		WithDesktopFormat("appimage"),
 		WithProductKind(ProductKindDesktop),
+		WithMinisignPublicKey(sec01TestPub),
 		WithHTTPClient(probe.srv.Client()),
 	)
 	if err != nil {

@@ -101,8 +101,8 @@ func TestChannelManifest_FindTargetAsset(t *testing.T) {
 
 func TestVerifyMinisignSignature(t *testing.T) {
 	// Generate mock keypair seed (32 bytes hex)
-	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
-	testPub := DefaultMinisignPublicKey
+	testSeed := sec01TestSeed
+	testPub := sec01TestPub
 
 	payload := []byte(`{"version":"1.6.0","channel":"stable"}`)
 

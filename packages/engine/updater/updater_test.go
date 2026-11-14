@@ -192,8 +192,8 @@ func TestUpdater_SignedChannelManifest_HappyPath(t *testing.T) {
 	tarData := createTestTarGz(t, "sendbeam", newBinary)
 	tarHash := sha256Hex(tarData)
 
-	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
-	testPub := DefaultMinisignPublicKey
+	testSeed := sec01TestSeed
+	testPub := sec01TestPub
 
 	archiveName := "sendbeam-cli-linux-amd64.tar.gz"
 
@@ -278,8 +278,8 @@ func TestUpdater_SignedChannelManifest_HappyPath(t *testing.T) {
 }
 
 func TestUpdater_SignedChannelManifest_TamperedPayload(t *testing.T) {
-	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
-	testPub := DefaultMinisignPublicKey
+	testSeed := sec01TestSeed
+	testPub := sec01TestPub
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -311,8 +311,8 @@ func TestUpdater_SignedChannelManifest_TamperedPayload(t *testing.T) {
 }
 
 func TestUpdater_SignedChannelManifest_DowngradeRejection(t *testing.T) {
-	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
-	testPub := DefaultMinisignPublicKey
+	testSeed := sec01TestSeed
+	testPub := sec01TestPub
 
 	manifest := ChannelManifest{
 		SchemaVersion: 1,
@@ -373,8 +373,8 @@ func TestUpdater_Desktop_SignedChannelManifest_AppImage(t *testing.T) {
 	newAppImage := []byte("desktop-v1.6.0-appimage-updated")
 	appImageHash := sha256Hex(newAppImage)
 
-	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
-	testPub := DefaultMinisignPublicKey
+	testSeed := sec01TestSeed
+	testPub := sec01TestPub
 
 	var srv *httptest.Server
 	manifest := ChannelManifest{

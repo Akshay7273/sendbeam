@@ -32,8 +32,8 @@ func newUpdateProbeServer(t *testing.T, payload []byte) *updateProbeServer {
 	t.Helper()
 	p := &updateProbeServer{}
 	payloadHash := sha256Hex(payload)
-	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
-	testPub := updater.DefaultMinisignPublicKey
+	testSeed := sec01TestSeed
+	testPub := sec01TestPub
 
 	var manifest updater.ChannelManifest
 	var downloadURL string
@@ -123,6 +123,7 @@ func TestApplyUpdateAfterLocalOnlySwitchIsBlocked(t *testing.T) {
 		updater.WithExecutablePath(targetAppImage),
 		updater.WithTargetPlatform("linux", "amd64"),
 		updater.WithDesktopFormat("appimage"),
+		updater.WithMinisignPublicKey(sec01TestPub),
 		updater.WithHTTPClient(probe.srv.Client()),
 	)
 
@@ -160,6 +161,7 @@ func TestApplyUpdateAfterLocalOnlySwitchIsBlocked(t *testing.T) {
 		t.Fatalf("PROHIBITED EGRESS: extra manifest fetch under LocalOnly (%d total)", got)
 	}
 }
+
 // TestApplyUpdateWithCorruptConfigConfigFailsClosed composes the REAL
 // fail-closed policy closure (main.go) with the SB-R11 apply-time gate: a
 // corrupt desktop config must degrade to LocalOnly and block the download
@@ -219,6 +221,7 @@ func TestApplyUpdateWithCorruptConfigFailsClosed(t *testing.T) {
 		updater.WithExecutablePath(targetAppImage),
 		updater.WithTargetPlatform("linux", "amd64"),
 		updater.WithDesktopFormat("appimage"),
+		updater.WithMinisignPublicKey(sec01TestPub),
 		updater.WithHTTPClient(probe.srv.Client()),
 	)
 	svc.SetNetworkPolicyProvider(getPolicy)

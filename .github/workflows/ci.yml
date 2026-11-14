@@ -300,6 +300,14 @@ jobs:
       - name: Run acceptance-evidence recorder self-tests
         run: bash ./scripts/acceptance-record_test.sh
 
+      # SEC01: production update-signing key material must never re-enter the
+      # repository. The retired fixture seed derived the pinned production
+      # public key; this gate fails CI if it, the production pin bound in
+      # unsanctioned code, or any seed deriving the production key reappears
+      # in tracked files.
+      - name: Guard production signing-key material out of the repo
+        run: bash ./scripts/run_guard_tests.sh && bash ./scripts/guard-signing-material.sh
+
   offlinelab:
     name: offlinelab (real-network local-only evidence)
     runs-on: ubuntu-latest

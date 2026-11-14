@@ -24,8 +24,8 @@ func TestAttackMatrix_Vector15_UpdateManifestReplay(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
-	testPub := DefaultMinisignPublicKey
+	testSeed := sec01TestSeed
+	testPub := sec01TestPub
 	archiveName := "sendbeam-cli-linux-amd64.tar.gz"
 
 	// Attacker replays a genuine, validly-signed older manifest (v1.6.0)

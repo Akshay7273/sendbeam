@@ -33,8 +33,8 @@ func TestUpdateService_CheckAndApply_AppImage(t *testing.T) {
 	newAppImage := []byte("AppImage-v1.5.0-signed-update")
 	appImageHash := sha256Hex(newAppImage)
 
-	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
-	testPub := updater.DefaultMinisignPublicKey
+	testSeed := sec01TestSeed
+	testPub := sec01TestPub
 
 	var srv *httptest.Server
 	manifest := updater.ChannelManifest{
