@@ -46,14 +46,14 @@ signing. CI builds artifacts and produces `SHA256SUMS.txt`; the owner signs
 that checksum file and the update-channel manifests locally, then uploads the
 signatures.
 
-| Property | Assessment |
-| --- | --- |
-| Key exposure surface | Smallest: key never exists in GitHub's secret store, never enters a runner memory space |
+| Property             | Assessment                                                                                                |
+| -------------------- | --------------------------------------------------------------------------------------------------------- |
+| Key exposure surface | Smallest: key never exists in GitHub's secret store, never enters a runner memory space                   |
 | CI compromise impact | An attacker who owns the runner can produce **unsigned** artifacts; they cannot produce a valid signature |
-| Release ergonomics | Manual step per release; a human must be present and available |
-| Automation ceiling | Lower — no fully automated tag→publish path |
-| Recovery | Restore from offline backup; no platform-side re-provisioning |
-| Honest claim | "The production signing key has never been present in CI or in any networked system during signing." |
+| Release ergonomics   | Manual step per release; a human must be present and available                                            |
+| Automation ceiling   | Lower — no fully automated tag→publish path                                                               |
+| Recovery             | Restore from offline backup; no platform-side re-provisioning                                             |
+| Honest claim         | "The production signing key has never been present in CI or in any networked system during signing."      |
 
 ### Design B — protected GitHub Actions signing environment
 
@@ -61,14 +61,14 @@ The key is stored as an Actions secret (environment-scoped), and the signing
 job runs inside an environment with required reviewers and release-only
 permissions.
 
-| Property | Assessment |
-| --- | --- |
-| Key exposure surface | Larger: the key exists in GitHub's secret store and is materialized into a runner during signing |
-| CI compromise impact | A compromised signing job, a malicious action, or an over-broad secret scope yields **valid signatures** |
-| Release ergonomics | Best: tag-driven, repeatable, no human latency |
-| Automation ceiling | High — can be fully automated with approvals |
-| Recovery | Rotate the GitHub secret; audit the environment's approval log |
-| Honest claim | "The signing key is **not** offline. It is held by the CI platform and protected by environment approvals." |
+| Property             | Assessment                                                                                                  |
+| -------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Key exposure surface | Larger: the key exists in GitHub's secret store and is materialized into a runner during signing            |
+| CI compromise impact | A compromised signing job, a malicious action, or an over-broad secret scope yields **valid signatures**    |
+| Release ergonomics   | Best: tag-driven, repeatable, no human latency                                                              |
+| Automation ceiling   | High — can be fully automated with approvals                                                                |
+| Recovery             | Rotate the GitHub secret; audit the environment's approval log                                              |
+| Honest claim         | "The signing key is **not** offline. It is held by the CI platform and protected by environment approvals." |
 
 ### Recommendation
 
@@ -106,7 +106,7 @@ mkdir -p ~/secure/sendbeam-signing && cd ~/secure/sendbeam-signing
 go run ./scripts/keycheck.go minisign-v2.pub
 ```
 
-Expected output shape (values will differ — this is the *only* part that may
+Expected output shape (values will differ — this is the _only_ part that may
 leave the machine):
 
 ```
@@ -148,6 +148,7 @@ artifacts plus documentation. Partial swaps are rejected by CI.
    The `public_key_sha256` value must match the value the owner recorded at
    generation time (§2 step 3), read over a **different channel** than the
    one the key file arrived on.
+
 3. Apply the re-pin:
 
    ```bash
@@ -231,14 +232,14 @@ retired-key signatures against a local server.
 
 ## 6. Verification gates (CI-enforced)
 
-| Gate | What it proves |
-| --- | --- |
-| `sec02_*` Go tests | New key accepted, retired key rejected, no fallback |
-| `keycheck` self-test | Fingerprint tool parses and rejects malformed keys |
-| Guard rule (retired pin) | Retired key re-introduction fails CI |
-| Guard rule (tracked `updates/`) | Legacy channel path can't silently reappear |
-| `verify-release.sh --strict` | Release bundle verifies against the pinned key only |
-| Signer/verifier mismatch test | Signing with a key that does not match the pin fails, rather than producing an unverifiable release |
+| Gate                            | What it proves                                                                                      |
+| ------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `sec02_*` Go tests              | New key accepted, retired key rejected, no fallback                                                 |
+| `keycheck` self-test            | Fingerprint tool parses and rejects malformed keys                                                  |
+| Guard rule (retired pin)        | Retired key re-introduction fails CI                                                                |
+| Guard rule (tracked `updates/`) | Legacy channel path can't silently reappear                                                         |
+| `verify-release.sh --strict`    | Release bundle verifies against the pinned key only                                                 |
+| Signer/verifier mismatch test   | Signing with a key that does not match the pin fails, rather than producing an unverifiable release |
 
 ---
 
