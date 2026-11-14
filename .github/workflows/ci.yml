@@ -315,6 +315,11 @@ jobs:
       - name: Verify signing-key fingerprint tool self-tests
         run: bash ./scripts/keycheck_test.sh
 
+      # SEC02: the release signer must refuse a credential that does not
+      # match the pinned public key, and must leave no half-written signature.
+      - name: Verify signing-credential binding self-tests
+        run: bash ./scripts/minisign_sign_test.sh
+
   offlinelab:
     name: offlinelab (real-network local-only evidence)
     runs-on: ubuntu-latest

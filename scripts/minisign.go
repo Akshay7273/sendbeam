@@ -154,8 +154,22 @@ func runSign(args []string) error {
 		}
 	}
 	if pubKeyFile != "" {
-		_, pKeyID, err := parsePublicKey(pubKeyFile)
-		if err == nil && len(pKeyID) == 8 {
+		declaredPub, pKeyID, err := parsePublicKey(pubKeyFile)
+		if err != nil {
+			return fmt.Errorf("failed to parse public key file %s: %w", pubKeyFile, err)
+		}
+		// SB-SEC02: the signing credential MUST correspond to the pinned
+		// public key that clients verify against. Without this check a
+		// misconfigured or substituted secret produces a signature no
+		// client accepts, and the mismatch is only discovered after
+		// publication. Fail before writing any signature.
+		if !pubKey.Equal(declaredPub) {
+			return fmt.Errorf(
+				"signing credential does not match public key %s: "+
+					"refusing to sign with a key that clients will not verify",
+				pubKeyFile)
+		}
+		if len(pKeyID) == 8 {
 			keyID = pKeyID
 		}
 	}
