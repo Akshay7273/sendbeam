@@ -84,32 +84,37 @@ func (cm *ChannelManifest) FindDesktopTargetAsset(targetOS, targetArch, format s
 		}
 	}
 
-	// Fallback to platform key search
+	// Fallback to platform key search. Every fallback match must agree
+	// with the client architecture: an asset that does not name the
+	// client arch (or an explicit universal bundle) must never be
+	// selected — a wrong-architecture artifact would replace a working
+	// installation with one that cannot run (SB-R11).
 	for name, asset := range cm.Assets {
+		archOK := strings.Contains(name, targetArch) || strings.Contains(name, "universal")
 		switch targetOS {
 		case "linux":
-			if strings.HasSuffix(name, ".AppImage") && (strings.Contains(name, targetArch) || targetArch == "amd64") {
+			if strings.HasSuffix(name, ".AppImage") && archOK {
 				return &asset, nil
 			}
 		case "windows":
 			if format == "zip" || format == "portable" {
-				if strings.Contains(name, "windows") && strings.HasSuffix(name, ".zip") {
+				if archOK && strings.Contains(name, "windows") && strings.HasSuffix(name, ".zip") {
 					return &asset, nil
 				}
 			} else {
-				if strings.Contains(name, "windows") && (strings.HasSuffix(name, "-installer.exe") || strings.HasSuffix(name, ".exe")) {
+				if archOK && strings.Contains(name, "windows") && (strings.HasSuffix(name, "-installer.exe") || strings.HasSuffix(name, ".exe")) {
 					return &asset, nil
 				}
 			}
 		case "darwin":
 			if strings.Contains(name, "macos") || strings.Contains(name, "darwin") {
-				if format == "dmg" && strings.HasSuffix(name, ".dmg") {
+				if format == "dmg" && strings.HasSuffix(name, ".dmg") && archOK {
 					return &asset, nil
 				}
-				if format == "zip" && strings.HasSuffix(name, ".zip") {
+				if format == "zip" && strings.HasSuffix(name, ".zip") && archOK {
 					return &asset, nil
 				}
-				if strings.HasSuffix(name, ".dmg") || strings.HasSuffix(name, ".zip") {
+				if (strings.HasSuffix(name, ".dmg") || strings.HasSuffix(name, ".zip")) && archOK {
 					return &asset, nil
 				}
 			}
