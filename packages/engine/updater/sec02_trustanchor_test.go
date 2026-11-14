@@ -283,7 +283,7 @@ func TestSec02_TamperedPayloadFailsClosed(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(sig))
 	})
-	mux.HandleFunc("/download/", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/download/", func(_ http.ResponseWriter, _ *http.Request) {
 		s.downloads.Add(1)
 	})
 	tampered := httptest.NewServer(mux)
