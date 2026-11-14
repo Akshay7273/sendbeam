@@ -192,20 +192,27 @@ All 9 cross-client pairs (Browser ↔ CLI ↔ Desktop) interoperate seamlessly a
 > **Cryptographic Evolution (`sendbeam/2` → `sendbeam/3`):**
 > `sendbeam/2` trusted sessions in v1.5–v1.8 established mutual peer authentication, replay protection, and domain-separated directional keys derived from `k_pair` and ephemeral nonces, but did not provide forward secrecy against compromise of `k_pair`. SendBeam v1.9 introduces **`sendbeam/3`** (ADR 0010 / V19-PR02), implementing authenticated ephemeral Diffie-Hellman key exchange via X25519 (RFC 7748) and HKDF-SHA256 (RFC 5869) with memory zeroization of private scalars, providing true forward secrecy. Paired devices mandatorily negotiate `sendbeam/3`; downgrades to `sendbeam/2` or `sendbeam/1` fail closed.
 
-## Distribution, Packaging & Self-Update Matrix (v1.6)
+## Distribution & Packaging Matrix
 
-SendBeam publishes cryptographically signed binaries, installers, and update channel manifests for all major desktop and server operating systems:
+SendBeam publishes binaries and installers with build-provenance attestations
+and SHA-256 checksums for all major desktop and server operating systems.
 
-| Platform / Target          | Packaging Format        | Signing & Integrity           | Update Mechanism                 | Package Manager Safe                 |
-| :------------------------- | :---------------------- | :---------------------------- | :------------------------------- | :----------------------------------- |
-| **Linux (amd64, arm64)**   | Static CLI tarball      | Minisign + Sigstore + SHA-256 | `sendbeam update` (in-place)     | N/A                                  |
-| **Linux (amd64)**          | Debian Package (`.deb`) | Minisign + Sigstore + SHA-256 | System `apt-get`                 | Detects `apt` (disables self-update) |
-| **Linux (amd64)**          | AppImage                | Minisign + Sigstore + SHA-256 | Desktop in-place swap + rollback | Yes                                  |
-| **macOS (amd64, arm64)**   | Universal CLI tarball   | Minisign + Sigstore + SHA-256 | `sendbeam update` (in-place)     | Detects Homebrew prefix              |
-| **macOS (Universal)**      | DMG Disk Image / `.app` | Minisign + Sigstore + SHA-256 | Desktop staged swap + rollback   | Yes                                  |
-| **Windows (amd64, arm64)** | CLI Zip Archive         | Minisign + Sigstore + SHA-256 | `sendbeam update` (in-place)     | Detects WinGet prefix                |
-| **Windows (amd64)**        | NSIS Installer (`.exe`) | Minisign + Sigstore + SHA-256 | NSIS silent relaunch installer   | Yes                                  |
-| **Windows (amd64)**        | Portable Zip Archive    | Minisign + Sigstore + SHA-256 | Manual update                    | Yes                                  |
+**There is no self-update mechanism.** Every target updates the same way: a
+manual download from [GitHub Releases](https://github.com/Akshay7273/sendbeam/releases).
+The `sendbeam update` command, the desktop updater, the update channels and
+their manifests were removed (see [updater.md](updater.md)). Package managers
+own their own upgrade path, as always.
+
+| Platform / Target          | Packaging Format        | Signing & Integrity              | Update Mechanism        |
+| :------------------------- | :---------------------- | :------------------------------- | :---------------------- |
+| **Linux (amd64, arm64)**   | Static CLI tarball      | Attestation + Sigstore + SHA-256 | Manual release download |
+| **Linux (amd64)**          | Debian Package (`.deb`) | Attestation + Sigstore + SHA-256 | System `apt-get`        |
+| **Linux (amd64)**          | AppImage                | Attestation + Sigstore + SHA-256 | Manual release download |
+| **macOS (amd64, arm64)**   | Universal CLI tarball   | Attestation + Sigstore + SHA-256 | Manual release download |
+| **macOS (Universal)**      | DMG Disk Image / `.app` | Attestation + Sigstore + SHA-256 | Manual release download |
+| **Windows (amd64, arm64)** | CLI Zip Archive         | Attestation + Sigstore + SHA-256 | Manual release download |
+| **Windows (amd64)**        | NSIS Installer (`.exe`) | Attestation + Sigstore + SHA-256 | Manual release download |
+| **Windows (amd64)**        | Portable Zip Archive    | Attestation + Sigstore + SHA-256 | Manual release download |
 
 ## Server Hardening & Reverse-Proxy Compatibility (v1.6)
 
@@ -284,11 +291,11 @@ offline claim. Guest Wi-Fi / client-isolated networks and blocked multicast
 without a manual `--peer-addr` endpoint fail honestly; they are not claimed to
 work.
 
-| Effective policy   | Local route available                            | Local route missing                  | Public egress while active                                             |
-| ------------------ | ------------------------------------------------ | ------------------------------------ | ---------------------------------------------------------------------- |
-| `online` (default) | online directly                                  | online directly                      | yes (normal operation)                                                 |
-| `prefer-local`     | local first; explicit online fallback on failure | online directly (stated, not silent) | only on the fallback leg                                               |
-| `local-only`       | local only                                       | clear failure, no fallback           | **none** — no rendezvous, STUN/TURN, relay, update check, or telemetry |
+| Effective policy   | Local route available                            | Local route missing                  | Public egress while active                               |
+| ------------------ | ------------------------------------------------ | ------------------------------------ | -------------------------------------------------------- |
+| `online` (default) | online directly                                  | online directly                      | yes (normal operation)                                   |
+| `prefer-local`     | local first; explicit online fallback on failure | online directly (stated, not silent) | only on the fallback leg                                 |
+| `local-only`       | local only                                       | clear failure, no fallback           | **none** — no rendezvous, STUN/TURN, relay, or telemetry |
 
 Outbox jobs bind a policy at enqueue and are held (not leased, sent, or
 charged retry budget) when the dispatch pass cannot serve them. Interrupted

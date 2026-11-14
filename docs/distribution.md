@@ -102,7 +102,7 @@ Packaging is automated across native GitHub-hosted runners in two dedicated work
    - Triggered on push of version tags (`v*`) or manual `workflow_dispatch`.
    - Compiles all 6 CLI platforms and all 4 desktop formats.
    - Generates canonical `SHA256SUMS.txt`, in-toto build provenance attestations, and SPDX 2.3 SBOMs.
-   - Signs `SHA256SUMS.txt` with Minisign Ed25519 (`SHA256SUMS.txt.minisig`) and Sigstore Cosign keyless OIDC (`SHA256SUMS.txt.sigstore.json`).
+   - Signs `SHA256SUMS.txt` keyless with Sigstore Cosign OIDC (`SHA256SUMS.txt.sigstore.json`). No long-lived signing key is used or required.
    - Creates a **Draft GitHub Release** with all assets and checksums attached. Prerelease tags (`v*-rc*`) are marked as pre-releases.
    - Runs a **Release Verification Gate** (`scripts/verify-release.sh`) that downloads the release bundle, re-checks SHA-256 sums, smoke tests the native binary, and validates draft status.
    - Maintainer reviews the draft release notes and publishes the release.
@@ -128,7 +128,6 @@ All produced distribution archives, installers, and SPDX 2.3 SBOM manifests are 
 
 ```text
 SHA256SUMS.txt
-SHA256SUMS.txt.minisig
 SHA256SUMS.txt.sigstore.json
 ```
 
@@ -136,4 +135,4 @@ SHA256SUMS.txt.sigstore.json
 - Software Bill of Materials: generated via `scripts/generate-sbom.sh` (`sendbeam-cli.spdx.json`, `sendbeam-desktop.spdx.json`).
 - Automated release verification: `scripts/verify-release.sh`.
 - Detailed supply chain security model: [docs/supply-chain.md](supply-chain.md).
-- Standalone self-updater architecture & rollback: [docs/updater.md](updater.md).
+- How updates are distributed (manual GitHub Releases, no in-app updater): [docs/updater.md](updater.md).

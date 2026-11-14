@@ -1,5 +1,12 @@
 # v2.3 Desktop Handoff Workspace — Acceptance & Release Gate (V23-PR06 scope)
 
+> **Superseded in part — 2026-11-15 (SB-SIMPLIFY).** The automatic updater was
+> removed from the product, so rows in this record that exercise update
+> checking, update channels, the update banner or in-place application describe
+> functionality that no longer ships and cannot be re-run. Every other row —
+> packaging, launch, transfer, pairing, offline behaviour — stands as recorded.
+> See [updater.md](updater.md).
+
 Status: **in-progress milestone gate.** Rows below record exactly what is
 verified. Physical-device rows remain **NOT RUN** and do not gate independent
 desktop development; they DO gate any future v2.3 release publication.
