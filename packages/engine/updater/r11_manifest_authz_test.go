@@ -31,8 +31,8 @@ type archProbeServer struct {
 func newArchProbeServer(t *testing.T, version string, assets map[string]ReleaseAsset) *archProbeServer {
 	t.Helper()
 	p := &archProbeServer{signedAssets: assets}
-	testSeed := "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533ad"
-	testPub := DefaultMinisignPublicKey
+	testSeed := sec01TestSeed
+	testPub := sec01TestPub
 
 	p.manifest = ChannelManifest{
 		SchemaVersion: 1,
@@ -102,6 +102,7 @@ func TestUpdater_WrongArchAppImageRejected(t *testing.T) {
 		WithExecutablePath(targetAppImage),
 		WithDesktopFormat("appimage"),
 		WithProductKind(ProductKindDesktop),
+		WithMinisignPublicKey(sec01TestPub),
 		WithHTTPClient(probe.srv.Client()),
 	)
 	if err != nil {
@@ -154,6 +155,7 @@ func TestUpdater_WrongArchInstallerRejected(t *testing.T) {
 		WithExecutablePath(targetExe),
 		WithDesktopFormat("installer"),
 		WithProductKind(ProductKindDesktop),
+		WithMinisignPublicKey(sec01TestPub),
 		WithHTTPClient(probe.srv.Client()),
 	)
 	if err != nil {
@@ -173,8 +175,10 @@ func TestUpdater_WrongArchInstallerRejected(t *testing.T) {
 }
 
 // TestUpdater_ManifestFromWrongKeyRejected: a manifest signed by any key
-// other than the pinned production key must fail closed BEFORE the artifact
-// is contacted — the download endpoint must never be hit.
+// other than the pinned verification key must fail closed BEFORE the
+// artifact is contacted — the download endpoint must never be hit. (SEC01:
+// tests pin an independent disposable key; the production anchor is never
+// referenced from test code.)
 func TestUpdater_ManifestFromWrongKeyRejected(t *testing.T) {
 	tempDir := t.TempDir()
 	targetAppImage := filepath.Join(tempDir, "SendBeam-linux-amd64.AppImage")
@@ -208,6 +212,7 @@ func TestUpdater_ManifestFromWrongKeyRejected(t *testing.T) {
 		WithTargetPlatform("linux", "amd64"),
 		WithExecutablePath(targetAppImage),
 		WithDesktopFormat("appimage"),
+		WithMinisignPublicKey(sec01TestPub),
 		WithHTTPClient(probe.srv.Client()),
 	)
 	if err != nil {

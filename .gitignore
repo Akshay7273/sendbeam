@@ -28,3 +28,7 @@ infra/certs/*.pem
 
 # Go
 /go/
+
+# Python bytecode (SEC01 guard self-test imports the guard module)
+__pycache__/
+*.pyc
