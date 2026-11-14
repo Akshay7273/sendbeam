@@ -228,6 +228,22 @@ func (s *UpdateService) CheckUpdate(channelStr string) (UpdateStatus, error) {
 
 // ApplyUpdate downloads, verifies, and stages or applies the update.
 func (s *UpdateService) ApplyUpdate() (UpdateStatus, error) {
+	// SB-R11: authorization is re-checked immediately before egress, not
+	// inherited from the earlier CheckUpdate call. The user (or a degraded
+	// config) may have switched the effective policy to local-only between
+	// the check and the apply; downloading then would be exactly the
+	// public egress the policy prohibits. Same honest skip as CheckUpdate.
+	if s.localOnly() {
+		s.mu.Lock()
+		s.status.State = "skipped_local_only"
+		s.status.Error = ""
+		s.status.Message = "The pending update was not downloaded because the network policy is now local-only. Switch to online and check again to download it."
+		st := s.status
+		s.mu.Unlock()
+		s.emit(st)
+		return st, fmt.Errorf("update apply skipped: network policy is local-only")
+	}
+
 	s.mu.Lock()
 	if s.lastCheck == nil || !s.lastCheck.UpdateAvailable {
 		st := s.status
