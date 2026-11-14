@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""SEC01 guard core: key-bound scan for production signing material.
+"""SEC01 guard core: retired signing-material and legacy-route scan.
 
-Pure-stdlib RFC 8032 Ed25519 public-key derivation so that candidate seeds
-found in tracked Go files can be checked against the production trust anchor
-cryptographically (not just by literal match). Prints violations to stdout;
-empty output means clean.
+The self-updater and its production signing key were removed (SB-SIMPLIFY).
+What remains to defend against is resurrection:
+
+  1. the retired seed literal, in any tracked file;
+  3. any 64-hex literal in Go that DERIVES the retired public key — this is
+     what catches a re-derivation scheme that never spells the literal;
+  6. a legacy update-channel route becoming resolvable again (a tracked
+     updates/ directory, or published channel manifests anywhere), which is
+     how forged manifests signed with the retired key could still reach old
+     clients;
+  7. retired signing-credential names wired into any workflow.
+
+Pure-stdlib RFC 8032 Ed25519 public-key derivation so that candidate seeds can
+be checked against the retired key cryptographically, not just by literal
+match. Prints violations to stdout; empty output means clean.
 """
 import base64
 import hashlib
@@ -17,17 +28,22 @@ import sys
 p = 2**255 - 19
 b = 256
 
+
 def _h(m: bytes) -> bytes:
     return hashlib.sha512(m).digest()
+
 
 def _bit(h: bytes, i: int) -> int:
     return (h[i // 8] >> (i % 8)) & 1
 
+
 def _inv(x: int) -> int:
     return pow(x, p - 2, p)
 
+
 _d = -121665 * _inv(121666) % p
 _I = pow(2, (p - 1) // 4, p)
+
 
 def _xrecover(y: int) -> int:
     xx = (y * y - 1) * _inv(_d * y * y + 1)
@@ -38,9 +54,11 @@ def _xrecover(y: int) -> int:
         x = p - x
     return x
 
+
 _By = 4 * _inv(5) % p
 _Bx = _xrecover(_By)
 _B = [_Bx % p, _By % p]
+
 
 def _edwards_add(P, Q):
     x1, y1 = P
@@ -48,6 +66,7 @@ def _edwards_add(P, Q):
     x3 = (x1 * y2 + x2 * y1) * _inv(1 + _d * x1 * x2 * y1 * y2)
     y3 = (y1 * y2 + x1 * x2) * _inv(1 - _d * x1 * x2 * y1 * y2)
     return [x3 % p, y3 % p]
+
 
 def _scalarmult(P, e):
     if e == 0:
@@ -58,32 +77,42 @@ def _scalarmult(P, e):
         Q = _edwards_add(Q, P)
     return Q
 
+
 def _encodepoint(P) -> bytes:
     x, y = P
     out = [(y >> i) & 255 for i in range(b // 8)]
     out[31] |= (x & 1) << 7
     return bytes(out)
 
+
 def ed25519_public_key(seed: bytes) -> bytes:
     hh = _h(seed)
     a = 2 ** (b - 2) + sum(2 ** i * _bit(hh, i) for i in range(3, b - 2))
     return _encodepoint(_scalarmult(_B, a))
 
+
 # ---- guard ----------------------------------------------------------------
+# Assembled from split parts so this guard's own tracked source never contains
+# the contiguous literal it scans for (self-scan safe). Not secret material:
+# the derived key is public and retired.
 RETIRED_SEED_PART1 = "d022346a8020c24891d1af56531c471c7160eaee16e05618202ef8fd953533"
 RETIRED_SEED_PART2 = "ad"
 
+CHANNEL_MANIFESTS = (
+    "stable.json",
+    "beta.json",
+    "stable.json.minisig",
+    "beta.json.minisig",
+)
+
+
 def main() -> int:
+    if "PIN_B64" not in os.environ:
+        sys.stderr.write("guard: PIN_B64 (retired public key) is required\n")
+        return 2
     pin_raw = base64.b64decode(os.environ["PIN_B64"])
     pin_pub = pin_raw[10:42]
-    # Retired fixture seed, assembled from split parts so that this guard's
-    # own tracked source never contains the contiguous literal it detects.
     retired = (RETIRED_SEED_PART1 + RETIRED_SEED_PART2).encode()
-    sanctioned = [
-        s
-        for s in os.environ.get("SANCTIONED_PIN_FILES", "packages/engine/updater/verify.go").split(",")
-        if s
-    ]
 
     args = sys.argv[1:]
     if args and args[0] == "--scan-dir":
@@ -100,61 +129,28 @@ def main() -> int:
 
     violations = []
 
-    # (5) trust-root consistency (tracked mode): the committed minisign.pub
-    # must equal the compiled production pin constant. A partial swap
-    # (one file changed, the other forgotten) is the realistic unauthorized
-    # trust-root change; it must fail CI, not silently pass release
-    # verification. (A fully-consistent swap is a review-visible event.)
-    if tracked_mode:
-        try:
-            pub_lines = [
-                l.strip()
-                for l in open("minisign.pub", encoding="utf-8").read().splitlines()
-                if l.strip() and not l.startswith("untrusted comment:")
-            ]
-            vsrc = open("packages/engine/updater/verify.go", encoding="utf-8").read()
-            m = re.search(r'DefaultMinisignPublicKey\s*=\s*"([^"]+)"', vsrc)
-            if pub_lines and m:
-                if pub_lines[0] != m.group(1):
-                    violations.append(
-                        "trust-root mismatch: minisign.pub does not match "
-                        "DefaultMinisignPublicKey in packages/engine/updater/verify.go "
-                        "(unauthorized or partial trust-root change)"
-                    )
-        except OSError:
-            pass
-
-    # (6) legacy update-channel resurrection (SEC02 Phase C).
-    # v1.6-v2.2 clients embed <legacy base>/<channel>.json. GitHub Pages
-    # serves a project site from the repo root, so a tracked top-level
-    # "updates/" directory would make the legacy route resolvable again as
-    # soon as Pages is enabled. That is precisely the window in which forged
-    # manifests signed with the retired key would reach vulnerable clients.
-    # Enforce: no tracked updates/ directory, and no published channel
-    # manifest files anywhere in the tree.
+    # (6) legacy update-channel resurrection.
+    # v1.6-v2.2 clients embed <legacy base>/<channel>.json. GitHub Pages serves
+    # a project site from the repo root, so a tracked top-level "updates/"
+    # directory would make the legacy route resolvable again as soon as Pages
+    # is enabled -- precisely the window in which forged manifests signed with
+    # the retired key would reach vulnerable clients.
     if tracked_mode:
         for f in files:
             norm = f.replace(os.sep, "/")
             if norm.startswith("updates/"):
                 violations.append(
                     f"{f}: tracked legacy update-channel directory "
-                    "(re-enabling Pages would resurrect the retired-key route)"
+                    "(enabling Pages would resurrect the retired-key route)"
                 )
                 continue
-            base = os.path.basename(norm)
-            if base in ("stable.json", "beta.json") or base in (
-                "stable.json.minisig",
-                "beta.json.minisig",
-            ):
+            if os.path.basename(norm) in CHANNEL_MANIFESTS:
                 violations.append(
                     f"{f}: published update-channel manifest in the repo "
-                    "(legacy route isolation, SEC02 Phase C)"
+                    "(legacy route isolation)"
                 )
 
-    # (7) retired signing credential usage outside the sanctioned signer.
-    # The signer must never be wired to a variable literally named for the
-    # retired secret; after retirement that name must not be referenced by
-    # the release workflow at all.
+    # (7) retired signing-credential names must not be wired into any workflow.
     if tracked_mode:
         for f in files:
             norm = f.replace(os.sep, "/")
@@ -172,31 +168,19 @@ def main() -> int:
 
     hex64 = re.compile(rb"[0-9a-fA-F]{64}")
     for f in files:
-        rel = os.path.relpath(f) if tracked_mode else f
         try:
             data = open(f, "rb").read()
         except OSError:
             continue
-        # (1) retired seed literal: EVERY tracked file type
+        # (1) retired seed literal: EVERY tracked file type.
         if retired in data:
-            violations.append(f"{f}: retired production-derived fixture seed literal")
+            violations.append(f"{f}: retired production-derived seed literal")
             continue
         if not f.endswith(".go"):
             continue
-        # (2) production pinned public key bound outside the sanctioned verifier
-        if not any(f == s or f.endswith("/" + s) or rel == s for s in sanctioned):
-            if os.environ["PIN_B64"].encode() in data:
-                violations.append(
-                    f"{f}: production pinned public key bound outside sanctioned files "
-                    f"({','.join(sanctioned)}); test/tool keys must be independent"
-                )
-        # (2b) tests must not reference the production pin symbol at all
-        if f.endswith("_test.go") and b"DefaultMinisignPublicKey" in data:
-            violations.append(
-                f"{f}: test file references DefaultMinisignPublicKey; "
-                "tests must bind to independent disposable keys"
-            )
-        # (3) key-bound scan of every 64-hex literal in Go files
+        # (3) key-bound scan of every 64-hex literal in Go files. A seed that
+        # derives the retired public key is refused even if the literal was
+        # never spelled out.
         for m in hex64.finditer(data):
             tok = m.group(0)
             if tok.lower() == retired.lower():
@@ -212,11 +196,12 @@ def main() -> int:
             if pub == pin_pub:
                 fp = hashlib.sha256(seed).hexdigest()
                 violations.append(
-                    f"{f}: 64-hex literal derives the PRODUCTION signing key "
+                    f"{f}: 64-hex literal derives the RETIRED signing key "
                     f"(seed sha256 fingerprint {fp[:16]}...{fp[-16:]})"
                 )
     sys.stdout.write("\n".join(violations))
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

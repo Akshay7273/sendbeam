@@ -1,32 +1,38 @@
 #!/bin/bash
-# SEC01 — production signing-key material guard (fail-closed, CI-enforced).
+# SEC01 — retired signing-material guard (fail-closed, CI-enforced).
 #
-# Background: the retired test fixture seed removed by SEC01 derived the
-# exact pinned production update-signing trust anchor (public key bytes
-# verified byte-identical). This guard prevents recurrence:
+# Background: SendBeam once shipped an automatic self-updater that decided "is
+# this binary authentic?" unattended, which required a long-lived production
+# signing key. A retired test fixture seed derived that key. The updater and
+# its key were removed at the root (SB-SIMPLIFY); manual GitHub Releases
+# downloads with build-provenance attestations replaced them.
+#
+# Removing the key does not remove the risk. The remaining risk is
+# resurrection: someone reintroducing the retired material, or a legacy update
+# route becoming resolvable again so that forged manifests signed with the
+# retired key could reach old clients. This guard prevents that:
 #
 #   1. The retired seed literal must never reappear in ANY tracked file.
-#   2. The production pinned public key (base64 form) may appear ONLY in the
-#      sanctioned engine verification file — tests and tooling must bind to
-#      independent disposable keys (sec01_testkeys_test.go), never to the
-#      production pin.
-#   3. Any 64-hex literal in tracked Go files that DERIVES the production
-#      public key (Ed25519) is refused — catching deterministic re-derivation
+#   3. Any 64-hex literal in tracked Go files that DERIVES the retired public
+#      key (Ed25519) is refused — catching deterministic re-derivation
 #      schemes, not just the one retired literal.
+#   6. No tracked legacy update-channel artefacts: no updates/ directory and no
+#      published channel manifests, so enabling GitHub Pages cannot resurrect
+#      the retired-key route.
+#   7. Retired signing-credential names must not be wired into any workflow.
 #
-# No secret material exists in this script: the pinned value is a public key.
+# No secret material exists in this script: the retired value is a public key.
 # Fingerprint outputs are SHA-256 digests, never raw keys.
 #
 # Usage: guard-signing-material.sh [--scan-dir DIR]
 #   --scan-dir DIR : scan every file under DIR instead of git-tracked files
-#                    (used by the self-test suite; cannot be combined with
-#                    a real worktree scan unless DIR is inside one).
+#                    (used by the self-test suite; rules 6/7 need tracked mode).
 set -euo pipefail
 
-PIN_B64="RWTcyDWHWbxnuo3LVM5mWoZrx0HDwSQzAZvXK1lPRcdtJxshUDxJh+rE"
-# Retired seed literal intentionally NOT stored here (self-scan safe);
-# the python core assembles it from split parts.
-SANCTIONED_PIN_FILES="packages/engine/updater/verify.go"
+# The retired public key. Kept because rule 3 needs a target to derive against:
+# it is the only way to catch a seed that reconstructs this key without ever
+# spelling the retired literal. This is a public value, never a secret.
+RETIRED_PIN_B64="RWTcyDWHWbxnuo3LVM5mWoZrx0HDwSQzAZvXK1lPRcdtJxshUDxJh+rE"
 
 command -v python3 >/dev/null 2>&1 || { echo "[-] SEC01 GUARD: python3 is required" >&2; exit 1; }
 
@@ -36,12 +42,12 @@ if [ "${1:-}" = "--scan-dir" ]; then
   MODE_ARGS=(--scan-dir "$2")
 fi
 
-VIOLATIONS=$(PIN_B64="$PIN_B64" \
-  SANCTIONED_PIN_FILES="$SANCTIONED_PIN_FILES" python3 scripts/guard-signing-material.py "${MODE_ARGS[@]}")
+VIOLATIONS=$(PIN_B64="$RETIRED_PIN_B64" \
+  python3 scripts/guard-signing-material.py "${MODE_ARGS[@]}")
 
 if [ -n "$VIOLATIONS" ]; then
-  echo "[-] SEC01 GUARD: production-bound signing material detected:" >&2
+  echo "[-] SEC01 GUARD: retired or resurrection-capable signing material detected:" >&2
   echo "$VIOLATIONS" >&2
   exit 1
 fi
-echo "[+] SEC01 GUARD: no production-bound signing material in tracked files."
+echo "[+] SEC01 GUARD: no retired signing material or legacy update route in tracked files."
