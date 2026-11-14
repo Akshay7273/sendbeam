@@ -51,8 +51,6 @@ TARGETS=(
   "packages/engine/transfer FuzzDurableJournalApply fuzz_durable_journal_apply"
   "packages/engine/trust FuzzDecodeTrustRecord fuzz_decode_trust_record"
   "packages/engine/trust FuzzFileTrustStoreLoad fuzz_file_trust_store_load"
-  "packages/engine/updater FuzzParseChannelManifest fuzz_parse_channel_manifest"
-  "packages/engine/updater FuzzParseChecksums fuzz_parse_checksums"
   "apps/server/internal/signal FuzzClientMsg fuzz_client_msg"
   "apps/server/internal/signal FuzzServerMessageValidation fuzz_server_msg_validation"
   "apps/server/internal/signal FuzzParseTrustedProxies fuzz_parse_trusted_proxies"

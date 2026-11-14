@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createDeviceServiceAdapter,
   createTransferServiceAdapter,
-  createUpdateServiceAdapter,
   createEngineServiceAdapter,
   getWailsBridge,
   isWailsV3Available,
@@ -16,13 +15,11 @@ describe('Wails v3 typed adapter layer', () => {
     expect(WAILS_SERVICES.Transfer).toBe(
       'github.com/sendbeam/desktop/internal/engine.TransferService',
     );
-    expect(WAILS_SERVICES.Update).toBe('github.com/sendbeam/desktop/internal/engine.UpdateService');
     expect(WAILS_SERVICES.Service).toBe('github.com/sendbeam/desktop/internal/engine.Service');
 
     expect(WAILS_EVENTS.Transfer).toBe('sendbeam:transfer');
     expect(WAILS_EVENTS.Consent).toBe('sendbeam:consent');
     expect(WAILS_EVENTS.Devices).toBe('sendbeam:devices');
-    expect(WAILS_EVENTS.Update).toBe('sendbeam:update');
   });
 
   it('detects Wails v3 availability correctly', () => {
@@ -123,22 +120,8 @@ describe('Wails v3 typed adapter layer', () => {
     });
   });
 
-  it('update and engine service adapters format calls correctly', async () => {
+  it('engine service adapter formats calls correctly', async () => {
     const mockCall = vi.fn().mockResolvedValue({});
-    const updateAdapter = createUpdateServiceAdapter(mockCall);
-
-    await updateAdapter.getStatus();
-    expect(mockCall).toHaveBeenCalledWith(`${WAILS_SERVICES.Update}.GetStatus`);
-
-    await updateAdapter.checkUpdate('beta');
-    expect(mockCall).toHaveBeenCalledWith(`${WAILS_SERVICES.Update}.CheckUpdate`, 'beta');
-
-    await updateAdapter.setChannel('stable');
-    expect(mockCall).toHaveBeenCalledWith(`${WAILS_SERVICES.Update}.SetChannel`, 'stable');
-
-    await updateAdapter.applyUpdate();
-    expect(mockCall).toHaveBeenCalledWith(`${WAILS_SERVICES.Update}.ApplyUpdate`);
-
     const engineAdapter = createEngineServiceAdapter(mockCall);
     await engineAdapter.info();
     expect(mockCall).toHaveBeenCalledWith(`${WAILS_SERVICES.Service}.Info`);

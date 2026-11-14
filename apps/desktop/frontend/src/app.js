@@ -1,7 +1,6 @@
       const SV = {
         Service:  "github.com/sendbeam/desktop/internal/engine.Service",
         Transfer: "github.com/sendbeam/desktop/internal/engine.TransferService",
-        Update:   "github.com/sendbeam/desktop/internal/engine.UpdateService",
         Device:   "github.com/sendbeam/desktop/internal/engine.DeviceService",
         NetworkPolicy:
           "github.com/sendbeam/desktop/internal/engine.NetworkPolicyService",
@@ -14,7 +13,7 @@
       const $ = (id) => document.getElementById(id);
 
       // Safe literal-text DOM rendering helpers: ensure untrusted strings (paths, errors,
-      // identities, update details) never enter the HTML parser.
+      // identities) never enter the HTML parser.
       function setStatusMessage(el, cls, text, extraText) {
         if (!el) return;
         el.replaceChildren();
@@ -1090,8 +1089,8 @@
 
       // SETTINGS
       // V21-PR06: apply the network policy across the UI. Local only means
-      // the signaling server, STUN/TURN, relay, invite codes, and update
-      // checks are off; pairing and transfers stay on the LAN.
+      // the signaling server, STUN/TURN, relay, and invite codes are off;
+      // pairing and transfers stay on the LAN.
       // SB-R09 requirement 6: the policy banner must distinguish an
       // INTENTIONAL local-only from the SB-R05 fail-closed FALLBACK (the
       // engine reports degradation via PolicyState). Never silently imply
@@ -1144,9 +1143,9 @@
           banner.appendChild(
             document.createTextNode(
               "transfers and pairing stay on your local network — no " +
-                "signaling server, no STUN/TURN, no relay, no invite codes, " +
-                "and no update checks. Device-to-device and broadcast sends " +
-                "are disabled; choose a paired device."
+                "signaling server, no STUN/TURN, no relay, and no invite " +
+                "codes. Device-to-device and broadcast sends are disabled; " +
+                "choose a paired device."
             )
           );
         } else {
@@ -1161,19 +1160,6 @@
         if (localOnly) {
           $("recv-status").textContent =
             "Local only: incoming files arrive through the offline listener.";
-        }
-        // Updates: disabled in local-only by the backend.
-        $("check-update-btn").disabled = localOnly;
-        if (localOnly) {
-          $("update-status-label").textContent =
-            "Updates disabled in local-only mode.";
-        } else {
-          // Restore the live update status when leaving local-only.
-          call(SV.Update + ".GetStatus")
-            .then((st) => {
-              if (st) renderUpdateStatus(st);
-            })
-            .catch(() => {});
         }
         // Text/link handoffs are not supported offline in this release.
         $("card-handoff").classList.toggle("hidden", localOnly);
@@ -1343,131 +1329,10 @@
 
       $("reset-settings").addEventListener("click", loadSettings);
 
-      // UPDATES
-      let updateDismissed = false;
-
-      function renderUpdateStatus(st) {
-        if (!st) return;
-        // V21-PR06: the backend skips update checks in local-only mode.
-        if (st.state === "skipped_local_only") {
-          $("update-status-label").textContent =
-            "Updates disabled in local-only mode.";
-          $("update-banner").classList.add("hidden");
-          return;
-        }
-        const banner = $("update-banner");
-        const bannerText = $("update-banner-text");
-        const statusLabel = $("update-status-label");
-        const details = $("update-details");
-        const notes = $("update-notes");
-        const checkBtn = $("check-update-btn");
-        const installBtn = $("update-install-btn");
-        const channelSelect = $("cfg-update-channel");
-
-        if (st.channel && channelSelect.value !== st.channel) {
-          channelSelect.value = st.channel;
-        }
-
-        if (st.state === "checking") {
-          statusLabel.textContent = "Checking for updates…";
-          checkBtn.disabled = true;
-        } else {
-          checkBtn.disabled = false;
-        }
-
-        if (st.state === "available") {
-          setStatusMessage(statusLabel, "ok", "✓ Version " + (st.latestVersion || "") + " available");
-          if (!updateDismissed) {
-            bannerText.textContent = "SendBeam Desktop " + (st.latestVersion || "") + " is available!";
-            banner.classList.remove("hidden");
-          }
-          if (st.releaseNotes) {
-            notes.textContent = st.releaseNotes;
-            details.classList.remove("hidden");
-          }
-          installBtn.disabled = false;
-          installBtn.textContent = "Install Update";
-        } else if (st.state === "downloading") {
-          statusLabel.textContent = "Downloading and verifying update…";
-          bannerText.textContent = "Downloading update " + (st.latestVersion || "") + "…";
-          banner.classList.remove("hidden");
-          installBtn.disabled = true;
-          installBtn.textContent = "Downloading…";
-        } else if (st.state === "ready_to_restart") {
-          setStatusMessage(statusLabel, "ok", "✓ Update installed! Restart to apply.");
-          bannerText.textContent = "Update ready! Restart SendBeam to apply.";
-          $("update-banner-apply").textContent = "Restart now";
-          banner.classList.remove("hidden");
-          installBtn.disabled = true;
-          installBtn.textContent = "Restart required";
-        } else if (st.state === "managed_by_pkg_manager") {
-          statusLabel.replaceChildren();
-          const mutedSpan = document.createElement("span");
-          mutedSpan.style.color = "var(--text-muted)";
-          mutedSpan.textContent = st.message || "Managed by package manager.";
-          statusLabel.appendChild(mutedSpan);
-          banner.classList.add("hidden");
-          details.classList.add("hidden");
-        } else if (st.state === "up_to_date") {
-          statusLabel.textContent = st.message || "SendBeam Desktop is up to date.";
-          banner.classList.add("hidden");
-          details.classList.add("hidden");
-        } else if (st.state === "error") {
-          setStatusMessage(statusLabel, "err", "✗ " + (st.error || "Update check failed"));
-          details.classList.add("hidden");
-        }
-      }
-
-      wails.Events.On("sendbeam:update", (ev) => {
-        renderUpdateStatus(ev);
-      });
-
-      $("check-update-btn").addEventListener("click", async () => {
-        const ch = $("cfg-update-channel").value;
-        try {
-          const st = await call(SV.Update + ".CheckUpdate", ch);
-          renderUpdateStatus(st);
-        } catch (e) {
-          setStatusMessage($("update-status-label"), "err", "✗ " + e);
-        }
-      });
-
-      $("cfg-update-channel").addEventListener("change", async () => {
-        const ch = $("cfg-update-channel").value;
-        try {
-          await call(SV.Update + ".SetChannel", ch);
-          const st = await call(SV.Update + ".CheckUpdate", ch);
-          renderUpdateStatus(st);
-        } catch (e) {
-          console.error(e);
-        }
-      });
-
-      async function triggerApply() {
-        try {
-          const st = await call(SV.Update + ".ApplyUpdate");
-          renderUpdateStatus(st);
-        } catch (e) {
-          setStatusMessage($("update-status-label"), "err", "✗ " + e);
-        }
-      }
-
-      $("update-banner-apply").addEventListener("click", triggerApply);
-      $("update-install-btn").addEventListener("click", triggerApply);
-      $("update-banner-dismiss").addEventListener("click", () => {
-        updateDismissed = true;
-        $("update-banner").classList.add("hidden");
-      });
-
       (async () => {
         try {
           const info = await call(SV.Service + ".Info");
           document.title = "SendBeam Desktop — " + (info.engineVer ? "engine " + info.engineVer : "linked");
-        } catch (err) {}
-
-        try {
-          const st = await call(SV.Update + ".GetStatus");
-          if (st) renderUpdateStatus(st);
         } catch (err) {}
 
         try {

@@ -57,7 +57,6 @@ func TestDesktopFrontend_OfflineUI(t *testing.T) {
 		"SendToDevicePreferLocal", // V21-PR07: prefer-local LAN-first with explicit online fallback
 		"RespondLocalConsent",
 		"pendingConsentLocal",
-		"skipped_local_only",
 	} {
 		if !strings.Contains(content, marker) {
 			t.Errorf("desktop index.html is missing offline marker %q", marker)
@@ -65,14 +64,25 @@ func TestDesktopFrontend_OfflineUI(t *testing.T) {
 	}
 
 	// V21-PR07: the settings page must save via the merge-patch binding so
-	// one section never wipes fields managed elsewhere (theme, update
-	// channel, network policy).
+	// one section never wipes fields managed elsewhere (theme, network
+	// policy).
 	if !strings.Contains(content, "SaveConfigPatch") {
 		t.Error("desktop index.html does not use the SaveConfigPatch binding")
 	}
-	// V21-PR07: the updater status check must read the backend's `state`
-	// field (not `status`) for the local-only skip.
-	if !strings.Contains(content, `st.state === "skipped_local_only"`) {
-		t.Error("desktop index.html checks the wrong updater status field")
+
+	// SB-SIMPLIFY: the self-updater was removed at the root. The shipped UI
+	// must carry no update surface at all — a reintroduction would restore a
+	// code path that requires a production signing anchor this project no
+	// longer operates.
+	for _, absent := range []string{
+		"UpdateService",
+		"sendbeam:update",
+		"check-update-btn",
+		"cfg-update-channel",
+		"skipped_local_only",
+	} {
+		if strings.Contains(content, absent) {
+			t.Errorf("desktop index.html still exposes removed updater surface %q", absent)
+		}
 	}
 }

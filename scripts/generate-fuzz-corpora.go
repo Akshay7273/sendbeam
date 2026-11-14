@@ -261,20 +261,6 @@ func main() {
 		_ = writeCorpusByteSlice("packages/engine/trust/testdata/fuzz/FuzzFileTrustStoreLoad", []byte(s))
 	}
 
-	// 13. packages/engine/updater/testdata/fuzz/FuzzParseChannelManifest & FuzzParseChecksums
-	manifestSeedsUpdater := []string{
-		`{"schema_version":1,"version":"v1.7.0","channel":"stable","assets":{"linux-amd64":{"name":"sendbeam-cli-linux-amd64.tar.gz","size":100,"download_url":"https://example.com/asset","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}}`,
-	}
-	for _, s := range manifestSeedsUpdater {
-		_ = writeCorpusByteSlice("packages/engine/updater/testdata/fuzz/FuzzParseChannelManifest", []byte(s))
-	}
-	checksumSeeds := []string{
-		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  sendbeam-cli-linux-amd64.tar.gz\na591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e *sendbeam-cli-windows-amd64.zip\n",
-	}
-	for _, s := range checksumSeeds {
-		_ = writeCorpusByteSlice("packages/engine/updater/testdata/fuzz/FuzzParseChecksums", []byte(s))
-	}
-
 	// 14. apps/server/internal/signal/testdata/fuzz
 	serverMsgSeeds := []string{
 		`{"type":"create"}`,

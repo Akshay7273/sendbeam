@@ -547,11 +547,12 @@ describe('SendBeam v1.8 Attack-Matrix & Adversarial Security Campaign', () => {
     await expect(snd.run()).rejects.toThrow(ERR_UNPADDED_FRAME);
   });
 
-  // Vector 15: Update-manifest replay rejection (Go native self-updater architectural boundary)
-  it('Vector 15: Documents native updater boundary; browser runtime does not execute binary self-updates', () => {
-    // The web browser runtime loads static ES modules over HTTPS with content-addressed cache busting;
-    // self-updating binary manifests (stable.json, minisig) belong exclusively to the native Go CLI/Desktop architecture.
-    // Tested in Go at packages/engine/updater/attack_matrix_test.go.
+  // Vector 15: Self-update attack surface (removed — SB-SIMPLIFY)
+  it('Vector 15: no self-update surface exists in the browser runtime', () => {
+    // The automatic updater was removed from the product: no update manifests,
+    // no signing anchor, no in-app binary replacement. Updates are manual
+    // GitHub Releases downloads. This vector is retained as a regression pin:
+    // if an update mechanism is ever reintroduced, it must be re-reviewed.
     expect(typeof window === 'undefined' || !('updater' in window)).toBe(true);
   });
 

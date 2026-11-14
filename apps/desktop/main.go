@@ -203,21 +203,10 @@ func main() {
 		}
 	}
 
-	updateSvc := engine.NewUpdateService(
-		func(name string, data any) {
-			if app := application.Get(); app != nil && app.Event != nil {
-				app.Event.Emit(name, data)
-			}
-		},
-		nil,
-	)
-
 	// V21-PR06: offline services, wired into the shipped app. The network
 	// policy is persisted in the desktop config (see getPolicy/setPolicy
-	// above); the updater consults it so update checks are skipped in
-	// local-only mode.
+	// above) and consulted by the transfer path in local-only mode.
 	networkPolicySvc := engine.NewNetworkPolicyService(getPolicy, setPolicy)
-	updateSvc.SetNetworkPolicyProvider(getPolicy)
 
 	var localPairingSvc *engine.LocalPairingService
 	var localSvc *engine.LocalService
@@ -277,7 +266,6 @@ func main() {
 	services := []application.Service{
 		application.NewService(engine.NewService()),
 		application.NewService(transferSvc),
-		application.NewService(updateSvc),
 		application.NewService(networkPolicySvc),
 	}
 	if deviceSvc != nil {
