@@ -121,17 +121,34 @@ func main() {
 	// the degradation is logged so it is visible. First launch is preserved:
 	// a missing config file is not a failure (Store.Load returns defaults,
 	// NetworkPolicy "online"), so the verified default policy still applies.
+	// SB-R09: the degradation is ALSO recorded on the policy service so the
+	// UI can distinguish a selected local-only from the fail-closed
+	// fallback (PolicyState.Degraded); a healthy read clears it.
+	var policySvc *engine.NetworkPolicyService
+	reportDegrade := func(reason string) {
+		if policySvc != nil {
+			policySvc.NoteDegrade(reason)
+		}
+	}
+	reportHealthy := func() {
+		if policySvc != nil {
+			policySvc.ClearDegrade()
+		}
+	}
 	getPolicy := func() netpolicy.Policy {
 		cfg, err := transferSvc.GetConfig()
 		if err != nil {
 			log.Printf("SendBeam Desktop: config unusable (%v); failing closed to local-only network policy", err)
+			reportDegrade("settings could not be read; the engine fell back to local-only for safety")
 			return netpolicy.LocalOnly
 		}
 		p, err := netpolicy.Parse(cfg.NetworkPolicy)
 		if err != nil {
 			log.Printf("SendBeam Desktop: stored network policy unusable (%v); failing closed to local-only", err)
+			reportDegrade("the stored network policy value is not recognized; the engine fell back to local-only for safety")
 			return netpolicy.LocalOnly
 		}
+		reportHealthy()
 		return p
 	}
 	setPolicy := func(p netpolicy.Policy) error {
