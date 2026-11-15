@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -86,6 +87,21 @@ func waitChecked(t *testing.T, what string, d time.Duration, cond func() bool) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("%s: condition not met within %s", what, d)
+}
+
+// walkStagingDir counts files and bytes under dir (0, 0 when missing):
+// the durable staging proof used by the cancellation tests.
+func walkStagingDir(dir string) (int, int64) {
+	count, total := 0, int64(0)
+	_ = filepath.Walk(dir, func(_ string, info os.FileInfo, werr error) error {
+		if werr != nil || info.IsDir() {
+			return nil
+		}
+		count++
+		total += info.Size()
+		return nil
+	})
+	return count, total
 }
 
 // receiverGate wraps a consent handler: closes entered on the first call
@@ -216,22 +232,27 @@ func TestR08CancelAtConsentBoundaryStopsBothSides(t *testing.T) {
 }
 
 // TestR08CancelMidStreamStopsBytesAndNeverDelivers is the bytes-stop proof:
-// a large payload is mid-transfer (receiver durable staging shows partial
-// bytes) when the cancel fires. The transfer must terminate within a
-// bounded window; the receiver must NOT end up with the final file; the
-// sender must record the cancel honestly with no verified digest; and no
-// outcome may resurrect the cancelled job.
+// the cancel fires while the transfer is deterministically held mid-stream —
+// the receiver's OnProgress seam (fired strictly after a block is durably
+// checkpointed and strictly before its Ack) is held until the cancel is
+// durably persisted, so the sender's in-flight window can never complete and
+// the receiver can never reach promotion. No timing assumption about
+// throughput is involved: the hold IS the mid-stream state. The transfer
+// must terminate after release; the receiver must NOT end up with the final
+// file; the sender must record the cancel honestly with no verified digest;
+// and no outcome may resurrect the cancelled job.
 func TestR08CancelMidStreamStopsBytesAndNeverDelivers(t *testing.T) {
 	fx := newRouteFixture(t)
 	svc := fx.svc
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	// ~200 MiB payload: completion within the cancel latency is
-	// physically impossible even on loopback (~2s at loopback SCTP
-	// throughput), so the cancel provably fires mid-stream.
+	// Multi-block payload: the held first block proves bytes moved, and the
+	// undelivered remainder proves the transfer was mid-stream, not done.
+	// (Determinism comes from the hold, not the payload size — a fast
+	// runner must not be able to finish before the cancel, and cannot.)
 	root := fx.sources
-	payload := bytes.Repeat([]byte("R08-MIDSTREAM-CANCEL-"), 9600000)
+	payload := bytes.Repeat([]byte("R08-MIDSTREAM-CANCEL-"), 1000000) // ~20 MiB
 	if err := os.WriteFile(filepath.Join(root, "route.bin"), payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -239,6 +260,20 @@ func TestR08CancelMidStreamStopsBytesAndNeverDelivers(t *testing.T) {
 	recipeID := enqueueRecipe(t, svc, fx.peerIdentity.DeviceID, root, "local-only")
 	jobID := lastRunJobID(t, svc, recipeID)
 	svc.SetPolicyLookup(func() netpolicy.Policy { return netpolicy.LocalOnly })
+
+	// MID-STREAM HOLD: after the first block is durably staged, the
+	// receiver's OnProgress blocks until releaseHold. This is a
+	// synchronization point, not a timing window: while held, completion is
+	// structurally impossible (promotion needs the final ack path, which
+	// never runs), and after release every ordering below is fixed.
+	holdCtx, releaseHold := context.WithCancel(context.Background())
+	defer releaseHold()
+	firstStaged := make(chan struct{})
+	var once sync.Once
+	fx.recvProgress = func(int64) {
+		once.Do(func() { close(firstStaged) })
+		<-holdCtx.Done()
+	}
 
 	recvDone, recvCancel := fx.startReceiver(t, fx.peerIdentity.DeviceID, nil)
 	defer recvCancel()
@@ -249,72 +284,46 @@ func TestR08CancelMidStreamStopsBytesAndNeverDelivers(t *testing.T) {
 		_, _ = svc.DispatchOnceNow(ctx)
 	}()
 
-	// BYTES-MOVING barrier: cancel only when the receiver's durable
-	// journal staging shows REAL partial bytes (the transfer is provably
-	// mid-flight, not merely armed).
+	// BYTES-MOVING barrier: wait until the receiver has durably staged at
+	// least one block (OnProgress fired). Durable staging — not a wall-clock
+	// guess — is the proof bytes actually moved.
 	staging := filepath.Join(fx.destDir, ".sendbeam")
-	waitChecked(t, "staged partial bytes", 60*time.Second, func() bool {
-		entries, rerr := os.ReadDir(staging)
-		if rerr != nil {
+	waitChecked(t, "first durable block staged", 60*time.Second, func() bool {
+		select {
+		case <-firstStaged:
+			return true
+		default:
 			return false
 		}
-		for _, e := range entries {
-			if info, ierr := e.Info(); ierr == nil && info.Size() > 0 {
-				return true
-			}
-			// staging is hierarchical: transfer-id dirs contain the parts
-			if e.IsDir() {
-				sub, serr := os.ReadDir(filepath.Join(staging, e.Name()))
-				if serr == nil {
-					for _, se := range sub {
-						if info, ierr := se.Info(); ierr == nil && info.Size() > 0 {
-							return true
-						}
-					}
-				}
-			}
-		}
-		return false
 	})
 
-	// Snapshot the staged partials BEFORE the cancel: they prove bytes
-	// actually moved (the pre-cancel state), and after the abort they must
-	// STILL be present (stopped mid-stream, never promoted) while no final
-	// file ever appears.
-	stagedBefore := 0
-	var stagedBytes int64
-	walkStaging := func() (int, int64) {
-		count, total := 0, int64(0)
-		_ = filepath.Walk(staging, func(_ string, info os.FileInfo, werr error) error {
-			if werr != nil || info.IsDir() {
-				return nil
-			}
-			count++
-			total += info.Size()
-			return nil
-		})
-		return count, total
-	}
-	stagedBefore, stagedBytes = walkStaging()
-	if stagedBefore == 0 || stagedBytes == 0 {
-		t.Fatal("barrier precondition failed: no staged partial bytes before the cancel")
-	}
+	// The dispatch pass is now provably mid-transfer and held. Cancellation
+	// is issued and observed DURABLY PERSISTED before the transfer is
+	// released, so the mid-stream stop cannot race completion.
 	cancelStart := time.Now()
 	if err := svc.outbox.Cancel(jobID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
+	job, ok, err := svc.jobs.Load(jobID)
+	if err != nil || !ok {
+		t.Fatalf("load job: %v %v", err, ok)
+	}
+	if job.Status != jobs.JobCancelled {
+		t.Fatalf("cancel not durable before release: status %q, want cancelled", job.Status)
+	}
 
-	// The dispatch pass must settle within a bounded window after the
-	// cancel (the in-flight stop propagated).
+	// Release the mid-stream hold; the sender's in-flight stop must unwind
+	// the dispatch pass within a bounded window.
+	releaseHold()
 	select {
 	case <-passDone:
 	case <-time.After(45 * time.Second):
 		t.Fatal("dispatch pass did not settle within 45s of the cancel — termination bound exceeded")
 	}
-	t.Logf("transfer terminated %v after cancel", time.Since(cancelStart))
+	t.Logf("transfer terminated %v after cancel (held mid-stream before release)", time.Since(cancelStart))
 
 	// Sender: honest cancel, no delivery, no resurrection.
-	job, ok, err := svc.jobs.Load(jobID)
+	job, ok, err = svc.jobs.Load(jobID)
 	if err != nil || !ok {
 		t.Fatalf("load job: %v %v", err, ok)
 	}
@@ -333,37 +342,21 @@ func TestR08CancelMidStreamStopsBytesAndNeverDelivers(t *testing.T) {
 		}
 	}
 
-	// Receiver: the abort must leave the staged partials in place (the
-	// documented journal behavior — resumable, never final without the
-	// digest-verified completion) and NO final file, even after the
-	// receiver goroutine fully settles.
-	recvDeadline := time.Now().Add(20 * time.Second)
-	settledRecv := false
-	for time.Now().Before(recvDeadline) {
-		select {
-		case <-recvDone:
-			settledRecv = true
-		case <-time.After(100 * time.Millisecond):
-		}
-		if settledRecv {
-			break
-		}
+	// Receiver: settle fully, then assert the on-disk truth — NO final file
+	// and the staged partials still present (resumable, never promoted).
+	select {
+	case <-recvDone:
+	case <-time.After(20 * time.Second):
+		t.Fatal("receiver did not settle after the released mid-stream cancel")
 	}
 	if _, statErr := os.Stat(filepath.Join(fx.destDir, "route.bin")); statErr == nil {
 		t.Fatal("final output file exists at the receiver after a mid-stream cancel — false delivery on disk")
 	}
-	stagedAfter, stagedBytesAfter := walkStaging()
+	stagedAfter, stagedBytesAfter := walkStagingDir(staging)
 	if stagedAfter == 0 || stagedBytesAfter == 0 {
 		t.Fatal("staged partials vanished after the mid-stream abort — expected the durable journal to keep them (resumable, unpromoted)")
 	}
 	t.Logf("staged partials preserved: %d file(s), %d bytes (bytes moved, then stopped)", stagedAfter, stagedBytesAfter)
-	// The receiver must not have finished cleanly.
-	select {
-	case rerr := <-recvDone:
-		_ = rerr // error (cancelled transport) or nil both fine here: the
-		// final-file assertion above is the delivery truth on disk.
-	case <-time.After(15 * time.Second):
-	}
 
 	// No unauthorized retry: a further pass must not re-dispatch the
 	// cancelled job.

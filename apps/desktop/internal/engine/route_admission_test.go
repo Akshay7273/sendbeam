@@ -66,6 +66,12 @@ type routeFixture struct {
 	// the human reason).
 	mu      sync.Mutex
 	recvErr string
+
+	// recvProgress, when set before startReceiver, rides the receiver's
+	// OnProgress seam: cumulative bytes acknowledged after verify-and-sink
+	// (the wire receiver fires it strictly after the durable sink write and
+	// strictly before that block's Ack is sent).
+	recvProgress func(int64)
 }
 
 func (f *routeFixture) setRecvErr(s string) {
@@ -164,12 +170,13 @@ func (f *routeFixture) startReceiver(t *testing.T, deviceID string, consent func
 		f.svc.SetLocalPeerAddr(deviceID, recvAddr.String())
 		close(ready)
 		_, rerr := localtransfer.Receive(ctx, localtransfer.ReceiveOptions{
-			Identity: f.peerIdentity,
-			Store:    f.ts,
-			Resolver: f.secrets,
-			Server:   rcvSrv,
-			DestDir:  f.destDir,
-			Consent:  consent,
+			Identity:   f.peerIdentity,
+			Store:      f.ts,
+			Resolver:   f.secrets,
+			Server:     rcvSrv,
+			DestDir:    f.destDir,
+			Consent:    consent,
+			OnProgress: f.recvProgress,
 		})
 		if rerr != nil {
 			f.setRecvErr(rerr.Error())
