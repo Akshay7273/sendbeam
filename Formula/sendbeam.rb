@@ -5,26 +5,26 @@
 class Sendbeam < Formula
   desc "Secure, direct, peer-to-peer file transfer in your browser and terminal"
   homepage "https://github.com/Akshay7273/sendbeam"
-  version "1.9.0"
+  version "2.2.0"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/Akshay7273/sendbeam/releases/download/v1.9.0/sendbeam-cli-darwin-arm64.tar.gz"
-      sha256 "30e7fc90a3749037220273a605691873e7421791dfbda46d93c87e87d3bf8408"
+      url "https://github.com/Akshay7273/sendbeam/releases/download/v2.2.0/sendbeam-cli-darwin-arm64.tar.gz"
+      sha256 "7654602cb9cd249711265c5110cfe1064164520b8062f245b963f90184763aa7"
     else
-      url "https://github.com/Akshay7273/sendbeam/releases/download/v1.9.0/sendbeam-cli-darwin-amd64.tar.gz"
-      sha256 "95af245475d15f23a7ec4fb33f80bed1868445a84bf39a20e6dc26799cf7bcda"
+      url "https://github.com/Akshay7273/sendbeam/releases/download/v2.2.0/sendbeam-cli-darwin-amd64.tar.gz"
+      sha256 "79a9f7b32a49ddd78e66d9676875bd9706bc2c5a99a240fd73ad47d0d2add2da"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/Akshay7273/sendbeam/releases/download/v1.9.0/sendbeam-cli-linux-arm64.tar.gz"
-      sha256 "c229471c18159f3e5f3f8a402935aab404deb062765538f0448929b1ca4364ab"
+      url "https://github.com/Akshay7273/sendbeam/releases/download/v2.2.0/sendbeam-cli-linux-arm64.tar.gz"
+      sha256 "9f6efc2163b47dcb4c6fe0a4b809d80b13f18e08dc7f7567123cacd6a2f03fed"
     else
-      url "https://github.com/Akshay7273/sendbeam/releases/download/v1.9.0/sendbeam-cli-linux-amd64.tar.gz"
-      sha256 "fc251b378bcc581074a5aaa505ea9b89b38c4c4b8a016618f3ffab7e7f95f6b5"
+      url "https://github.com/Akshay7273/sendbeam/releases/download/v2.2.0/sendbeam-cli-linux-amd64.tar.gz"
+      sha256 "195ccc01dbedc076f8b69cfae64a37aeb38cc60d1eec4f01888c8bf002260815"
     end
   end
 

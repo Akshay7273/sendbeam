@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
 
 PackageIdentifier: SendBeam.SendBeam
-PackageVersion: 1.9.0
+PackageVersion: 2.2.0
 PackageLocale: en-US
 Publisher: Akshay
 PublisherUrl: https://github.com/Akshay7273

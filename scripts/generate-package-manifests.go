@@ -235,7 +235,10 @@ func generateScoopManifest(version, tag, repo, homepage string, hashes PackageHa
 	buf := new(bytes.Buffer)
 	enc := json.NewEncoder(buf)
 	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "    ")
+	// 2-space indent: these manifests are committed and checked by
+	// `prettier --check .`, which formats JSON with 2 spaces. Emitting 4
+	// made every regenerated manifest fail the Prettier gate in CI.
+	enc.SetIndent("", "  ")
 	if err := enc.Encode(manifest); err != nil {
 		return "", err
 	}
