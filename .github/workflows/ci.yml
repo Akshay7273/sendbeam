@@ -287,7 +287,12 @@ jobs:
     name: docs consistency (links, manifests, required-checks)
     runs-on: ubuntu-latest
     steps:
+      # Full history + tags: release-preflight.sh compares a candidate version
+      # against the published tags and fails closed when none are visible. A
+      # shallow checkout would make that comparison vacuous.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Run documentation consistency checks
         run: bash ./scripts/docs-consistency.sh
 
@@ -299,6 +304,11 @@ jobs:
 
       - name: Run acceptance-evidence recorder self-tests
         run: bash ./scripts/acceptance-record_test.sh
+
+      # SB-R12: release metadata must describe a release that really exists.
+      # Runs here (not as a new job) so the required-check set is unchanged.
+      - name: Run release metadata preflight self-tests
+        run: bash ./scripts/release-preflight_test.sh
 
       # SEC01/SB-SIMPLIFY: the project no longer operates an update-signing
       # key, so the remaining risk is resurrection — a retired seed, a seed

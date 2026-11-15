@@ -69,6 +69,11 @@ doctor:
     just js-test
     just go-test
 
+# Validate release metadata for a version that is not tagged yet (SB-R12).
+# Creates nothing; never fabricates asset URLs or hashes.
+release-preflight VERSION:
+    bash scripts/release-preflight.sh {{VERSION}}
+
 # CI-parity Go tests (race detector, as enforced in ci.yml)
 @ci-test:
     just js-test

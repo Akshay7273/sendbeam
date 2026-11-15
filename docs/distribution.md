@@ -51,6 +51,9 @@ SendBeam publishes validated manifests and formulas for popular package managers
 
 Manifest generation and strict verification are automated via `scripts/generate-package-manifests.go` as part of the release pipeline, guaranteeing zero external hosting cost and strict checksum parity.
 
+> [!IMPORTANT]
+> The committed manifests always describe **the most recent published release**, not `main`. Their version, download tag and SHA-256 values must match assets that actually exist on GitHub Releases; `scripts/docs-consistency.sh` fails if they drift apart, and `scripts/release-preflight.sh <version>` reports whether they match a version being prepared. A manifest pointing at a version that was never published is a bug, not a preview.
+
 > [!NOTE]
 > Pull request and branch builds generate unsigned validation packages stored as GitHub Actions workflow artifacts (retained for 14 days in `.github/workflows/distribution.yml`). Pushing a release tag (`vX.Y.Z` or `vX.Y.Z-rcN`) triggers `.github/workflows/release.yml`, which compiles all native distributions, generates canonical `SHA256SUMS.txt`, creates in-toto provenance & SPDX 2.3 SBOM attestations, and stages a **Draft GitHub Release** for maintainer review and publication.
 

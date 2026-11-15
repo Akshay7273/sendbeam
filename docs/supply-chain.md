@@ -103,7 +103,7 @@ cosign verify-blob \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS.txt
 
-# 3. Verify asset checksums against the signed manifest:
+# 3. Verify asset checksums against the published manifest:
 sha256sum -c SHA256SUMS.txt --ignore-missing
 
 # Or run the automated all-in-one verification script. Default mode is
