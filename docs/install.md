@@ -6,7 +6,7 @@ This guide details how to install and run the official SendBeam CLI and Desktop 
 
 ## 1. Package Managers (CLI)
 
-The CLI is installable via two package managers with automated verification against the signed release manifest:
+The CLI is installable via two package managers, both of which pin the SHA-256 of the release archive they download:
 
 ### A. Homebrew (macOS & Linux)
 
@@ -203,7 +203,7 @@ cosign verify-blob \
 ### Option 3: SHA-256 Checksum Validation
 
 ```bash
-# Verify your downloaded release file matches the signed manifest:
+# Verify your downloaded release file matches the published manifest:
 sha256sum -c SHA256SUMS.txt --ignore-missing
 ```
 

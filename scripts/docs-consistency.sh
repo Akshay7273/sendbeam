@@ -3,8 +3,15 @@
 #
 # Checks:
 #   1. Every relative Markdown link target exists (missing-link = fail).
-#   2. Version strings in package manifests (Formula/bucket/AUR) are all
-#      equal (per-repo committed-version consistency).
+#   2. Version strings in package manifests (Formula/bucket/AUR/WinGet) all
+#      name the same version, and every manifest records that release's URL and
+#      SHA-256 at every place it appears. Agreement between manifests is not
+#      enough on its own — a tree where all three say 1.9.0 is self-consistent
+#      and still wrong — so each manifest's own URL/tag/hash must also agree
+#      with its siblings, and the redundant packaging/ copies must match.
+#      Historical versioned directories (packaging/winget/manifests/.../X.Y.Z)
+#      and dated release records are deliberately NOT checked; they are records
+#      of what shipped, not claims about the current release.
 #   3. Required-check contexts quoted in supply-chain.md §8 match the actual
 #      ruleset context names listed in ci.yml job names (when the ruleset is
 #      readable via gh; otherwise the ci.yml job-name set is used as the
@@ -64,34 +71,150 @@ set -e
 [ $rc -eq 0 ] || DRIFT=1
 
 echo ""
-echo "=== [2/3] Committed package-manifest version consistency ==="
+echo "=== [2/3] Committed package-manifest consistency (version, tag, hash) ==="
 set +e
 python3 - <<'PY'
 import json, re, sys
 
+# Each "current release" manifest must agree on one version, one release tag in
+# its download URLs, and one SHA-256 per artifact. Agreement among manifests is
+# necessary but not sufficient: a tree where every manifest agrees on a stale
+# version is exactly the failure this check exists to catch, so the URL tag and
+# the per-artifact hash are cross-compared too.
+problems = []
 versions = {}
+tags = {}
+hashes = {}   # artifact -> {manifest: sha}
+
+def record(manifest, version, tag, artifact_hashes):
+    versions[manifest] = version
+    if tag:
+        tags[manifest] = tag
+    for artifact, sha in artifact_hashes.items():
+        hashes.setdefault(artifact, {})[manifest] = sha
+
+# --- Homebrew -------------------------------------------------------------
+for path in ("Formula/sendbeam.rb", "packaging/homebrew/Formula/sendbeam.rb"):
+    try:
+        text = open(path).read()
+    except FileNotFoundError:
+        continue
+    vm = re.search(r'version\s+"([^"]+)"', text)
+    version = vm.group(1) if vm else "?"
+    # url lines look like .../download/<tag>/<artifact>; sha256 lines follow.
+    artifacts = {}
+    current = None
+    for line in text.splitlines():
+        um = re.search(r'download/([^/]+)/([^"\s]+)', line)
+        if um:
+            current = um.group(2)
+            tag = um.group(1)
+        sm = re.search(r'sha256\s+"([0-9a-f]{64})"', line)
+        if sm and current:
+            artifacts[current] = sm.group(1)
+            current = None
+    record(path, version, tag, artifacts)
+
+# --- Scoop ----------------------------------------------------------------
+for path in ("bucket/sendbeam.json", "packaging/scoop/sendbeam.json"):
+    try:
+        d = json.load(open(path))
+    except FileNotFoundError:
+        continue
+    artifacts = {}
+    tag = None
+    for arch, info in (d.get("architecture") or {}).items():
+        url = info.get("url", "")
+        m = re.search(r'/download/([^/]+)/([^/]+)$', url)
+        if m:
+            tag = m.group(1)
+            if info.get("hash"):
+                artifacts[m.group(2)] = info["hash"].lower()
+    record(path, d.get("version", "?"), tag, artifacts)
+
+# --- AUR ------------------------------------------------------------------
+for path in ("packaging/aur/PKGBUILD", "packaging/aur/.SRCINFO"):
+    try:
+        text = open(path).read()
+    except FileNotFoundError:
+        continue
+    # PKGBUILD uses `pkgver=1.2.3`; .SRCINFO tab-indents `pkgver = 1.2.3`.
+    vm = re.search(r'^\s*pkgver\s*=\s*(.+)$', text, re.M)
+    version = vm.group(1).strip("'\"").strip() if vm else "?"
+    artifacts = {}
+    tag = None
+    # PKGBUILD: source_<arch>=(url) followed by sha256sums_<arch>=('hash')
+    srcs = dict(re.findall(r'source_(\w+)=\("([^"]+)"\)', text))
+    sums = dict(re.findall(r"sha256sums_(\w+)=\('([^']+)'\)", text))
+    for arch, url in srcs.items():
+        m = re.search(r'/download/([^/]+)/([^/]+)$', url)
+        if m and arch in sums:
+            tag = m.group(1)
+            artifacts[m.group(2)] = sums[arch].lower()
+    # .SRCINFO uses unparenthesised key = value lines
+    if not artifacts:
+        for key, url in re.findall(r'^\s*source_(\w+)\s*=\s*(\S+)$', text, re.M):
+            m = re.search(r'/download/([^/]+)/([^/]+)$', url)
+            if m:
+                tag = m.group(1)
+        # .SRCINFO: pair source_<arch> with sha256sums_<arch>
+        s2 = re.findall(r'^\s*source_(\w+)\s*=\s*(\S+)$', text, re.M)
+        h2 = re.findall(r'^\s*sha256sums_(\w+)\s*=\s*([0-9a-fA-F]{64})$', text, re.M)
+        hmap = dict(h2)
+        for arch, url in s2:
+            m = re.search(r'/download/([^/]+)/([^/]+)$', url)
+            if m and arch in hmap:
+                artifacts[m.group(2)] = hmap[arch].lower()
+    record(path, version, tag, artifacts)
+
+# --- WinGet (current release only; versioned dirs are history) -------------
 try:
-    m = re.search(r'version\s+"([^"]+)"', open("Formula/sendbeam.rb").read())
-    versions["Formula/sendbeam.rb"] = m.group(1) if m else "?"
-except FileNotFoundError:
-    pass
-try:
-    d = json.load(open("bucket/sendbeam.json"))
-    versions["bucket/sendbeam.json"] = d.get("version", "?")
-except FileNotFoundError:
-    pass
-try:
-    m = re.search(r'^pkgver\s*=\s*(.+)$', open("packaging/aur/PKGBUILD").read(), re.M)
-    versions["packaging/aur/PKGBUILD"] = m.group(1).strip("'\"") if m else "?"
+    import glob
+    inst = sorted(glob.glob("packaging/winget/manifests/s/SendBeam/SendBeam/*/SendBeam.SendBeam.installer.yaml"))
+    if inst:
+        text = open(inst[-1]).read()
+        vm = re.search(r'^PackageVersion:\s*(\S+)', text, re.M)
+        version = vm.group(1) if vm else "?"
+        artifacts = {}
+        tag = None
+        urls = re.findall(r'InstallerUrl:\s*(\S+)', text)
+        shas = re.findall(r'InstallerSha256:\s*([0-9a-fA-F]{64})', text)
+        for url, sha in zip(urls, shas):
+            m = re.search(r'/download/([^/]+)/([^/]+)$', url)
+            if m:
+                tag = m.group(1)
+                artifacts[m.group(2)] = sha.lower()
+        record(inst[-1], version, tag, artifacts)
 except FileNotFoundError:
     pass
 
-vals = sorted(set(versions.values()))
-print(f"[i] manifest versions: {versions}")
-if len(vals) > 1:
-    print("[-] MANIFEST VERSION DRIFT — all committed package manifests must name the same released version")
+# --- verdicts -------------------------------------------------------------
+uniq_versions = sorted(set(versions.values()))
+if len(uniq_versions) > 1:
+    problems.append("manifests disagree on version: " + ", ".join(f"{k}={v}" for k, v in sorted(versions.items())))
+
+uniq_tags = sorted(set(tags.values()))
+if len(uniq_tags) > 1:
+    problems.append("manifests disagree on release tag: " + ", ".join(f"{k}={v}" for k, v in sorted(tags.items())))
+
+# version and tag must describe the same release (1.9.0 lives at v1.9.0)
+if len(uniq_versions) == 1 and len(uniq_tags) == 1:
+    v, t = uniq_versions[0], uniq_tags[0]
+    if t.lstrip("v") != v:
+        problems.append(f"version {v} and release tag {t} refer to different releases")
+
+for artifact, by_manifest in sorted(hashes.items()):
+    distinct = sorted(set(by_manifest.values()))
+    if len(distinct) > 1:
+        problems.append(f"hash drift for {artifact}: " + ", ".join(f"{k}={v[:12]}..." for k, v in sorted(by_manifest.items())))
+
+print(f"[i] version={uniq_versions or ['(none)']} tag={uniq_tags or ['(none)']} artifacts={len(hashes)}")
+if problems:
+    print("[-] PACKAGE-MANIFEST DRIFT — committed manifests must consistently describe one real release:")
+    for p in problems:
+        print("    " + p)
     sys.exit(1)
-print("[+] all committed manifests agree on", vals[0] if vals else "(none present)")
+print(f"[+] {len(versions)} current-release manifests agree on version {uniq_versions[0] if uniq_versions else '?'}, tag {uniq_tags[0] if uniq_tags else '?'} and {len(hashes)} artifact hashes")
 PY
 rc=$?
 set -e

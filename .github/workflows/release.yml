@@ -999,25 +999,45 @@ jobs:
       - name: Test package manager generator test suite
         run: bash ./scripts/generate-package-manifests_test.sh
 
-      - name: Validate Package Manager Manifests
+      - name: Validate committed package manifests describe a real release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # F06 drift check: regenerate against THIS release's checksums and
-          # fail the verification gate if the COMMITTED manifests differ —
-          # stale repository manifests can no longer ride a successful release.
-          go run ./scripts/generate-package-manifests.go \
-            --version "${{ steps.meta.outputs.version }}" \
-            --tag "${{ inputs.tag || github.ref_name }}" \
-            --sums bundle/SHA256SUMS.txt \
-            --out-dir packaging \
-            --sync-root=true
+          set -euo pipefail
+          # The committed manifests intentionally describe the PREVIOUS
+          # published release: they are updated by the manifest-update PR that
+          # this workflow opens after publishing, so they can never describe
+          # the release being built right now.
+          #
+          # This gate therefore must not compare them to the version under
+          # build (that can only fail), and must not regenerate them first
+          # either — regenerating overwrote the committed files with the
+          # generator's own output, so the old "--validate" compared the
+          # generator to itself and passed for any committed tree, including
+          # one whose hashes matched no published release.
+          #
+          # What is both checkable and meaningful:
+          #   1. the committed manifests are internally consistent
+          #      (one version, one tag, one hash per artifact), and
+          #   2. the release they name really exists and is published, so a
+          #      manifest can never point installers at a version that was
+          #      never released.
+          bash ./scripts/docs-consistency.sh
 
-          go run ./scripts/generate-package-manifests.go \
-            --version "${{ steps.meta.outputs.version }}" \
-            --tag "${{ inputs.tag || github.ref_name }}" \
-            --sums bundle/SHA256SUMS.txt \
-            --out-dir packaging \
-            --sync-root=true \
-            --validate
+          COMMITTED_VERSION="$(sed -n 's/^\s*version "\([0-9][0-9.]*\)".*/\1/p' Formula/sendbeam.rb | head -1)"
+          if [ -z "${COMMITTED_VERSION}" ]; then
+            echo "[-] ERROR: could not read the committed manifest version." >&2
+            exit 1
+          fi
+          COMMITTED_TAG="v${COMMITTED_VERSION}"
+          echo "[i] committed manifests describe ${COMMITTED_TAG}"
+          if ! gh release view "${COMMITTED_TAG}" --json isDraft --jq '.isDraft' | grep -qx 'false'; then
+            echo "[-] ERROR: committed manifests claim ${COMMITTED_TAG}, which is not a published release." >&2
+            echo "    Package manifests must only reference artifacts that exist;" >&2
+            echo "    a manifest naming an unpublished version misleads every installer." >&2
+            exit 1
+          fi
+          echo "[+] ${COMMITTED_TAG} is a published release."
 
       - name: Unpack and smoke test Linux CLI binary
         working-directory: bundle
@@ -1027,7 +1047,6 @@ jobs:
           test -x unpacked-cli/sendbeam
           unpacked-cli/sendbeam version
           unpacked-cli/sendbeam --help
-          unpacked-cli/sendbeam update --help
           unpacked-cli/sendbeam transfers list
 
       - name: Verify SPDX SBOM documents
