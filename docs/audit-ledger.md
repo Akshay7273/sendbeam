@@ -66,3 +66,37 @@ evidence: route-aware admission (`TestOnlineRecipeNeedsNoEndpoint`,
   two-device rows remain NOT RUN** (SB-R10, BLOCKED on hardware) and still
   gate any release publication. This correction does not rewrite the
   historical reconciliation above — it supersedes its status only.
+
+## SB-R02 — MIT licensing reconciliation (2026-11-15)
+
+The owner selected MIT for SendBeam. Current pre-change `main` had 70
+project-owned source files declaring `AGPL-3.0-only` (39 engine, 14 CLI, 16
+desktop, 1 web); the earlier SB-R02 report's count of 57 was stale. Git
+history attributes source contributions to the owner, except Dependabot PR #200,
+which was co-authored by the owner and made limited generated/maintenance source
+edits. No outside human contributor, vendored source tree, or third-party source
+license header was found in tracked files. This is a repository-provenance
+audit, not a legal opinion; the owner has confirmed relicensing authority.
+
+The project-owned `scripts/oss-fuzz-build.sh` had Apache-2.0 boilerplate from
+owner-authored PR #161; it is normalized to MIT, retaining its project
+copyright attribution. Third-party dependencies (including dependencies with
+Apache-2.0, MPL-2.0, BSD and ISC terms) keep their licenses and applicable
+notices. No dependency source or notice is changed.
+
+The focused reconciliation replaces only project-owned conflicting SPDX
+identifiers, declares MIT in the two private workspace package manifests that
+lacked a license field, and adds a narrow CI check. Unmarked source is left
+unmodified; dated release and evidence records retain their historical meaning.
+
+## SB-R08 — cancellation-test determinism follow-up (2026-11-15)
+
+The owner reports that `TestR08CancelMidStreamStopsBytesAndNeverDelivers` has
+resurfaced as flaky under CI load. This report has not been independently
+reproduced in this reconciliation. Before final release validation, prepare a
+separate, narrowly scoped deterministic test fix for the mid-stream byte-moving
+barrier and cancellation ordering. Preserve the proof that bytes moved before
+cancel, cancellation stops further delivery, staged partials remain resumable,
+and no final file or verified digest is recorded; do not weaken assertions or
+mask the documented CI-load race. No R08 test or production code is changed by
+this licensing PR.

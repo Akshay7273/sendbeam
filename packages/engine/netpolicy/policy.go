@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 The SendBeam contributors <https://sendbeam.dev>
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 // Package netpolicy defines the user-selected network policy for SendBeam
 // v2.1 "Nearby & Offline" (ADR 0011, V21-PR06).
