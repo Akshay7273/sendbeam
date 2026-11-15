@@ -100,3 +100,41 @@ cancel, cancellation stops further delivery, staged partials remain resumable,
 and no final file or verified digest is recorded; do not weaken assertions or
 mask the documented CI-load race. No R08 test or production code is changed by
 this licensing PR.
+
+## SB-R08 — mid-stream cancellation proof made deterministic (2026-11-15)
+
+**Resurfaced flake, measured:** CI run `43630035408` (2026-11-14, branch
+`docs/sb-sec02-rotation-runbook`) failed
+`TestR08CancelMidStreamStopsBytesAndNeverDelivers` in **1.70s** at its own
+precondition — `crash_recovery_test.go:300: barrier precondition failed: no
+staged partial bytes before the cancel`. The test assumed a ~200 MiB loopback
+payload could not finish within the cancel latency; on fast runners the whole
+transfer completed between two 50 ms staging polls, the receiver legitimately
+finalized and promoted its partials, and the precondition correctly failed.
+The product was correct; the test's timing assumption was not.
+
+**Fix (test-only, production unchanged):** the barrier no longer guesses from
+polling. The receiver's `OnProgress` seam — fired strictly after a block is
+durably checkpointed and strictly before that block's Ack — is held until the
+cancel is durably persisted. While held, completion is structurally impossible
+(promotion needs the final ack path), so the cancel provably lands mid-stream
+under any CPU contention; after release, all orderings are fixed. The payload
+drops to ~20 MiB (multi-block: the held first block proves bytes moved; the
+undelivered remainder proves mid-stream). All security assertions are
+preserved and strengthened: termination bound after release, durable
+`cancelled` status before release, no `verified`/`completed` attempt, no
+verified digest, receiver settled before on-disk assertions, no final file,
+staged partials preserved (resumable, unpromoted), and no re-dispatch.
+
+**Evidence:**
+
+- 48/48 PASS: 8 rounds of `-count=6` under full CPU contention (2× vCPU busy
+  spinner processes per round) on the workbench.
+- `go test -race -count=3` over all four R08 cancellation/shutdown proofs:
+  PASS, 0 data races.
+- Mutation M1 (ineffective cancellation — in-flight cancel registry
+  disabled in `packages/engine/outbox/outbox.go`, reverted after the run):
+  the held transfer completed on release, the final file appeared at the
+  receiver, and the test **failed** on
+  `final output file exists at the receiver after a mid-stream cancel — false
+delivery on disk`. The corrected test catches the exact defect #296 fixed.
