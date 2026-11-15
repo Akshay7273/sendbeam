@@ -338,6 +338,6 @@ vulnerability, see the [security policy](docs/threat-model.md).
 
 ## License
 
-MIT License, Copyright (c) 2026 Akshay7273. See [LICENSE](LICENSE) for details.
+The entire SendBeam project is licensed under the MIT License, Copyright (c) 2026 Akshay7273. Third-party dependencies retain their own licenses and notices. See [LICENSE](LICENSE) for details.
 
 Open source. Built for everyone.

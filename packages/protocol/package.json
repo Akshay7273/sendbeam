@@ -2,6 +2,7 @@
   "name": "@sendbeam/protocol",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

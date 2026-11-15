@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 The SendBeam contributors <https://sendbeam.dev>
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 package engine_test
 
