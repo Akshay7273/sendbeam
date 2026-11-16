@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@sendbeam/protocol": "workspace:*",
-    "hash-wasm": "^4.12.0",
+    "hash-wasm": "^4.13.0",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
